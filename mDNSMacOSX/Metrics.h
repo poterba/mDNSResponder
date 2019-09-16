@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 4 -*-
  *
- * Copyright (c) 2002-2003, 2006, 2009, 2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2016 Apple Inc. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,23 @@
  * limitations under the License.
  */
 
-#ifndef __DNS_SERVICE_DISCOVERY_DEFINES_H
-#define __DNS_SERVICE_DISCOVERY_DEFINES_H
+#include "mDNSEmbeddedAPI.h"
 
-#include <mach/mach_types.h>
+#ifndef __Metrics_h
+#define __Metrics_h
 
-#define DNS_SERVICE_DISCOVERY_SERVER "com.apple.mDNSResponder"
+#ifdef  __cplusplus
+extern "C" {
+#endif
 
-typedef char DNSCString[1024];
-typedef char sockaddr_t[128];
+#if TARGET_OS_EMBEDDED
+mStatus	MetricsInit(void);
+void	MetricsUpdateUDNSStats(const domainname *inQueryName, mDNSBool inAnswered, mDNSu32 inSendCount, mDNSu32 inLatencyMs, mDNSBool inForCellular);
+void	LogMetrics(void);
+#endif
 
-typedef const char * record_data_t;
-typedef struct { char bytes[4]; } IPPort;
+#ifdef  __cplusplus
+}
+#endif
 
-#endif  /* __DNS_SERVICE_DISCOVERY_DEFINES_H */
+#endif // __Metrics_h
