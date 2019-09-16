@@ -17,8 +17,20 @@
     Change History (most recent first):
     
 $Log: CommonServices.h,v $
-Revision 1.3.4.1  2006/08/29 06:24:36  cheshire
+Revision 1.8  2007/01/17 19:16:59  cheshire
+Only define ssize_t if it's not already defined
+
+Revision 1.7  2007/01/16 23:00:45  cheshire
+Don't need to include CoreServices.h
+
+Revision 1.6  2006/08/24 22:41:53  herscher
+<rdar://problem/4580067> POSIX: dnsextd_parser doesn't compile on Linux
+
+Revision 1.5  2006/08/14 23:24:56  cheshire
 Re-licensed mDNSResponder daemon source code under Apache License, Version 2.0
+
+Revision 1.4  2006/07/05 22:43:21  cheshire
+<rdar://problem/4472014> Add Private DNS client functionality to mDNSResponder
 
 Revision 1.3  2004/04/08 09:27:12  bradley
 Added macro for portable specification of callback calling conventions.
@@ -163,9 +175,7 @@ Common Services and portability support for various platforms.
 		#include	<sys/ioctl.h>
 		#include	<sys/socket.h>
 		#include	<unistd.h>
-		
-		#include	<CoreServices/CoreServices.h>
-	
+
 	#else
 		
 		// Classic Mac OS
@@ -441,7 +451,7 @@ Common Services and portability support for various platforms.
 // - Windows
 
 #if( TARGET_LANGUAGE_C_LIKE )
-	#if( ( TARGET_OS_WIN32 || !defined( _BSD_SSIZE_T_DEFINED_ ) ) && !TARGET_OS_VXWORKS )
+	#if( !defined(_SSIZE_T) && ( TARGET_OS_WIN32 || !defined( _BSD_SSIZE_T_DEFINED_ ) ) && !TARGET_OS_LINUX && !TARGET_OS_VXWORKS && !TARGET_OS_MAC)
 		typedef int						ssize_t;
 	#endif
 #endif
