@@ -1,0 +1,119 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>srp-crypto.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">srp-crypto.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="srp-crypto.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* srp-key.h
+ *
+ * Copyright (c) 2018 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * DNS SIG(0) signature generation for DNSSD SRP using mbedtls.
+ *
+ * Functions required for loading, saving, and generating public/private keypairs, extracting the public key
+ * into KEY RR data, and computing signatures.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__SRP_CRYPTO_H</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__SRP_CRYPTO_H</span>
+<span class="enscript-comment">// Anonymous key structure, depends on the target.
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> srp_key srp_key_t;
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">SRP_CRYPTO_MBEDTLS_INTERNAL</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mbedtls/error.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mbedtls/pk.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mbedtls/ecp.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mbedtls/ecdsa.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mbedtls/entropy.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mbedtls/ctr_drbg.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mbedtls/sha256.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mbedtls/base64.h&gt;</span>
+
+<span class="enscript-comment">// The SRP key includes both the ecdsa key and the pseudo-random number generator context, so that we can
+</span><span class="enscript-comment">// use the PRNG for signing as well as generating keys.   The PRNG is seeded with a high-entropy data source.
+</span><span class="enscript-comment">// This structure assumes that we are just using this one key; if we want to support multiple keys then
+</span><span class="enscript-comment">// the entropy source and PRNG should be shared by all keys (of course, that's not thread-safe, so...)
+</span><span class="enscript-type">struct</span> srp_key {
+    mbedtls_pk_context key;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr;
+};    
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DEBUG_SHA256</span>
+<span class="enscript-type">int</span> <span class="enscript-function-name">srp_mbedtls_sha256_update_ret</span>(mbedtls_sha256_context *NONNULL sha, uint8_t *NONNULL message, size_t msglen);
+<span class="enscript-type">int</span> <span class="enscript-function-name">srp_mbedtls_sha256_finish_ret</span>(mbedtls_sha256_context *NONNULL sha, uint8_t *NONNULL hash);
+#<span class="enscript-reference">else</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">srp_mbedtls_sha256_update_ret</span> mbedtls_sha256_update_ret
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">srp_mbedtls_sha256_finish_ret</span> mbedtls_sha256_finish_ret
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DEBUG_SHA256</span>
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">SRP_CRYPTO_MBEDTLS_INTERNAL</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">ECDSA_KEY_SIZE</span> 64
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">ECDSA_KEY_PART_SIZE</span> 32
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">ECDSA_SHA256_HASH_SIZE</span> 32
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">ECDSA_SHA256_SIG_SIZE</span> 64
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">ECDSA_SHA256_SIG_PART_SIZE</span> 32
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">SIG_HEADERLEN</span> 11
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">SIG_STATIC_RDLEN</span> 18
+
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssec_keytype_ecdsa</span>  13
+
+<span class="enscript-comment">// sign_*.c:
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">srp_keypair_free</span>(srp_key_t *NONNULL key);
+srp_key_t *NULLABLE <span class="enscript-function-name">srp_load_keypair</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *NONNULL file);
+srp_key_t *NULLABLE <span class="enscript-function-name">srp_generate_key</span>(<span class="enscript-type">void</span>);
+<span class="enscript-type">int</span> <span class="enscript-function-name">srp_write_key_to_file</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *NONNULL file, srp_key_t *NONNULL key);
+<span class="enscript-type">int</span> <span class="enscript-function-name">srp_key_algorithm</span>(srp_key_t *NONNULL key);
+size_t <span class="enscript-function-name">srp_pubkey_length</span>(srp_key_t *NONNULL key);
+size_t <span class="enscript-function-name">srp_signature_length</span>(srp_key_t *NONNULL key);
+<span class="enscript-type">int</span> <span class="enscript-function-name">srp_pubkey_copy</span>(uint8_t *NONNULL buf, size_t max, srp_key_t *NONNULL key);
+<span class="enscript-type">int</span> <span class="enscript-function-name">srp_sign</span>(uint8_t *NONNULL output, size_t max,
+	     uint8_t *NONNULL message, size_t msglen, uint8_t *NONNULL rdata, size_t rdlen, srp_key_t *NONNULL key);
+
+<span class="enscript-comment">// verify_*.c:
+</span>bool <span class="enscript-function-name">srp_sig0_verify</span>(dns_wire_t *NONNULL message, dns_rr_t *NONNULL key, dns_rr_t *NONNULL signature);
+<span class="enscript-type">void</span> <span class="enscript-function-name">srp_print_key</span>(srp_key_t *NONNULL key);
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">__SRP_CRYPTO_H</span>
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

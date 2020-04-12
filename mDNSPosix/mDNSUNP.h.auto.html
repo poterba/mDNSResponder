@@ -1,0 +1,114 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>mDNSUNP.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">mDNSUNP.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="mDNSUNP.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2002-2018 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__mDNSUNP_h</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__mDNSUNP_h</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/types.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/if.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">HAVE_LINUX</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;linux/socket.h&gt;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IPV6_2292_PKTINFO</span>  IPV6_2292PKTINFO
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IPV6_2292_HOPLIMIT</span> IPV6_2292HOPLIMIT
+#<span class="enscript-reference">else</span>
+<span class="enscript-comment">// The following are the supported non-linux posix OSes -
+</span><span class="enscript-comment">// netbsd, freebsd and openbsd.
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IPV6_2292_PKTINFO</span>  19
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IPV6_2292_HOPLIMIT</span> 20
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifdef</span>  <span class="enscript-variable-name">__cplusplus</span>
+<span class="enscript-type">extern</span> <span class="enscript-string">&quot;C&quot;</span> {
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">NOT_HAVE_SOCKLEN_T</span>
+<span class="enscript-type">typedef</span> <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> socklen_t;
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">GET_SA_LEN</span>(X) (sizeof(struct sockaddr) &gt; ((struct sockaddr*)&amp;(X))-&gt;sa_len ? \
+                       sizeof(struct sockaddr) : ((struct sockaddr*)&amp;(X))-&gt;sa_len   )
+#<span class="enscript-reference">elif</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">GET_SA_LEN</span>(X) (((struct sockaddr*)&amp;(X))-&gt;sa_family == AF_INET  ? sizeof(struct sockaddr_in) : \
+                       ((struct sockaddr*)&amp;(X))-&gt;sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr))
+#<span class="enscript-reference">else</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">GET_SA_LEN</span>(X) (((struct sockaddr*)&amp;(X))-&gt;sa_family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr))
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IFI_NAME</span>    IFNAMSIZ    <span class="enscript-comment">/* same as IFNAMSIZ in &lt;net/if.h&gt; */</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IFI_HADDR</span>   8           <span class="enscript-comment">/* allow for 64-bit EUI-64 in future */</span>
+
+<span class="enscript-comment">// Renamed from my_in_pktinfo because in_pktinfo is used by Linux.
+</span>
+<span class="enscript-type">struct</span> my_in_pktinfo {
+    <span class="enscript-type">struct</span> sockaddr_storage ipi_addr;
+    <span class="enscript-type">int</span> ipi_ifindex;                                <span class="enscript-comment">/* received interface index */</span>
+    <span class="enscript-type">char</span> ipi_ifname[IFI_NAME];                      <span class="enscript-comment">/* received interface name  */</span>
+};
+
+<span class="enscript-comment">/* From the text (Stevens, section 20.2): */</span>
+<span class="enscript-comment">/* 'As an example of recvmsg we will write a function named recvfrom_flags that */</span>
+<span class="enscript-comment">/* is similar to recvfrom but also returns: */</span>
+<span class="enscript-comment">/*	1. the returned msg_flags value, */</span>
+<span class="enscript-comment">/*	2. the destination addres of the received datagram (from the IP_RECVDSTADDR socket option, and */</span>
+<span class="enscript-comment">/*	3. the index of the interface on which the datagram was received (the IP_RECVIF socket option).' */</span>
+<span class="enscript-type">extern</span> ssize_t <span class="enscript-function-name">recvfrom_flags</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">void</span> *ptr, size_t nbytes, <span class="enscript-type">int</span> *flagsp,
+                              <span class="enscript-type">struct</span> sockaddr *sa, socklen_t *salenptr, <span class="enscript-type">struct</span> my_in_pktinfo *pktp, u_char *ttl);
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">AF_INET6</span>) &amp;&amp; <span class="enscript-variable-name">HAVE_IPV6</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">INET6_ADDRSTRLEN</span> 46 <span class="enscript-comment">/*Maximum length of IPv6 address */</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">NOT_HAVE_DAEMON</span>
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> <span class="enscript-function-name">daemon</span>(<span class="enscript-type">int</span> nochdir, <span class="enscript-type">int</span> noclose);
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifdef</span>  <span class="enscript-variable-name">__cplusplus</span>
+}
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">endif</span>
+</pre>
+<hr />
+</body></html>

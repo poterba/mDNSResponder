@@ -1,0 +1,118 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>ExampleClientApp.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">ExampleClientApp.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="ExampleClientApp.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2002-2004 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>          // For printf()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>         // For exit() etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>         // For strlen() etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>         // For select()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>          // For errno, EINTR
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>     // For INADDR_NONE
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>      // For inet_addr()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netdb.h&gt;</span>          // For gethostbyname()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;signal.h&gt;</span>         // For SIGINT, etc.
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>  // Defines the interface to the client layer above
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSPosix.h&quot;</span>      // Defines the specific types needed to run mDNS on this platform
+
+<span class="enscript-comment">//*******************************************************************************************
+</span><span class="enscript-comment">// Main
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">volatile</span> mDNSBool StopNow;
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">HandleSIG</span>(<span class="enscript-type">int</span> signal)
+{
+    (<span class="enscript-type">void</span>)signal;   <span class="enscript-comment">// Unused
+</span>    debugf(<span class="enscript-string">&quot;%s&quot;</span>,<span class="enscript-string">&quot;&quot;</span>);
+    debugf(<span class="enscript-string">&quot;HandleSIG&quot;</span>);
+    StopNow = mDNStrue;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">ExampleClientEventLoop</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    signal(SIGINT, HandleSIG);  <span class="enscript-comment">// SIGINT is what you get for a Ctrl-C
+</span>    signal(SIGTERM, HandleSIG);
+
+    <span class="enscript-keyword">while</span> (!StopNow)
+    {
+        <span class="enscript-type">int</span> nfds = 0;
+        fd_set readfds;
+        fd_set writefds;
+        <span class="enscript-type">struct</span> timeval timeout;
+        <span class="enscript-type">int</span> result;
+
+        <span class="enscript-comment">// 1. Set up the fd_set as usual here.
+</span>        <span class="enscript-comment">// This example client has no file descriptors of its own,
+</span>        <span class="enscript-comment">// but a real application would call FD_SET to add them to the set here
+</span>        FD_ZERO(&amp;readfds);
+        FD_ZERO(&amp;writefds);
+
+        <span class="enscript-comment">// 2. Set up the timeout.
+</span>        <span class="enscript-comment">// This example client has no other work it needs to be doing,
+</span>        <span class="enscript-comment">// so we set an effectively infinite timeout
+</span>        timeout.tv_sec = FutureTime;
+        timeout.tv_usec = 0;
+
+        <span class="enscript-comment">// 3. Give the mDNSPosix layer a chance to add its information to the fd_set and timeout
+</span>        mDNSPosixGetFDSet(m, &amp;nfds, &amp;readfds, &amp;writefds, &amp;timeout);
+
+        <span class="enscript-comment">// 4. Call select as normal
+</span>        verbosedebugf(<span class="enscript-string">&quot;select(%d, %d.%06d)&quot;</span>, nfds, timeout.tv_sec, timeout.tv_usec);
+        result = select(nfds, &amp;readfds, &amp;writefds, NULL, &amp;timeout);
+
+        <span class="enscript-keyword">if</span> (result &lt; 0)
+        {
+            verbosedebugf(<span class="enscript-string">&quot;select() returned %d errno %d&quot;</span>, result, errno);
+            <span class="enscript-keyword">if</span> (errno != EINTR) StopNow = mDNStrue;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-comment">// 5. Call mDNSPosixProcessFDSet to let the mDNSPosix layer do its work
+</span>            mDNSPosixProcessFDSet(m, &amp;readfds, &amp;writefds);
+
+            <span class="enscript-comment">// 6. This example client has no other work it needs to be doing,
+</span>            <span class="enscript-comment">// but a real client would do its work here
+</span>            <span class="enscript-comment">// ... (do work) ...
+</span>        }
+    }
+
+    debugf(<span class="enscript-string">&quot;Exiting&quot;</span>);
+}
+</pre>
+<hr />
+</body></html>

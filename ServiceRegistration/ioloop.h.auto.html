@@ -1,0 +1,131 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>ioloop.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">ioloop.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="ioloop.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* ioloop.c
+ *
+ * Copyright (c) 2018-2019 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Definitions for simple dispatch implementation.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__IOLOOP_H</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__IOLOOP_H</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__DSO_H</span>
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_state dso_state_t;
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">union</span> addr addr_t;
+<span class="enscript-type">union</span> addr {
+    <span class="enscript-type">struct</span> sockaddr sa;
+    <span class="enscript-type">struct</span> sockaddr_in sin;
+    <span class="enscript-type">struct</span> sockaddr_in6 sin6;
+};
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> message message_t;
+<span class="enscript-type">struct</span> message {
+    addr_t src;
+    <span class="enscript-type">int</span> ifindex;
+    size_t length;
+    dns_wire_t wire;
+};
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_transport comm_t;
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> io io_t;
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*io_callback_t)(io_t *NONNULL io);
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*comm_callback_t)(comm_t *NONNULL comm);
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*send_response_t)(comm_t *NONNULL comm, message_t *NONNULL responding_to, <span class="enscript-type">struct</span> iovec *NONNULL iov, <span class="enscript-type">int</span> count);
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IOLOOP_SECOND</span>	1000LL
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IOLOOP_MINUTE</span>	60 * IOLOOP_SECOND
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IOLOOP_HOUR</span>		60 * IOLOOP_MINUTE
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IOLOOP_DAY</span>		24 * IOLOOP_HOUR
+
+<span class="enscript-type">struct</span> io {
+    io_t *NULLABLE next;
+    io_callback_t NULLABLE read_callback;
+    io_callback_t NULLABLE write_callback;
+    io_callback_t NULLABLE finalize;
+    io_callback_t NULLABLE wakeup;
+    io_callback_t NULLABLE cancel;
+    <span class="enscript-type">int</span> sock;
+    int64_t wakeup_time;
+    io_t *NULLABLE cancel_on_close;
+    bool want_read : 1;
+    bool want_write : 1;
+};
+
+<span class="enscript-type">struct</span> dso_transport {
+    io_t io;
+    <span class="enscript-type">char</span> *NONNULL name;
+    <span class="enscript-type">void</span> *NULLABLE context;
+    comm_callback_t NULLABLE datagram_callback;
+    comm_callback_t NULLABLE close_callback;
+    send_response_t NULLABLE send_response;
+    comm_callback_t NULLABLE connected;
+    message_t *NULLABLE message;
+    uint8_t *NULLABLE buf;
+    dso_state_t *NULLABLE dso;
+    addr_t address;
+    size_t message_length_len;
+    size_t message_length, message_cur;
+    uint8_t message_length_bytes[2];
+    bool tcp_stream: 1;
+};
+
+<span class="enscript-type">extern</span> int64_t ioloop_now;
+<span class="enscript-type">int</span> <span class="enscript-function-name">getipaddr</span>(addr_t *NONNULL addr, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *NONNULL p);
+int64_t <span class="enscript-function-name">ioloop_timenow</span>(<span class="enscript-type">void</span>);
+message_t *NULLABLE <span class="enscript-function-name">message_allocate</span>(size_t message_size);
+<span class="enscript-type">void</span> <span class="enscript-function-name">message_free</span>(message_t *NONNULL message);
+<span class="enscript-type">void</span> <span class="enscript-function-name">comm_free</span>(comm_t *NONNULL comm);
+<span class="enscript-type">void</span> <span class="enscript-function-name">ioloop_close</span>(io_t *NONNULL io);
+<span class="enscript-type">void</span> <span class="enscript-function-name">add_reader</span>(io_t *NONNULL io, io_callback_t NONNULL callback, io_callback_t NULLABLE finalize);
+bool <span class="enscript-function-name">ioloop_init</span>(<span class="enscript-type">void</span>);
+<span class="enscript-type">int</span> <span class="enscript-function-name">ioloop_events</span>(int64_t timeout_when);
+comm_t *NULLABLE <span class="enscript-function-name">setup_listener_socket</span>(<span class="enscript-type">int</span> family, <span class="enscript-type">int</span> protocol, uint16_t port, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *NONNULL name,
+                                       comm_callback_t NONNULL datagram_callback,
+                                       comm_callback_t NULLABLE connected, <span class="enscript-type">void</span> *NULLABLE context);
+#<span class="enscript-reference">endif</span>
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

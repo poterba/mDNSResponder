@@ -1,0 +1,227 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>uDNS.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">uDNS.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="uDNS.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2002-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__UDNS_H_</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__UDNS_H_</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/types.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd.h&quot;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">COMMON</span>, <span class="enscript-variable-name">DNS_PUSH</span>)
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dso.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dso-transport.h&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifdef</span>  <span class="enscript-variable-name">__cplusplus</span>
+<span class="enscript-type">extern</span> <span class="enscript-string">&quot;C&quot;</span> {
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">RESTART_GOODBYE_DELAY</span>    (6 * mDNSPlatformOneSecond) // delay after restarting LLQ before nuking previous known answers (avoids flutter if we restart before we have networking up)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">INIT_UCAST_POLL_INTERVAL</span> (3 * mDNSPlatformOneSecond) // this interval is used after send failures on network transitions
+                                                             <span class="enscript-comment">// which typically heal quickly, so we start agressively and exponentially back off
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_UCAST_POLL_INTERVAL</span> (60 * 60 * mDNSPlatformOneSecond)
+<span class="enscript-comment">//#define MAX_UCAST_POLL_INTERVAL (1 * 60 * mDNSPlatformOneSecond)
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">LLQ_POLL_INTERVAL</span>       (15 * 60 * mDNSPlatformOneSecond) // Polling interval for zones w/ an advertised LLQ port (ie not static zones) if LLQ fails due to NAT, etc.
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">RESPONSE_WINDOW</span> (60 * mDNSPlatformOneSecond)         // require server responses within one minute of request
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_DNSSEC_UNANSWERED_QUERIES</span> 1                      // number of unanswered queries from any one uDNS server before turning off DNSSEC Validation
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_UCAST_UNANSWERED_QUERIES</span> 2                       // number of unanswered queries from any one uDNS server before trying another server
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSERVER_PENALTY_TIME</span> (60 * mDNSPlatformOneSecond)  // number of seconds for which new questions don't pick this server
+
+<span class="enscript-comment">// On some interfaces, we want to delay the first retransmission to a minimum of 2 seconds
+</span><span class="enscript-comment">// rather than the default (1 second).
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MIN_UCAST_RETRANS_TIMEOUT</span> (2 * mDNSPlatformOneSecond)
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DEFAULT_UPDATE_LEASE</span> 7200
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">QuestionIntervalStep</span> 3
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">QuestionIntervalStep2</span> (QuestionIntervalStep*QuestionIntervalStep)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">QuestionIntervalStep3</span> (QuestionIntervalStep*QuestionIntervalStep*QuestionIntervalStep)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">InitialQuestionInterval</span> ((mDNSPlatformOneSecond + QuestionIntervalStep-1) / QuestionIntervalStep)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MaxQuestionInterval</span>         (3600 * mDNSPlatformOneSecond)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">UDNSBackOffMultiplier</span> 2 
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MinQuestionInterval</span> (1 * mDNSPlatformOneSecond)
+
+<span class="enscript-comment">// For Unicast record registrations, we initialize the interval to 1 second. When we send any query for
+</span><span class="enscript-comment">// the record registration e.g., GetZoneData, we always back off by QuestionIntervalStep
+</span><span class="enscript-comment">// so that the first retry does not happen until 3 seconds which should be enough for TCP/TLS to be done.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">INIT_RECORD_REG_INTERVAL</span> (1 * mDNSPlatformOneSecond)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_RECORD_REG_INTERVAL</span> (15 * 60 * mDNSPlatformOneSecond)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MERGE_DELAY_TIME</span>    (1 * mDNSPlatformOneSecond)
+
+<span class="enscript-comment">// If we are refreshing, we do it at least 5 times with a min update frequency of
+</span><span class="enscript-comment">// 5 minutes
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_UPDATE_REFRESH_COUNT</span>    5
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MIN_UPDATE_REFRESH_TIME</span>     (5 * 60 * mDNSPlatformOneSecond)
+
+<span class="enscript-comment">// For questions that use kDNSServiceFlagsTimeout and we don't have a matching resolver e.g., no dns servers,
+</span><span class="enscript-comment">// then use the default value of 30 seconds
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DEFAULT_UDNS_TIMEOUT</span>    30 // in seconds
+
+<span class="enscript-comment">// For questions that are validating responses (q-&gt;ValidatingResponse == 1), use 10 seconds
+</span><span class="enscript-comment">// which accomodates two DNS servers and two queries per DNS server.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DEFAULT_UDNSSEC_TIMEOUT</span>    10 // in seconds
+
+<span class="enscript-comment">// If we are sending queries with EDNS0/DO option and we have no indications that the server
+</span><span class="enscript-comment">// is DNSSEC aware and we have already reached MAX_DNSSEC_RETRANSMISSIONS, we disable
+</span><span class="enscript-comment">// validation (for optional case only) for any questions that uses this server
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_DNSSEC_RETRANSMISSIONS</span> 3
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">COMMON</span>, <span class="enscript-variable-name">DNS_PUSH</span>)
+<span class="enscript-comment">// Push notification structures
+</span><span class="enscript-type">struct</span> mDNS_DNSPushNotificationServer
+{
+    dso_connect_state_t       *connectInfo;       <span class="enscript-comment">// DSO Connection state information
+</span>    dso_state_t               *connection;        <span class="enscript-comment">// DNS Stateful Operations/TCP Connection pointer, might be null.
+</span>    mDNSu32                    numberOfQuestions; <span class="enscript-comment">// Number of questions for this server
+</span>    DNSPushServer_ConnectState connectState;      <span class="enscript-comment">// Current status of connection attempt to this server
+</span>    mDNSs32                    lastDisconnect;    <span class="enscript-comment">// Last time we got a disconnect, used to avoid constant reconnects
+</span>    domainname                 serverName;        <span class="enscript-comment">// The hostname returned by the _dns-push-tls._tcp.&lt;zone&gt; SRV lookup
+</span>    mDNSIPPort                 port;              <span class="enscript-comment">// The port from the SRV lookup
+</span>    DNSServer                 *qDNSServer;        <span class="enscript-comment">// DNS server stolen from the question that created this server structure.
+</span>    mDNS                      *m;
+    DNSPushNotificationServer *next;
+} ;
+
+<span class="enscript-type">struct</span> mDNS_DNSPushNotificationZone
+{
+    domainname zoneName;
+    DNSPushNotificationServer *server; <span class="enscript-comment">// DNS Push Notification Servers for this zone
+</span>    mDNSu32 numberOfQuestions;          <span class="enscript-comment">// Number of questions for this zone
+</span>    DNSPushNotificationZone *next;
+} ;
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Entry points into unicast-specific routines
+</span>
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">LLQGotZoneData</span>(mDNS *<span class="enscript-type">const</span> m, mStatus err, <span class="enscript-type">const</span> ZoneData *zoneInfo);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">startLLQHandshake</span>(mDNS *m, DNSQuestion *q);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">sendLLQRefresh</span>(mDNS *m, DNSQuestion *q);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">COMMON</span>, <span class="enscript-variable-name">DNS_PUSH</span>)
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSPushNotificationGotZoneData</span>(mDNS *<span class="enscript-type">const</span> m, mStatus err, <span class="enscript-type">const</span> ZoneData *zoneInfo);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DiscoverDNSPushNotificationServer</span>(mDNS *m, DNSQuestion *q);
+<span class="enscript-type">extern</span> DNSPushNotificationServer *<span class="enscript-function-name">GetConnectionToDNSPushNotificationServer</span>(mDNS *m, DNSQuestion *q);
+<span class="enscript-type">extern</span> DNSPushNotificationServer *<span class="enscript-function-name">SubscribeToDNSPushNotificationServer</span>(mDNS *m, DNSQuestion *q);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">UnSubscribeToDNSPushNotificationServer</span>(mDNS *m, DNSQuestion *q);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSPushReconcileConnection</span>(mDNS *m, DNSQuestion *q);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSPushServerDrop</span>(DNSPushNotificationServer *server);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">SleepRecordRegistrations</span>(mDNS *m);
+
+<span class="enscript-comment">// uDNS_UpdateRecord
+</span><span class="enscript-comment">// following fields must be set, and the update validated, upon entry.
+</span><span class="enscript-comment">// rr-&gt;NewRData
+</span><span class="enscript-comment">// rr-&gt;newrdlength
+</span><span class="enscript-comment">// rr-&gt;UpdateCallback
+</span>
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">uDNS_UpdateRecord</span>(mDNS *m, AuthRecord *rr);
+
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">SetNextQueryTime</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> DNSQuestion *<span class="enscript-type">const</span> q);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">mDNS_Register_internal</span>(mDNS *<span class="enscript-type">const</span> m, AuthRecord *<span class="enscript-type">const</span> rr);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">mDNS_Deregister_internal</span>(mDNS *<span class="enscript-type">const</span> m, AuthRecord *<span class="enscript-type">const</span> rr, mDNS_Dereg_type drt);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">mDNS_StartQuery_internal</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *<span class="enscript-type">const</span> question);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">mDNS_StopQuery_internal</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *<span class="enscript-type">const</span> question);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">mDNS_StartNATOperation_internal</span>(mDNS *<span class="enscript-type">const</span> m, NATTraversalInfo *traversal);
+
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">RecordRegistrationGotZoneData</span>(mDNS *<span class="enscript-type">const</span> m, mStatus err, <span class="enscript-type">const</span> ZoneData *zoneData);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">uDNS_DeregisterRecord</span>(mDNS *<span class="enscript-type">const</span> m, AuthRecord *<span class="enscript-type">const</span> rr);
+<span class="enscript-type">extern</span> <span class="enscript-type">const</span> domainname *<span class="enscript-function-name">GetServiceTarget</span>(mDNS *m, AuthRecord *<span class="enscript-type">const</span> rr);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">uDNS_CheckCurrentQuestion</span>(mDNS *<span class="enscript-type">const</span> m);
+
+<span class="enscript-comment">// integer fields of msg header must be in HOST byte order before calling this routine
+</span><span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">uDNS_ReceiveMsg</span>(mDNS *<span class="enscript-type">const</span> m, DNSMessage *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end,
+                            <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> srcaddr, <span class="enscript-type">const</span> mDNSIPPort srcport);
+
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">uDNS_Tasks</span>(mDNS *<span class="enscript-type">const</span> m);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">UpdateAllSRVRecords</span>(mDNS *m);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">CheckNATMappings</span>(mDNS *m);
+
+<span class="enscript-type">extern</span> mStatus         <span class="enscript-function-name">uDNS_SetupDNSConfig</span>(mDNS *<span class="enscript-type">const</span> m);
+
+<span class="enscript-comment">// uDNS_SetupWABQueries reads search domains from the platform layer and starts the Wide Area Bonjour
+</span><span class="enscript-comment">// (WAB) domain enumeration queries if necessary.
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">UDNS_WAB_BROWSE_QUERY</span>    0x00000001 // Browse queries (b, db)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">UDNS_WAB_LBROWSE_QUERY</span>   0x00000002 // Browse queries (lb)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">UDNS_WAB_REG_QUERY</span>       0x00000004 // Registration queries (r and dr)
+
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">uDNS_SetupWABQueries</span>(mDNS *<span class="enscript-type">const</span> m);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">uDNS_StartWABQueries</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">int</span> queryType);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">uDNS_StopWABQueries</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">int</span> queryType);
+<span class="enscript-type">extern</span> domainname      *<span class="enscript-function-name">uDNS_GetNextSearchDomain</span>(mDNSInterfaceID InterfaceID, <span class="enscript-type">int</span> *searchIndex, mDNSBool ignoreDotLocal);
+    
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">uDNS_RestartQuestionAsTCP</span>(mDNS *m, DNSQuestion *<span class="enscript-type">const</span> q, <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> srcaddr, <span class="enscript-type">const</span> mDNSIPPort srcport);
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span>
+{
+    uDNS_LLQ_Not = 0,   <span class="enscript-comment">// Normal uDNS answer: Flush any stale records from cache, and respect record TTL
+</span>    uDNS_LLQ_Ignore,    <span class="enscript-comment">// LLQ initial challenge packet: ignore -- has no useful records for us
+</span>    uDNS_LLQ_Entire,    <span class="enscript-comment">// LLQ initial set of answers: Flush any stale records from cache, but assume TTL is 2 x LLQ refresh interval
+</span>    uDNS_LLQ_Events     <span class="enscript-comment">// LLQ event packet: don't flush cache; assume TTL is 2 x LLQ refresh interval
+</span>} uDNS_LLQType;
+
+<span class="enscript-type">extern</span> uDNS_LLQType    <span class="enscript-function-name">uDNS_recvLLQResponse</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> DNSMessage *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end, <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> srcaddr, <span class="enscript-type">const</span> mDNSIPPort srcport, DNSQuestion **matchQuestion);
+<span class="enscript-type">extern</span> DomainAuthInfo *<span class="enscript-function-name">GetAuthInfoForName_internal</span>(mDNS *m, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> name);
+<span class="enscript-type">extern</span> DomainAuthInfo *<span class="enscript-function-name">GetAuthInfoForQuestion</span>(mDNS *m, <span class="enscript-type">const</span> DNSQuestion *<span class="enscript-type">const</span> q);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DisposeTCPConn</span>(<span class="enscript-type">struct</span> tcpInfo_t *tcp);
+
+<span class="enscript-comment">// NAT traversal
+</span><span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">uDNS_ReceiveNATPacket</span>(mDNS *m, <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID, mDNSu8 *pkt, mDNSu16 len); <span class="enscript-comment">// Called for each received PCP or NAT-PMP packet
+</span><span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">natTraversalHandleAddressReply</span>(mDNS *<span class="enscript-type">const</span> m, mDNSu16 err, mDNSv4Addr ExtAddr);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">natTraversalHandlePortMapReply</span>(mDNS *<span class="enscript-type">const</span> m, NATTraversalInfo *n, <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID, mDNSu16 err, mDNSIPPort extport, mDNSu32 lease, NATTProtocol protocol);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">COMMON</span>, <span class="enscript-variable-name">DNS_PUSH</span>)
+<span class="enscript-comment">// DNS Push Notification
+</span><span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">SubscribeToDNSPushNotification</span>(mDNS *m, DNSQuestion *q);
+#<span class="enscript-reference">endif</span>
+    
+<span class="enscript-type">extern</span> CacheRecord* <span class="enscript-function-name">mDNSCoreReceiveCacheCheck</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> DNSMessage *<span class="enscript-type">const</span> response, uDNS_LLQType LLQType,
+											  <span class="enscript-type">const</span> mDNSu32 slot, CacheGroup *cg, DNSQuestion *unicastQuestion,
+                                              CacheRecord ***cfp, CacheRecord **NSECCachePtr, mDNSInterfaceID InterfaceID);
+
+#<span class="enscript-reference">ifdef</span>  <span class="enscript-variable-name">__cplusplus</span>
+}
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">__UDNS_H_</span>
+</pre>
+<hr />
+</body></html>

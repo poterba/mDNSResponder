@@ -1,0 +1,85 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>Makefile</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">Makefile&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="Makefile">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+SRPCFLAGS = -O0 -g -Wall -Werror -DSTANDALONE -I../mDNSCore -I/usr/local/include -I. -I../mDNSShared -I../DSO -MMD -MF .depfile-${<span class="enscript-reference">notdir $&lt;</span>}
+LINKOPTS = -lmbedcrypto
+
+BUILDDIR = build
+OBJDIR = objects
+
+<span class="enscript-keyword">all:</span>	setup $(<span class="enscript-reference">BUILDDIR</span>)/srp-simple $(<span class="enscript-reference">BUILDDIR</span>)/srp-gw $(<span class="enscript-reference">BUILDDIR</span>)/keydump $(<span class="enscript-reference">BUILDDIR</span>)/dnssd-proxy
+
+<span class="enscript-comment"># 'setup' sets up the build directory structure the way we want
+</span><span class="enscript-keyword">setup:</span>
+	@if test ! -d $(<span class="enscript-reference">OBJDIR</span>)   ; then mkdir -p $(<span class="enscript-reference">OBJDIR</span>)   ; fi
+	@if test ! -d $(<span class="enscript-reference">BUILDDIR</span>) ; then mkdir -p $(<span class="enscript-reference">BUILDDIR</span>) ; fi
+
+<span class="enscript-comment"># clean removes targets and objects
+</span><span class="enscript-keyword">clean:</span>
+	@if test -d $(<span class="enscript-reference">OBJDIR</span>)   ; then rm -r $(<span class="enscript-reference">OBJDIR</span>)   ; fi
+	@if test -d $(<span class="enscript-reference">BUILDDIR</span>) ; then rm -r $(<span class="enscript-reference">BUILDDIR</span>) ; fi
+
+SIGNOBJS     = $(<span class="enscript-reference">OBJDIR</span>)/sign-mbedtls.o 
+SIMPLEOBJS   = $(<span class="enscript-reference">OBJDIR</span>)/towire.o $(<span class="enscript-reference">SIGNOBJS</span>)
+DSOOBJS      = $(<span class="enscript-reference">OBJDIR</span>)/dso.o
+MDNSOBJS     = $(<span class="enscript-reference">OBJDIR</span>)/dnssd_clientstub.o $(<span class="enscript-reference">OBJDIR</span>)/dnssd_ipc.o
+VERIFYOBJS   = $(<span class="enscript-reference">OBJDIR</span>)/verify-mbedtls.o
+FROMWIREOBJS = $(<span class="enscript-reference">OBJDIR</span>)/fromwire.o $(<span class="enscript-reference">VERIFYOBJS</span>)
+IOOBJS       = $(<span class="enscript-reference">OBJDIR</span>)/ioloop.o
+
+<span class="enscript-keyword">$(BUILDDIR)/dnssd-proxy:</span>  $(<span class="enscript-reference">OBJDIR</span>)/dnssd-proxy.o $(<span class="enscript-reference">SIMPLEOBJS</span>) $(<span class="enscript-reference">DSOOBJS</span>) $(<span class="enscript-reference">MDNSOBJS</span>) $(<span class="enscript-reference">FROMWIREOBJS</span>) $(<span class="enscript-reference">IOOBJS</span>)
+	$(<span class="enscript-reference">CC</span>) -o $@ $+ $(<span class="enscript-reference">LINKOPTS</span>)
+
+<span class="enscript-keyword">$(BUILDDIR)/srp-simple:</span>	$(<span class="enscript-reference">OBJDIR</span>)/srp-simple.o $(<span class="enscript-reference">SIMPLEOBJS</span>)
+	$(<span class="enscript-reference">CC</span>) -o $@ $+ $(<span class="enscript-reference">LINKOPTS</span>)
+
+<span class="enscript-keyword">$(BUILDDIR)/srp-gw:</span>	$(<span class="enscript-reference">OBJDIR</span>)/srp-gw.o $(<span class="enscript-reference">SIMPLEOBJS</span>) $(<span class="enscript-reference">FROMWIREOBJS</span>) $(<span class="enscript-reference">IOOBJS</span>)
+	$(<span class="enscript-reference">CC</span>) -o $@ $+ $(<span class="enscript-reference">LINKOPTS</span>)
+
+<span class="enscript-keyword">$(BUILDDIR)/keydump:</span>	$(<span class="enscript-reference">OBJDIR</span>)/keydump.o $(<span class="enscript-reference">SIMPLEOBJS</span>) $(<span class="enscript-reference">FROMWIREOBJS</span>)
+	$(<span class="enscript-reference">CC</span>) -o $@ $+ $(<span class="enscript-reference">LINKOPTS</span>)
+
+<span class="enscript-keyword">$(OBJDIR)/dso.o:</span>	../DSO/dso.c
+	$(<span class="enscript-reference">CC</span>) -o $@ $(<span class="enscript-reference">SRPCFLAGS</span>) -c -I. -I../mDNSShared $&lt;
+
+<span class="enscript-keyword">$(OBJDIR)/dnssd_clientstub.o:</span>  ../mDNSShared/dnssd_clientstub.c
+	$(<span class="enscript-reference">CC</span>) -o $@ $(<span class="enscript-reference">SRPCFLAGS</span>) -c -I. -I../mDNSShared $&lt;
+
+<span class="enscript-keyword">$(OBJDIR)/dnssd_ipc.o:</span>  ../mDNSShared/dnssd_ipc.c
+	$(<span class="enscript-reference">CC</span>) -o $@ $(<span class="enscript-reference">SRPCFLAGS</span>) -c -I. -I../mDNSShared $&lt;
+
+<span class="enscript-keyword">$(OBJDIR)/%.o:</span>	%.c
+	$(<span class="enscript-reference">CC</span>) -o $@ $(<span class="enscript-reference">SRPCFLAGS</span>) -c  $&lt;
+
+-include .depfile-dnssd-proxy.c
+-include .depfile-fromwire.c
+-include .depfile-ioloop.c
+-include .depfile-keydump.c
+-include .depfile-sign-mbedtls.c
+-include .depfile-srp-gw.c
+-include .depfile-srp-simple.c
+-include .depfile-towire.c
+-include .depfile-verify-mbedtls.c
+-include .depfile-dso.c
+</pre>
+<hr />
+</body></html>

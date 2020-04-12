@@ -1,0 +1,115 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>GenLinkedList.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">GenLinkedList.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="GenLinkedList.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2003 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__GenLinkedList__</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__GenLinkedList__</span>
+
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stddef.h&gt;</span>
+
+
+<span class="enscript-type">struct</span>  GenLinkedList
+{
+    <span class="enscript-type">void</span>        *Head,
+    *Tail;
+    size_t LinkOffset;
+};
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> GenLinkedList GenLinkedList;
+
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">InitLinkedList</span>( GenLinkedList *pList, size_t linkOffset);
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">AddToHead</span>( GenLinkedList *pList, <span class="enscript-type">void</span> *elem);
+<span class="enscript-type">void</span>        <span class="enscript-function-name">AddToTail</span>( GenLinkedList *pList, <span class="enscript-type">void</span> *elem);
+
+<span class="enscript-type">int</span>     <span class="enscript-function-name">RemoveFromList</span>( GenLinkedList *pList, <span class="enscript-type">void</span> *elem);
+
+<span class="enscript-type">int</span>     <span class="enscript-function-name">ReplaceElem</span>( GenLinkedList *pList, <span class="enscript-type">void</span> *elemInList, <span class="enscript-type">void</span> *newElem);
+
+
+
+<span class="enscript-type">struct</span>  GenDoubleLinkedList
+{
+    <span class="enscript-type">void</span>        *Head,
+    *Tail;
+    size_t FwdLinkOffset,
+           BackLinkOffset;
+};
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> GenDoubleLinkedList GenDoubleLinkedList;
+
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">InitDoubleLinkedList</span>( GenDoubleLinkedList *pList, size_t fwdLinkOffset,
+                                  size_t backLinkOffset);
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">DLLAddToHead</span>( GenDoubleLinkedList *pList, <span class="enscript-type">void</span> *elem);
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">DLLRemoveFromList</span>( GenDoubleLinkedList *pList, <span class="enscript-type">void</span> *elem);
+
+
+
+<span class="enscript-comment">/* A GenLinkedOffsetList is like a GenLinkedList that stores the *Next field as a signed */</span>
+<span class="enscript-comment">/* offset from the address of the beginning of the element, rather than as a pointer. */</span>
+
+<span class="enscript-type">struct</span>  GenLinkedOffsetList
+{
+    size_t Head,
+           Tail;
+    size_t LinkOffset;
+};
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> GenLinkedOffsetList GenLinkedOffsetList;
+
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">InitLinkedOffsetList</span>( GenLinkedOffsetList *pList, size_t linkOffset);
+
+<span class="enscript-type">void</span>        *<span class="enscript-function-name">GetHeadPtr</span>( GenLinkedOffsetList *pList);
+<span class="enscript-type">void</span>        *<span class="enscript-function-name">GetTailPtr</span>( GenLinkedOffsetList *pList);
+<span class="enscript-type">void</span>        *<span class="enscript-function-name">GetOffsetLink</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elem);
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">OffsetAddToHead</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elem);
+<span class="enscript-type">void</span>        <span class="enscript-function-name">OffsetAddToTail</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elem);
+
+<span class="enscript-type">int</span>     <span class="enscript-function-name">OffsetRemoveFromList</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elem);
+
+<span class="enscript-type">int</span>     <span class="enscript-function-name">OffsetReplaceElem</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elemInList, <span class="enscript-type">void</span> *newElem);
+
+
+#<span class="enscript-reference">endif</span> //	<span class="enscript-variable-name">__GenLinkedList__</span>
+</pre>
+<hr />
+</body></html>

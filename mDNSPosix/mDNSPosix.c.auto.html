@@ -1,0 +1,2370 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>mDNSPosix.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">mDNSPosix.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="mDNSPosix.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4; c-file-style: &quot;bsd&quot;; c-basic-offset: 4; fill-column: 108; indent-tabs-mode: nil; -*-
+ *
+ * Copyright (c) 2002-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>           // Defines the interface provided to the client layer above
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSPosix.h&quot;</span>               // Defines the specific types needed to run mDNS on this platform
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;PlatformCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssec.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;nsec.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;assert.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;syslog.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdarg.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;fcntl.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/types.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/time.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/uio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/select.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;time.h&gt;</span>                   // platform support for UTC time
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;ifaddrs.h&gt;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">USES_NETLINK</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;asm/types.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;linux/netlink.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;linux/rtnetlink.h&gt;</span>
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">USES_NETLINK</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/route.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/if.h&gt;</span>
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">USES_NETLINK</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSUNP.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;GenLinkedList.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnsproxy.h&quot;</span>
+
+<span class="enscript-comment">// ***************************************************************************
+</span><span class="enscript-comment">// Structures
+</span>
+<span class="enscript-comment">// Context record for interface change callback
+</span><span class="enscript-type">struct</span> IfChangeRec
+{
+    <span class="enscript-type">int</span> NotifySD;
+    mDNS *mDNS;
+};
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> IfChangeRec IfChangeRec;
+
+<span class="enscript-comment">// Note that static data is initialized to zero in (modern) C.
+</span><span class="enscript-type">static</span> PosixEventSource *gEventSources;             <span class="enscript-comment">// linked list of PosixEventSource's
+</span><span class="enscript-type">static</span> sigset_t gEventSignalSet;                <span class="enscript-comment">// Signals which event loop listens for
+</span><span class="enscript-type">static</span> sigset_t gEventSignals;                  <span class="enscript-comment">// Signals which were received while inside loop
+</span>
+<span class="enscript-type">static</span> PosixNetworkInterface *gRecentInterfaces;
+
+<span class="enscript-comment">// ***************************************************************************
+</span><span class="enscript-comment">// Globals (for debugging)
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> num_registered_interfaces = 0;
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> num_pkts_accepted = 0;
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> num_pkts_rejected = 0;
+
+<span class="enscript-comment">// ***************************************************************************
+</span><span class="enscript-comment">// Locals
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">requestReadEvents</span>(PosixEventSource *eventSource,
+                                    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *taskName, mDNSPosixEventCallback callback, <span class="enscript-type">void</span> *context);
+mDNSlocal mStatus <span class="enscript-function-name">stopReadOrWriteEvents</span>(<span class="enscript-type">int</span> fd, mDNSBool freeSource, mDNSBool removeSource, <span class="enscript-type">int</span> flags);
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">requestWriteEvents</span>(PosixEventSource *eventSource,
+                                     <span class="enscript-type">const</span> <span class="enscript-type">char</span> *taskName, mDNSPosixEventCallback callback, <span class="enscript-type">void</span> *context);
+<span class="enscript-comment">// ***************************************************************************
+</span><span class="enscript-comment">// Functions
+</span>
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_MALLOC_DEBUGGING</span>
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformValidateLists</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-comment">// This should validate gEventSources and any other Posix-specific stuff that gets allocated.
+</span>}
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">int</span> gMDNSPlatformPosixVerboseLevel = 0;
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">PosixErrorToStatus</span>(errNum) ((errNum) == 0 ? mStatus_NoError : mStatus_UnknownErr)
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">SockAddrTomDNSAddr</span>(<span class="enscript-type">const</span> <span class="enscript-type">struct</span> sockaddr *<span class="enscript-type">const</span> sa, mDNSAddr *ipAddr, mDNSIPPort *ipPort)
+{
+    <span class="enscript-keyword">switch</span> (sa-&gt;sa_family)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">AF_INET</span>:
+    {
+        <span class="enscript-type">struct</span> sockaddr_in *sin          = (<span class="enscript-type">struct</span> sockaddr_in*)sa;
+        ipAddr-&gt;type                     = mDNSAddrType_IPv4;
+        ipAddr-&gt;ip.v4.NotAnInteger       = sin-&gt;sin_addr.s_addr;
+        <span class="enscript-keyword">if</span> (ipPort) ipPort-&gt;NotAnInteger = sin-&gt;sin_port;
+        <span class="enscript-keyword">break</span>;
+    }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">AF_INET6</span>:
+    {
+        <span class="enscript-type">struct</span> sockaddr_in6 *sin6        = (<span class="enscript-type">struct</span> sockaddr_in6*)sa;
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+        assert(sin6-&gt;sin6_len == <span class="enscript-keyword">sizeof</span>(*sin6));
+#<span class="enscript-reference">endif</span>
+        ipAddr-&gt;type                     = mDNSAddrType_IPv6;
+        ipAddr-&gt;ip.v6                    = *(mDNSv6Addr*)&amp;sin6-&gt;sin6_addr;
+        <span class="enscript-keyword">if</span> (ipPort) ipPort-&gt;NotAnInteger = sin6-&gt;sin6_port;
+        <span class="enscript-keyword">break</span>;
+    }
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-reference">default</span>:
+        verbosedebugf(<span class="enscript-string">&quot;SockAddrTomDNSAddr: Uknown address family %d\n&quot;</span>, sa-&gt;sa_family);
+        ipAddr-&gt;type = mDNSAddrType_None;
+        <span class="enscript-keyword">if</span> (ipPort) ipPort-&gt;NotAnInteger = 0;
+        <span class="enscript-keyword">break</span>;
+    }
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> ***** <span class="enscript-variable-name">Send</span> <span class="enscript-variable-name">and</span> <span class="enscript-variable-name">Receive</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// mDNS core calls this routine when it needs to send a packet.
+</span>mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformSendUDP</span>(<span class="enscript-type">const</span> mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end,
+                                       mDNSInterfaceID InterfaceID, UDPSocket *src, <span class="enscript-type">const</span> mDNSAddr *dst,
+                                       mDNSIPPort dstPort, mDNSBool useBackgroundTrafficClass)
+{
+    <span class="enscript-type">int</span> err = 0;
+    <span class="enscript-type">struct</span> sockaddr_storage to;
+    PosixNetworkInterface * thisIntf = (PosixNetworkInterface *)(InterfaceID);
+    <span class="enscript-type">int</span> sendingsocket = -1;
+
+    (<span class="enscript-type">void</span>)src;  <span class="enscript-comment">// Will need to use this parameter once we implement mDNSPlatformUDPSocket/mDNSPlatformUDPClose
+</span>    (<span class="enscript-type">void</span>) useBackgroundTrafficClass;
+
+    assert(m != NULL);
+    assert(msg != NULL);
+    assert(end != NULL);
+    assert((((<span class="enscript-type">char</span> *) end) - ((<span class="enscript-type">char</span> *) msg)) &gt; 0);
+
+    <span class="enscript-keyword">if</span> (dstPort.NotAnInteger == 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformSendUDP: Invalid argument -dstPort is set to 0&quot;</span>);
+        <span class="enscript-keyword">return</span> PosixErrorToStatus(EINVAL);
+    }
+    <span class="enscript-keyword">if</span> (dst-&gt;type == mDNSAddrType_IPv4)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in *sin = (<span class="enscript-type">struct</span> sockaddr_in*)&amp;to;
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+        sin-&gt;sin_len            = <span class="enscript-keyword">sizeof</span>(*sin);
+#<span class="enscript-reference">endif</span>
+        sin-&gt;sin_family         = AF_INET;
+        sin-&gt;sin_port           = dstPort.NotAnInteger;
+        sin-&gt;sin_addr.s_addr    = dst-&gt;ip.v4.NotAnInteger;
+        sendingsocket           = thisIntf ? thisIntf-&gt;multicastSocket4 : m-&gt;p-&gt;unicastSocket4;
+    }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (dst-&gt;type == mDNSAddrType_IPv6)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in6 *sin6 = (<span class="enscript-type">struct</span> sockaddr_in6*)&amp;to;
+        mDNSPlatformMemZero(sin6, <span class="enscript-keyword">sizeof</span>(*sin6));
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+        sin6-&gt;sin6_len            = <span class="enscript-keyword">sizeof</span>(*sin6);
+#<span class="enscript-reference">endif</span>
+        sin6-&gt;sin6_family         = AF_INET6;
+        sin6-&gt;sin6_port           = dstPort.NotAnInteger;
+        sin6-&gt;sin6_addr           = *(<span class="enscript-type">struct</span> in6_addr*)&amp;dst-&gt;ip.v6;
+        sendingsocket             = thisIntf ? thisIntf-&gt;multicastSocket6 : m-&gt;p-&gt;unicastSocket6;
+    }
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (sendingsocket &gt;= 0)
+        err = sendto(sendingsocket, msg, (<span class="enscript-type">char</span>*)end - (<span class="enscript-type">char</span>*)msg, 0, (<span class="enscript-type">struct</span> sockaddr *)&amp;to, GET_SA_LEN(to));
+
+    <span class="enscript-keyword">if</span>      (err &gt; 0) err = 0;
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (err &lt; 0)
+    {
+        <span class="enscript-type">static</span> <span class="enscript-type">int</span> MessageCount = 0;
+        <span class="enscript-comment">// Don't report EHOSTDOWN (i.e. ARP failure), ENETDOWN, or no route to host for unicast destinations
+</span>        <span class="enscript-keyword">if</span> (!mDNSAddressIsAllDNSLinkGroup(dst))
+            <span class="enscript-keyword">if</span> (errno == EHOSTDOWN || errno == ENETDOWN || errno == EHOSTUNREACH || errno == ENETUNREACH) <span class="enscript-keyword">return</span>(mStatus_TransientErr);
+
+        <span class="enscript-keyword">if</span> (MessageCount &lt; 1000)
+        {
+            MessageCount++;
+            <span class="enscript-keyword">if</span> (thisIntf)
+                LogMsg(<span class="enscript-string">&quot;mDNSPlatformSendUDP got error %d (%s) sending packet to %#a on interface %#a/%s/%d&quot;</span>,
+                       errno, strerror(errno), dst, &amp;thisIntf-&gt;coreIntf.ip, thisIntf-&gt;intfName, thisIntf-&gt;index);
+            <span class="enscript-keyword">else</span>
+                LogMsg(<span class="enscript-string">&quot;mDNSPlatformSendUDP got error %d (%s) sending packet to %#a&quot;</span>, errno, strerror(errno), dst);
+        }
+    }
+
+    <span class="enscript-keyword">return</span> PosixErrorToStatus(err);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">TCPReadCallback</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">void</span> *context)
+{
+    TCPSocket *sock = context;
+    (<span class="enscript-type">void</span>)fd;
+    
+    <span class="enscript-keyword">if</span> (sock-&gt;flags &amp; kTCPSocketFlags_UseTLS)
+    {
+        <span class="enscript-comment">// implement
+</span>    }
+    <span class="enscript-keyword">else</span>
+    {
+        sock-&gt;callback(sock, sock-&gt;context, mDNSfalse, sock-&gt;err);
+    }
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">tcpConnectCallback</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">void</span> *context)
+{
+    TCPSocket *sock = context;
+    mDNSBool c = !sock-&gt;connected;
+    <span class="enscript-type">int</span> result;
+    socklen_t len = <span class="enscript-keyword">sizeof</span> result;
+
+    sock-&gt;connected = mDNStrue;
+
+    <span class="enscript-keyword">if</span> (getsockopt(fd, SOL_SOCKET, SO_ERROR, &amp;result, &amp;len) &lt; 0)
+    {
+        LogInfo(<span class="enscript-string">&quot;ERROR: TCPConnectCallback - unable to get connect error: socket %d: Error %d (%s)&quot;</span>,
+               sock-&gt;events.fd, result, strerror(result));
+        sock-&gt;err = mStatus_ConnFailed;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-keyword">if</span> (result != 0)
+        {
+            sock-&gt;err = mStatus_ConnFailed;
+            <span class="enscript-keyword">if</span> (result == EHOSTUNREACH || result == EADDRNOTAVAIL || result == ENETDOWN)
+            {
+                LogInfo(<span class="enscript-string">&quot;ERROR: TCPConnectCallback - connect failed: socket %d: Error %d (%s)&quot;</span>,
+                        sock-&gt;events.fd, result, strerror(result));
+            }
+            <span class="enscript-keyword">else</span>
+            { 
+                LogMsg(<span class="enscript-string">&quot;ERROR: TCPConnectCallback - connect failed: socket %d: Error %d (%s)&quot;</span>,
+                       sock-&gt;events.fd, result, strerror(result));
+            }
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-comment">// The connection succeeded.
+</span>            sock-&gt;connected = mDNStrue;
+            <span class="enscript-comment">// Select for read events.
+</span>            sock-&gt;events.fd = fd;
+            requestReadEvents(&amp;sock-&gt;events, <span class="enscript-string">&quot;mDNSPosix::tcpConnectCallback&quot;</span>, TCPReadCallback, sock);
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (sock-&gt;callback)
+    {
+        sock-&gt;callback(sock, sock-&gt;context, c, sock-&gt;err);
+        <span class="enscript-comment">// Here sock must be assumed to be invalid, in case the callback freed it.
+</span>        <span class="enscript-keyword">return</span>;
+    }
+}
+
+<span class="enscript-comment">// This routine is called when the main loop detects that data is available on a socket.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">SocketDataReady</span>(mDNS *<span class="enscript-type">const</span> m, PosixNetworkInterface *intf, <span class="enscript-type">int</span> skt)
+{
+    mDNSAddr senderAddr, destAddr;
+    mDNSIPPort senderPort;
+    ssize_t packetLen;
+    DNSMessage packet;
+    <span class="enscript-type">struct</span> my_in_pktinfo packetInfo;
+    <span class="enscript-type">struct</span> sockaddr_storage from;
+    socklen_t fromLen;
+    <span class="enscript-type">int</span> flags;
+    mDNSu8 ttl;
+    mDNSBool reject;
+    <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID = intf ? intf-&gt;coreIntf.InterfaceID : NULL;
+
+    assert(m    != NULL);
+    assert(skt  &gt;= 0);
+
+    fromLen = <span class="enscript-keyword">sizeof</span>(from);
+    flags   = 0;
+    packetLen = recvfrom_flags(skt, &amp;packet, <span class="enscript-keyword">sizeof</span>(packet), &amp;flags, (<span class="enscript-type">struct</span> sockaddr *) &amp;from, &amp;fromLen, &amp;packetInfo, &amp;ttl);
+
+    <span class="enscript-keyword">if</span> (packetLen &gt;= 0)
+    {
+        SockAddrTomDNSAddr((<span class="enscript-type">struct</span> sockaddr*)&amp;from, &amp;senderAddr, &amp;senderPort);
+        SockAddrTomDNSAddr((<span class="enscript-type">struct</span> sockaddr*)&amp;packetInfo.ipi_addr, &amp;destAddr, NULL);
+
+        <span class="enscript-comment">// If we have broken IP_RECVDSTADDR functionality (so far
+</span>        <span class="enscript-comment">// I've only seen this on OpenBSD) then apply a hack to
+</span>        <span class="enscript-comment">// convince mDNS Core that this isn't a spoof packet.
+</span>        <span class="enscript-comment">// Basically what we do is check to see whether the
+</span>        <span class="enscript-comment">// packet arrived as a multicast and, if so, set its
+</span>        <span class="enscript-comment">// destAddr to the mDNS address.
+</span>        <span class="enscript-comment">//
+</span>        <span class="enscript-comment">// I must admit that I could just be doing something
+</span>        <span class="enscript-comment">// wrong on OpenBSD and hence triggering this problem
+</span>        <span class="enscript-comment">// but I'm at a loss as to how.
+</span>        <span class="enscript-comment">//
+</span>        <span class="enscript-comment">// If this platform doesn't have IP_PKTINFO or IP_RECVDSTADDR, then we have
+</span>        <span class="enscript-comment">// no way to tell the destination address or interface this packet arrived on,
+</span>        <span class="enscript-comment">// so all we can do is just assume it's a multicast
+</span>
+        #<span class="enscript-keyword">if</span> HAVE_BROKEN_RECVDSTADDR || (!defined(IP_PKTINFO) &amp;&amp; !defined(IP_RECVDSTADDR))
+        <span class="enscript-keyword">if</span> ((destAddr.NotAnInteger == 0) &amp;&amp; (flags &amp; MSG_MCAST))
+        {
+            destAddr.type = senderAddr.type;
+            <span class="enscript-keyword">if</span>      (senderAddr.type == mDNSAddrType_IPv4) destAddr.ip.v4 = AllDNSLinkGroup_v4.ip.v4;
+            <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (senderAddr.type == mDNSAddrType_IPv6) destAddr.ip.v6 = AllDNSLinkGroup_v6.ip.v6;
+        }
+        #endif
+
+        <span class="enscript-comment">// We only accept the packet if the interface on which it came
+</span>        <span class="enscript-comment">// in matches the interface associated with this socket.
+</span>        <span class="enscript-comment">// We do this match by name or by index, depending on which
+</span>        <span class="enscript-comment">// information is available.  recvfrom_flags sets the name
+</span>        <span class="enscript-comment">// to &quot;&quot; if the name isn't available, or the index to -1
+</span>        <span class="enscript-comment">// if the index is available.  This accomodates the various
+</span>        <span class="enscript-comment">// different capabilities of our target platforms.
+</span>
+        reject = mDNSfalse;
+        <span class="enscript-keyword">if</span> (!intf)
+        {
+            <span class="enscript-comment">// Ignore multicasts accidentally delivered to our unicast receiving socket
+</span>            <span class="enscript-keyword">if</span> (mDNSAddrIsDNSMulticast(&amp;destAddr)) packetLen = -1;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-keyword">if</span>      (packetInfo.ipi_ifname[0] != 0) reject = (strcmp(packetInfo.ipi_ifname, intf-&gt;intfName) != 0);
+            <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (packetInfo.ipi_ifindex != -1) reject = (packetInfo.ipi_ifindex != intf-&gt;index);
+
+            <span class="enscript-keyword">if</span> (reject)
+            {
+                verbosedebugf(<span class="enscript-string">&quot;SocketDataReady ignored a packet from %#a to %#a on interface %s/%d expecting %#a/%s/%d/%d&quot;</span>,
+                              &amp;senderAddr, &amp;destAddr, packetInfo.ipi_ifname, packetInfo.ipi_ifindex,
+                              &amp;intf-&gt;coreIntf.ip, intf-&gt;intfName, intf-&gt;index, skt);
+                packetLen = -1;
+                num_pkts_rejected++;
+                <span class="enscript-keyword">if</span> (num_pkts_rejected &gt; (num_pkts_accepted + 1) * (num_registered_interfaces + 1) * 2)
+                {
+                    fprintf(stderr,
+                            <span class="enscript-string">&quot;*** WARNING: Received %d packets; Accepted %d packets; Rejected %d packets because of interface mismatch\n&quot;</span>,
+                            num_pkts_accepted + num_pkts_rejected, num_pkts_accepted, num_pkts_rejected);
+                    num_pkts_accepted = 0;
+                    num_pkts_rejected = 0;
+                }
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                verbosedebugf(<span class="enscript-string">&quot;SocketDataReady got a packet from %#a to %#a on interface %#a/%s/%d/%d&quot;</span>,
+                              &amp;senderAddr, &amp;destAddr, &amp;intf-&gt;coreIntf.ip, intf-&gt;intfName, intf-&gt;index, skt);
+                num_pkts_accepted++;
+            }
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (packetLen &gt;= 0)
+        mDNSCoreReceive(m, &amp;packet, (mDNSu8 *)&amp;packet + packetLen,
+                        &amp;senderAddr, senderPort, &amp;destAddr, MulticastDNSPort, InterfaceID);
+}
+
+mDNSexport TCPSocket *<span class="enscript-function-name">mDNSPlatformTCPSocket</span>(TCPSocketFlags flags, mDNSAddr_Type addrType, mDNSIPPort * port,
+                                            domainname *hostname, mDNSBool useBackgroundTrafficClass)
+{
+    TCPSocket *sock;
+    <span class="enscript-type">int</span> len = <span class="enscript-keyword">sizeof</span> (TCPSocket);
+    
+    (<span class="enscript-type">void</span>)useBackgroundTrafficClass;
+
+    <span class="enscript-keyword">if</span> (hostname)
+    {
+        len += <span class="enscript-keyword">sizeof</span> (domainname);
+    }
+    sock = malloc(len); 
+
+    <span class="enscript-keyword">if</span> (sock == NULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPSocket: no memory for socket&quot;</span>);
+        <span class="enscript-keyword">return</span> NULL;
+    }
+    memset(sock, 0, <span class="enscript-keyword">sizeof</span> *sock);
+    
+    <span class="enscript-keyword">if</span> (hostname)
+    {
+        sock-&gt;hostname = (domainname *)(sock + 1);
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPSocket: hostname %##s&quot;</span>, hostname-&gt;c);
+        AssignDomainName(sock-&gt;hostname, hostname);
+    }
+    
+    sock-&gt;events.fd = -1;
+    <span class="enscript-keyword">if</span> (!mDNSPosixTCPSocketSetup(&amp;sock-&gt;events.fd, addrType, port, &amp;sock-&gt;port))
+    {
+      <span class="enscript-keyword">if</span> (sock-&gt;events.fd != -1) close(sock-&gt;events.fd);
+      free(sock);
+      <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+
+    <span class="enscript-comment">// Set up the other fields in the structure.
+</span>    sock-&gt;flags = flags;
+    sock-&gt;err = mStatus_NoError;
+    sock-&gt;setup = mDNSfalse;
+    sock-&gt;connected = mDNSfalse;
+    <span class="enscript-keyword">return</span> sock;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformTCPSocketSetCallback</span>(TCPSocket *sock, TCPConnectionCallback callback, <span class="enscript-type">void</span> *context)
+{
+    sock-&gt;callback = callback;
+    sock-&gt;context = context;
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSexport TCPSocket *<span class="enscript-function-name">mDNSPlatformTCPAccept</span>(TCPSocketFlags flags, <span class="enscript-type">int</span> fd)
+{
+    TCPSocket *sock;
+
+    <span class="enscript-comment">// XXX Add!
+</span>    <span class="enscript-keyword">if</span> (flags &amp; kTCPSocketFlags_UseTLS)
+    {
+    <span class="enscript-keyword">return</span> mDNSNULL; <span class="enscript-comment">// not supported yet.
+</span>    }
+
+    sock = (TCPSocket *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span> *sock);
+    <span class="enscript-keyword">if</span> (!sock)
+    {
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+
+    sock-&gt;events.fd = fd;
+    sock-&gt;flags = flags;
+    sock-&gt;connected = mDNStrue;
+    <span class="enscript-keyword">return</span> sock;
+}
+
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">tcpListenCallback</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">void</span> *context)
+{
+    TCPListener *listener = context;
+    TCPSocket *sock;
+    
+    sock = mDNSPosixDoTCPListenCallback(fd, listener-&gt;addressType, listener-&gt;socketFlags,
+                                 listener-&gt;callback, listener-&gt;context);
+    <span class="enscript-keyword">if</span> (sock != NULL)
+    {
+        requestReadEvents(&amp;sock-&gt;events, <span class="enscript-string">&quot;mDNSPosix::tcpListenCallback&quot;</span>, TCPReadCallback, sock);
+    }
+}
+
+mDNSexport TCPListener *<span class="enscript-function-name">mDNSPlatformTCPListen</span>(mDNSAddr_Type addrType, mDNSIPPort *port, mDNSAddr *addr,
+                                              TCPSocketFlags socketFlags, mDNSBool reuseAddr, <span class="enscript-type">int</span> queueLength,
+                                              TCPAcceptedCallback callback, <span class="enscript-type">void</span> *context)
+{
+    TCPListener *ret;
+    <span class="enscript-type">int</span> fd = -1;
+
+    <span class="enscript-keyword">if</span> (!mDNSPosixTCPListen(&amp;fd, addrType, port, addr, reuseAddr, queueLength))
+    {
+        <span class="enscript-keyword">if</span> (fd != -1)
+        {
+            close(fd);
+        }
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+    
+    <span class="enscript-comment">// Allocate a listener structure
+</span>    ret = (TCPListener *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span> *ret);
+    <span class="enscript-keyword">if</span> (ret == NULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPListen: no memory for TCPListener struct.&quot;</span>);
+        close(fd);
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+    ret-&gt;events.fd = fd;
+    ret-&gt;callback = callback;
+    ret-&gt;context = context;
+    ret-&gt;addressType = addrType;
+    ret-&gt;socketFlags = socketFlags;
+
+    <span class="enscript-comment">// When we get a connection, mDNSPosixListenCallback will be called, and it will invoke the
+</span>    <span class="enscript-comment">// callback we were passed.
+</span>    requestReadEvents(&amp;ret-&gt;events, <span class="enscript-string">&quot;tcpListenCallback&quot;</span>, tcpListenCallback, ret);
+    <span class="enscript-keyword">return</span> ret;
+}
+
+mDNSexport <span class="enscript-type">int</span> <span class="enscript-function-name">mDNSPlatformTCPGetFD</span>(TCPSocket *sock)
+{
+    <span class="enscript-keyword">return</span> sock-&gt;events.fd;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformTCPConnect</span>(TCPSocket *sock, <span class="enscript-type">const</span> mDNSAddr *dst, mDNSOpaque16 dstport,
+                                          mDNSInterfaceID InterfaceID, TCPConnectionCallback callback, <span class="enscript-type">void</span> *context)
+{
+    <span class="enscript-type">int</span> result;
+    <span class="enscript-type">union</span> {
+        <span class="enscript-type">struct</span> sockaddr sa;
+        <span class="enscript-type">struct</span> sockaddr_in sin;
+        <span class="enscript-type">struct</span> sockaddr_in6 sin6;
+    } addr;
+    socklen_t len;
+
+    sock-&gt;callback = callback;
+    sock-&gt;context = context;
+    sock-&gt;setup = mDNSfalse;
+    sock-&gt;connected = mDNSfalse;
+    sock-&gt;err = mStatus_NoError;
+
+    result = fcntl(sock-&gt;events.fd, F_GETFL, 0);
+    <span class="enscript-keyword">if</span> (result &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPConnect: F_GETFL failed: %s&quot;</span>, strerror(errno));
+        <span class="enscript-keyword">return</span> mStatus_UnknownErr;
+    }
+
+    result = fcntl(sock-&gt;events.fd, F_SETFL, result | O_NONBLOCK);
+    <span class="enscript-keyword">if</span> (result &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPConnect: F_SETFL failed: %s&quot;</span>, strerror(errno));
+        <span class="enscript-keyword">return</span> mStatus_UnknownErr;
+    }
+
+    <span class="enscript-comment">// If we've been asked to bind to a single interface, do it.  See comment in mDNSMacOSX.c for more info.
+</span>    <span class="enscript-keyword">if</span> (InterfaceID)
+    {
+        PosixNetworkInterface *iface = (PosixNetworkInterface *)InterfaceID;
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">SO_BINDTODEVICE</span>)
+        result = setsockopt(sock-&gt;events.fd,
+                            SOL_SOCKET, SO_BINDTODEVICE, iface-&gt;intfName, strlen(iface-&gt;intfName));
+        <span class="enscript-keyword">if</span> (result &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPConnect: SO_BINDTODEVICE failed on %s: %s&quot;</span>, iface-&gt;intfName, strerror(errno));
+            <span class="enscript-keyword">return</span> mStatus_BadParamErr;
+        }
+#<span class="enscript-reference">else</span>
+        <span class="enscript-keyword">if</span> (dst-&gt;type == mDNSAddrType_IPv4)
+        {
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">IP_BOUND_IF</span>)
+            result = setsockopt(sock-&gt;events.fd, IPPROTO_IP, IP_BOUND_IF, &amp;iface-&gt;index, <span class="enscript-keyword">sizeof</span> iface-&gt;index);
+            <span class="enscript-keyword">if</span> (result &lt; 0)
+            {
+                LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPConnect: IP_BOUND_IF failed on %s (%d): %s&quot;</span>,
+                       iface-&gt;intfName, iface-&gt;index, strerror(errno));
+                <span class="enscript-keyword">return</span> mStatus_BadParamErr;
+            }
+#<span class="enscript-reference">else</span>
+            (<span class="enscript-type">void</span>)iface;
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">IP_BOUND_IF</span>
+        }
+        <span class="enscript-keyword">else</span>
+        { <span class="enscript-comment">// IPv6
+</span>#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">IPV6_BOUND_IF</span>)
+            result = setsockopt(sock-&gt;events.fd, IPPROTO_IPV6, IPV6_BOUND_IF, &amp;iface-&gt;index, <span class="enscript-keyword">sizeof</span> iface-&gt;index);
+            <span class="enscript-keyword">if</span> (result &lt; 0)
+            {
+                LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPConnect: IP_BOUND_IF failed on %s (%d): %s&quot;</span>,
+                       iface-&gt;intfName, iface-&gt;index, strerror(errno));
+                <span class="enscript-keyword">return</span> mStatus_BadParamErr;
+            }
+#<span class="enscript-reference">else</span>
+            (<span class="enscript-type">void</span>)iface;
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">IPV6_BOUND_IF</span>
+        }           
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">SO_BINDTODEVICE</span>
+    }
+
+    memset(&amp;addr, 0, <span class="enscript-keyword">sizeof</span> addr);
+    <span class="enscript-keyword">if</span> (dst-&gt;type == mDNSAddrType_IPv4)
+    {
+        addr.sa.sa_family = AF_INET;
+        addr.sin.sin_port = dstport.NotAnInteger;
+        len = <span class="enscript-keyword">sizeof</span> (<span class="enscript-type">struct</span> sockaddr_in);
+        addr.sin.sin_addr.s_addr = dst-&gt;ip.v4.NotAnInteger;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        addr.sa.sa_family = AF_INET6;
+        len = <span class="enscript-keyword">sizeof</span> (<span class="enscript-type">struct</span> sockaddr_in6);
+        addr.sin6.sin6_port = dstport.NotAnInteger;
+        memcpy(&amp;addr.sin6.sin6_addr.s6_addr, &amp;dst-&gt;ip.v6, <span class="enscript-keyword">sizeof</span> addr.sin6.sin6_addr.s6_addr);
+    }
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+    addr.sa.sa_len = len;
+#<span class="enscript-reference">endif</span>
+
+    result = connect(sock-&gt;events.fd, (<span class="enscript-type">struct</span> sockaddr *)&amp;addr, len);
+    <span class="enscript-keyword">if</span> (result &lt; 0)
+    {
+        <span class="enscript-keyword">if</span> (errno == EINPROGRESS)
+        {
+            requestWriteEvents(&amp;sock-&gt;events, <span class="enscript-string">&quot;mDNSPlatformConnect&quot;</span>, tcpConnectCallback, sock);
+            <span class="enscript-keyword">return</span> mStatus_ConnPending;
+        }
+        <span class="enscript-keyword">if</span> (errno == EHOSTUNREACH || errno == EADDRNOTAVAIL || errno == ENETDOWN)
+        {
+            LogInfo(<span class="enscript-string">&quot;ERROR: mDNSPlatformTCPConnect - connect failed: socket %d: Error %d (%s)&quot;</span>,
+                    sock-&gt;events.fd, errno, strerror(errno));
+        }
+        <span class="enscript-keyword">else</span>
+        { 
+            LogMsg(<span class="enscript-string">&quot;ERROR: mDNSPlatformTCPConnect - connect failed: socket %d: Error %d (%s) length %d&quot;</span>,
+                   sock-&gt;events.fd, errno, strerror(errno), len);
+        }
+        <span class="enscript-keyword">return</span> mStatus_ConnFailed;
+    }       
+
+    LogMsg(<span class="enscript-string">&quot;NOTE: mDNSPlatformTCPConnect completed synchronously&quot;</span>);
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformTCPCloseConnection</span>(TCPSocket *sock)
+{
+    <span class="enscript-keyword">if</span> (sock)
+    { <span class="enscript-comment">// can sock really be NULL when this is called?
+</span>        shutdown(sock-&gt;events.fd, SHUT_RDWR);
+        stopReadOrWriteEvents(sock-&gt;events.fd, mDNSfalse, mDNStrue,
+                              PosixEventFlag_Read | PosixEventFlag_Write);
+        close(sock-&gt;events.fd);
+        free(sock);
+    }
+}
+
+mDNSexport <span class="enscript-type">long</span> <span class="enscript-function-name">mDNSPlatformReadTCP</span>(TCPSocket *sock, <span class="enscript-type">void</span> *buf, <span class="enscript-type">unsigned</span> <span class="enscript-type">long</span> buflen, mDNSBool * closed)
+{
+    ssize_t nread;
+    
+    *closed = mDNSfalse;
+    <span class="enscript-keyword">if</span> (sock-&gt;flags &amp; kTCPSocketFlags_UseTLS)
+    {
+        <span class="enscript-comment">// Implement...
+</span>        nread = -1;
+        *closed = mDNStrue;
+    } <span class="enscript-keyword">else</span> {
+        nread = mDNSPosixReadTCP(sock-&gt;events.fd, buf, buflen, closed);
+    }
+    <span class="enscript-keyword">return</span> nread;
+}
+
+mDNSexport mDNSBool <span class="enscript-function-name">mDNSPlatformTCPWritable</span>(TCPSocket *sock)
+{
+    fd_set w;
+    <span class="enscript-type">int</span> nfds = sock-&gt;events.fd + 1;
+    <span class="enscript-type">int</span> count;
+    <span class="enscript-type">struct</span> timeval tv;
+
+    <span class="enscript-keyword">if</span> (nfds &gt; FD_SETSIZE)
+    {
+        LogMsg(<span class="enscript-string">&quot;ERROR: mDNSPlatformTCPWritable called on an fd that won't fit in an fd_set.&quot;</span>);
+        <span class="enscript-keyword">return</span> mDNStrue; <span class="enscript-comment">// hope for the best?
+</span>    }
+    FD_SET(sock-&gt;events.fd, &amp;w);
+    tv.tv_sec = tv.tv_usec = 0;
+    count = select(nfds, NULL, &amp;w, NULL, &amp;tv);
+    <span class="enscript-keyword">if</span> (count &gt; 0)
+    {
+        <span class="enscript-keyword">return</span> mDNStrue;
+    }
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+mDNSexport <span class="enscript-type">long</span> <span class="enscript-function-name">mDNSPlatformWriteTCP</span>(TCPSocket *sock, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg, <span class="enscript-type">unsigned</span> <span class="enscript-type">long</span> len)
+{
+    <span class="enscript-keyword">if</span> (sock-&gt;flags &amp; kTCPSocketFlags_UseTLS)
+    {
+        <span class="enscript-comment">// implement
+</span>        <span class="enscript-keyword">return</span> -1;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-keyword">return</span> mDNSPosixWriteTCP(sock-&gt;events.fd, msg, len);
+    }
+}
+
+mDNSexport UDPSocket *<span class="enscript-function-name">mDNSPlatformUDPSocket</span>(mDNSIPPort port)
+{
+    (<span class="enscript-type">void</span>)port;         <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span> NULL;
+}
+
+mDNSexport <span class="enscript-type">void</span>           <span class="enscript-function-name">mDNSPlatformUDPClose</span>(UDPSocket *sock)
+{
+    (<span class="enscript-type">void</span>)sock;         <span class="enscript-comment">// Unused
+</span>}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformUpdateProxyList</span>(<span class="enscript-type">const</span> mDNSInterfaceID InterfaceID)
+{
+    (<span class="enscript-type">void</span>)InterfaceID;          <span class="enscript-comment">// Unused
+</span>}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformSendRawPacket</span>(<span class="enscript-type">const</span> <span class="enscript-type">void</span> *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end, mDNSInterfaceID InterfaceID)
+{
+    (<span class="enscript-type">void</span>)msg;          <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)end;          <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)InterfaceID;          <span class="enscript-comment">// Unused
+</span>}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformSetLocalAddressCacheEntry</span>(<span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> tpa, <span class="enscript-type">const</span> mDNSEthAddr *<span class="enscript-type">const</span> tha, mDNSInterfaceID InterfaceID)
+{
+    (<span class="enscript-type">void</span>)tpa;          <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)tha;          <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)InterfaceID;          <span class="enscript-comment">// Unused
+</span>}
+
+mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformTLSSetupCerts</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-keyword">return</span>(mStatus_UnsupportedErr);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformTLSTearDownCerts</span>(<span class="enscript-type">void</span>)
+{
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformSetAllowSleep</span>(mDNSBool allowSleep, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *reason)
+{
+    (<span class="enscript-type">void</span>) allowSleep;
+    (<span class="enscript-type">void</span>) reason;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> -
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - /<span class="enscript-variable-name">etc</span>/<span class="enscript-variable-name">hosts</span> <span class="enscript-variable-name">support</span>
+#<span class="enscript-reference">endif</span>
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">FreeEtcHosts</span>(mDNS *<span class="enscript-type">const</span> m, AuthRecord *<span class="enscript-type">const</span> rr, mStatus result)
+{
+    (<span class="enscript-type">void</span>)m;  <span class="enscript-comment">// unused
+</span>    (<span class="enscript-type">void</span>)rr;
+    (<span class="enscript-type">void</span>)result;
+}
+
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> ***** <span class="enscript-variable-name">DDNS</span> <span class="enscript-variable-name">Config</span> <span class="enscript-variable-name">Platform</span> <span class="enscript-variable-name">Functions</span>
+#<span class="enscript-reference">endif</span>
+
+mDNSexport mDNSBool <span class="enscript-function-name">mDNSPlatformSetDNSConfig</span>(mDNSBool setservers, mDNSBool setsearch, domainname *<span class="enscript-type">const</span> fqdn, DNameListElem **RegDomains,
+    DNameListElem **BrowseDomains, mDNSBool ackConfig)
+{
+    (<span class="enscript-type">void</span>) setservers;
+    (<span class="enscript-type">void</span>) setsearch;
+    (<span class="enscript-type">void</span>) ackConfig;
+
+    <span class="enscript-keyword">if</span> (fqdn         ) fqdn-&gt;c[0]      = 0;
+    <span class="enscript-keyword">if</span> (RegDomains   ) *RegDomains     = NULL;
+    <span class="enscript-keyword">if</span> (BrowseDomains) *BrowseDomains  = NULL;
+
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformGetPrimaryInterface</span>(mDNSAddr * v4, mDNSAddr * v6, mDNSAddr * router)
+{
+    (<span class="enscript-type">void</span>) v4;
+    (<span class="enscript-type">void</span>) v6;
+    (<span class="enscript-type">void</span>) router;
+
+    <span class="enscript-keyword">return</span> mStatus_UnsupportedErr;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformDynDNSHostNameStatusChanged</span>(<span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> dname, <span class="enscript-type">const</span> mStatus status)
+{
+    (<span class="enscript-type">void</span>) dname;
+    (<span class="enscript-type">void</span>) status;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> ***** <span class="enscript-variable-name">Init</span> <span class="enscript-variable-name">and</span> <span class="enscript-variable-name">Term</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// This gets the current hostname, truncating it at the first dot if necessary
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">GetUserSpecifiedRFC1034ComputerName</span>(domainlabel *<span class="enscript-type">const</span> namelabel)
+{
+    <span class="enscript-type">int</span> len = 0;
+    gethostname((<span class="enscript-type">char</span> *)(&amp;namelabel-&gt;c[1]), MAX_DOMAIN_LABEL);
+    <span class="enscript-keyword">while</span> (len &lt; MAX_DOMAIN_LABEL &amp;&amp; namelabel-&gt;c[len+1] &amp;&amp; namelabel-&gt;c[len+1] != <span class="enscript-string">'.'</span>) len++;
+    namelabel-&gt;c[0] = len;
+}
+
+<span class="enscript-comment">// On OS X this gets the text of the field labelled &quot;Computer Name&quot; in the Sharing Prefs Control Panel
+</span><span class="enscript-comment">// Other platforms can either get the information from the appropriate place,
+</span><span class="enscript-comment">// or they can alternatively just require all registering services to provide an explicit name
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">GetUserSpecifiedFriendlyComputerName</span>(domainlabel *<span class="enscript-type">const</span> namelabel)
+{
+    <span class="enscript-comment">// On Unix we have no better name than the host name, so we just use that.
+</span>    GetUserSpecifiedRFC1034ComputerName(namelabel);
+}
+
+mDNSexport <span class="enscript-type">int</span> <span class="enscript-function-name">ParseDNSServers</span>(mDNS *m, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *filePath)
+{
+    <span class="enscript-type">char</span> line[256];
+    <span class="enscript-type">char</span> nameserver[16];
+    <span class="enscript-type">char</span> keyword[11];
+    <span class="enscript-type">int</span> numOfServers = 0;
+    FILE *fp = fopen(filePath, <span class="enscript-string">&quot;r&quot;</span>);
+    <span class="enscript-keyword">if</span> (fp == NULL) <span class="enscript-keyword">return</span> -1;
+    <span class="enscript-keyword">while</span> (fgets(line,<span class="enscript-keyword">sizeof</span>(line),fp))
+    {
+        <span class="enscript-type">struct</span> in_addr ina;
+        line[255]=<span class="enscript-string">'\0'</span>;     <span class="enscript-comment">// just to be safe
+</span>        <span class="enscript-keyword">if</span> (sscanf(line,<span class="enscript-string">&quot;%10s %15s&quot;</span>, keyword, nameserver) != 2) <span class="enscript-keyword">continue</span>;   <span class="enscript-comment">// it will skip whitespaces
+</span>        <span class="enscript-keyword">if</span> (strncasecmp(keyword,<span class="enscript-string">&quot;nameserver&quot;</span>,10)) <span class="enscript-keyword">continue</span>;
+        <span class="enscript-keyword">if</span> (inet_aton(nameserver, (<span class="enscript-type">struct</span> in_addr *)&amp;ina) != 0)
+        {
+            mDNSAddr DNSAddr;
+            DNSAddr.type = mDNSAddrType_IPv4;
+            DNSAddr.ip.v4.NotAnInteger = ina.s_addr;
+            mDNS_AddDNSServer(m, NULL, mDNSInterface_Any, 0, &amp;DNSAddr, UnicastDNSPort, kScopeNone, 0, mDNSfalse, mDNSfalse, mDNSfalse, mDNSfalse, 0, mDNStrue, mDNStrue, mDNSfalse);
+            numOfServers++;
+        }
+    }
+    fclose(fp);
+    <span class="enscript-keyword">return</span> (numOfServers &gt; 0) ? 0 : -1;
+}
+
+<span class="enscript-comment">// Searches the interface list looking for the named interface.
+</span><span class="enscript-comment">// Returns a pointer to if it found, or NULL otherwise.
+</span>mDNSlocal PosixNetworkInterface *<span class="enscript-function-name">SearchForInterfaceByName</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *intfName)
+{
+    PosixNetworkInterface *intf;
+
+    assert(m != NULL);
+    assert(intfName != NULL);
+
+    intf = (PosixNetworkInterface*)(m-&gt;HostInterfaces);
+    <span class="enscript-keyword">while</span> ((intf != NULL) &amp;&amp; (strcmp(intf-&gt;intfName, intfName) != 0))
+        intf = (PosixNetworkInterface *)(intf-&gt;coreIntf.next);
+
+    <span class="enscript-keyword">return</span> intf;
+}
+
+mDNSexport mDNSInterfaceID <span class="enscript-function-name">mDNSPlatformInterfaceIDfromInterfaceIndex</span>(mDNS *<span class="enscript-type">const</span> m, mDNSu32 index)
+{
+    PosixNetworkInterface *intf;
+
+    assert(m != NULL);
+
+    <span class="enscript-keyword">if</span> (index == kDNSServiceInterfaceIndexLocalOnly) <span class="enscript-keyword">return</span>(mDNSInterface_LocalOnly);
+    <span class="enscript-keyword">if</span> (index == kDNSServiceInterfaceIndexP2P      ) <span class="enscript-keyword">return</span>(mDNSInterface_P2P);
+    <span class="enscript-keyword">if</span> (index == kDNSServiceInterfaceIndexAny      ) <span class="enscript-keyword">return</span>(mDNSInterface_Any);
+
+    intf = (PosixNetworkInterface*)(m-&gt;HostInterfaces);
+    <span class="enscript-keyword">while</span> ((intf != NULL) &amp;&amp; (mDNSu32) intf-&gt;index != index)
+        intf = (PosixNetworkInterface *)(intf-&gt;coreIntf.next);
+
+    <span class="enscript-keyword">return</span> (mDNSInterfaceID) intf;
+}
+
+mDNSexport mDNSu32 <span class="enscript-function-name">mDNSPlatformInterfaceIndexfromInterfaceID</span>(mDNS *<span class="enscript-type">const</span> m, mDNSInterfaceID id, mDNSBool suppressNetworkChange)
+{
+    PosixNetworkInterface *intf;
+    (<span class="enscript-type">void</span>) suppressNetworkChange; <span class="enscript-comment">// Unused
+</span>
+    assert(m != NULL);
+
+    <span class="enscript-keyword">if</span> (id == mDNSInterface_LocalOnly) <span class="enscript-keyword">return</span>(kDNSServiceInterfaceIndexLocalOnly);
+    <span class="enscript-keyword">if</span> (id == mDNSInterface_P2P      ) <span class="enscript-keyword">return</span>(kDNSServiceInterfaceIndexP2P);
+    <span class="enscript-keyword">if</span> (id == mDNSInterface_Any      ) <span class="enscript-keyword">return</span>(kDNSServiceInterfaceIndexAny);
+
+    intf = (PosixNetworkInterface*)(m-&gt;HostInterfaces);
+    <span class="enscript-keyword">while</span> ((intf != NULL) &amp;&amp; (mDNSInterfaceID) intf != id)
+        intf = (PosixNetworkInterface *)(intf-&gt;coreIntf.next);
+
+    <span class="enscript-keyword">if</span> (intf) <span class="enscript-keyword">return</span> intf-&gt;index;
+
+    <span class="enscript-comment">// If we didn't find the interface, check the RecentInterfaces list as well
+</span>    intf = gRecentInterfaces;
+    <span class="enscript-keyword">while</span> ((intf != NULL) &amp;&amp; (mDNSInterfaceID) intf != id)
+        intf = (PosixNetworkInterface *)(intf-&gt;coreIntf.next);
+
+    <span class="enscript-keyword">return</span> intf ? intf-&gt;index : 0;
+}
+
+<span class="enscript-comment">// Frees the specified PosixNetworkInterface structure. The underlying
+</span><span class="enscript-comment">// interface must have already been deregistered with the mDNS core.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">FreePosixNetworkInterface</span>(PosixNetworkInterface *intf)
+{
+    <span class="enscript-type">int</span> rv;
+    assert(intf != NULL);
+    <span class="enscript-keyword">if</span> (intf-&gt;intfName != NULL) free((<span class="enscript-type">void</span> *)intf-&gt;intfName);
+    <span class="enscript-keyword">if</span> (intf-&gt;multicastSocket4 != -1)
+    {
+        rv = close(intf-&gt;multicastSocket4);
+        assert(rv == 0);
+    }
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    <span class="enscript-keyword">if</span> (intf-&gt;multicastSocket6 != -1)
+    {
+        rv = close(intf-&gt;multicastSocket6);
+        assert(rv == 0);
+    }
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-comment">// Move interface to the RecentInterfaces list for a minute
+</span>    intf-&gt;LastSeen = mDNSPlatformUTC();
+    intf-&gt;coreIntf.next = &amp;gRecentInterfaces-&gt;coreIntf;
+    gRecentInterfaces = intf;
+}
+
+<span class="enscript-comment">// Grab the first interface, deregister it, free it, and repeat until done.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">ClearInterfaceList</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    assert(m != NULL);
+
+    <span class="enscript-keyword">while</span> (m-&gt;HostInterfaces)
+    {
+        PosixNetworkInterface *intf = (PosixNetworkInterface*)(m-&gt;HostInterfaces);
+        mDNS_DeregisterInterface(m, &amp;intf-&gt;coreIntf, NormalActivation);
+        <span class="enscript-keyword">if</span> (gMDNSPlatformPosixVerboseLevel &gt; 0) fprintf(stderr, <span class="enscript-string">&quot;Deregistered interface %s\n&quot;</span>, intf-&gt;intfName);
+        FreePosixNetworkInterface(intf);
+    }
+    num_registered_interfaces = 0;
+    num_pkts_accepted = 0;
+    num_pkts_rejected = 0;
+}
+
+<span class="enscript-comment">// Sets up a send/receive socket.
+</span><span class="enscript-comment">// If mDNSIPPort port is non-zero, then it's a multicast socket on the specified interface
+</span><span class="enscript-comment">// If mDNSIPPort port is zero, then it's a randomly assigned port number, used for sending unicast queries
+</span>mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">SetupSocket</span>(<span class="enscript-type">struct</span> sockaddr *intfAddr, mDNSIPPort port, <span class="enscript-type">int</span> interfaceIndex, <span class="enscript-type">int</span> *sktPtr)
+{
+    <span class="enscript-type">int</span> err = 0;
+    <span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">int</span> kOn = 1;
+    <span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">int</span> kIntTwoFiveFive = 255;
+    <span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> kByteTwoFiveFive = 255;
+    <span class="enscript-type">const</span> mDNSBool JoinMulticastGroup = (port.NotAnInteger != 0);
+
+    (<span class="enscript-type">void</span>) interfaceIndex;  <span class="enscript-comment">// This parameter unused on plaforms that don't have IPv6
+</span>    assert(intfAddr != NULL);
+    assert(sktPtr != NULL);
+    assert(*sktPtr == -1);
+
+    <span class="enscript-comment">// Open the socket...
+</span>    <span class="enscript-keyword">if</span>      (intfAddr-&gt;sa_family == AF_INET) *sktPtr = socket(PF_INET,  SOCK_DGRAM, IPPROTO_UDP);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (intfAddr-&gt;sa_family == AF_INET6) *sktPtr = socket(PF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">return</span> EINVAL;
+
+    <span class="enscript-keyword">if</span> (*sktPtr &lt; 0) { err = errno; perror((intfAddr-&gt;sa_family == AF_INET) ? <span class="enscript-string">&quot;socket AF_INET&quot;</span> : <span class="enscript-string">&quot;socket AF_INET6&quot;</span>); }
+
+    <span class="enscript-comment">// ... with a shared UDP port, if it's for multicast receiving
+</span>    <span class="enscript-keyword">if</span> (err == 0 &amp;&amp; port.NotAnInteger)
+    {
+        <span class="enscript-comment">// &lt;rdar://problem/20946253&gt; Suggestions from Jonny Törnbom at Axis Communications
+</span>        <span class="enscript-comment">// We test for SO_REUSEADDR first, as suggested by Jonny Törnbom from Axis Communications
+</span>        <span class="enscript-comment">// Linux kernel versions 3.9 introduces support for socket option
+</span>        <span class="enscript-comment">// SO_REUSEPORT, however this is not implemented the same as on *BSD
+</span>        <span class="enscript-comment">// systems. Linux version implements a &quot;port hijacking&quot; prevention
+</span>        <span class="enscript-comment">// mechanism, limiting processes wanting to bind to an already existing
+</span>        <span class="enscript-comment">// addr:port to have the same effective UID as the first who bound it. What
+</span>        <span class="enscript-comment">// this meant for us was that the daemon ran as one user and when for
+</span>        <span class="enscript-comment">// instance mDNSClientPosix was executed by another user, it wasn't allowed
+</span>        <span class="enscript-comment">// to bind to the socket. Our suggestion was to switch the order in which
+</span>        <span class="enscript-comment">// SO_REUSEPORT and SO_REUSEADDR was tested so that SO_REUSEADDR stays on
+</span>        <span class="enscript-comment">// top and SO_REUSEPORT to be used only if SO_REUSEADDR doesn't exist.
+</span>        #<span class="enscript-keyword">if</span> defined(SO_REUSEADDR) &amp;&amp; !defined(__MAC_OS_X_VERSION_MIN_REQUIRED)
+        err = setsockopt(*sktPtr, SOL_SOCKET, SO_REUSEADDR, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+        #elif defined(SO_REUSEPORT)
+        err = setsockopt(*sktPtr, SOL_SOCKET, SO_REUSEPORT, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+        #<span class="enscript-keyword">else</span>
+            #error This platform has no way to avoid address busy errors on multicast.
+        #endif
+        <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - SO_REUSExxxx&quot;</span>); }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TARGET_OS_MAC</span>
+        <span class="enscript-comment">// Enable inbound packets on IFEF_AWDL interface.
+</span>        <span class="enscript-comment">// Only done for multicast sockets, since we don't expect unicast socket operations
+</span>        <span class="enscript-comment">// on the IFEF_AWDL interface. Operation is a no-op for other interface types.
+</span>        #ifndef SO_RECV_ANYIF
+        #define SO_RECV_ANYIF   0x1104      <span class="enscript-comment">/* unrestricted inbound processing */</span>
+        #endif
+        <span class="enscript-keyword">if</span> (setsockopt(*sktPtr, SOL_SOCKET, SO_RECV_ANYIF, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn)) &lt; 0) perror(<span class="enscript-string">&quot;setsockopt - SO_RECV_ANYIF&quot;</span>);
+#<span class="enscript-reference">endif</span>
+    }
+
+    <span class="enscript-comment">// We want to receive destination addresses and interface identifiers.
+</span>    <span class="enscript-keyword">if</span> (intfAddr-&gt;sa_family == AF_INET)
+    {
+        <span class="enscript-type">struct</span> ip_mreq imr;
+        <span class="enscript-type">struct</span> sockaddr_in bindAddr;
+        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            #<span class="enscript-keyword">if</span> defined(IP_PKTINFO)                                 <span class="enscript-comment">// Linux
+</span>            err = setsockopt(*sktPtr, IPPROTO_IP, IP_PKTINFO, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IP_PKTINFO&quot;</span>); }
+            #elif defined(IP_RECVDSTADDR) || defined(IP_RECVIF)     <span class="enscript-comment">// BSD and Solaris
+</span>                #<span class="enscript-keyword">if</span> defined(IP_RECVDSTADDR)
+            err = setsockopt(*sktPtr, IPPROTO_IP, IP_RECVDSTADDR, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IP_RECVDSTADDR&quot;</span>); }
+                #endif
+                #<span class="enscript-keyword">if</span> defined(IP_RECVIF)
+            <span class="enscript-keyword">if</span> (err == 0)
+            {
+                err = setsockopt(*sktPtr, IPPROTO_IP, IP_RECVIF, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+                <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IP_RECVIF&quot;</span>); }
+            }
+                #endif
+            #<span class="enscript-keyword">else</span>
+                #warning This platform has no way to get the destination interface information -- will only work <span class="enscript-keyword">for</span> single-homed hosts
+            #endif
+        }
+    #<span class="enscript-keyword">if</span> defined(IP_RECVTTL)                                 <span class="enscript-comment">// Linux
+</span>        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            setsockopt(*sktPtr, IPPROTO_IP, IP_RECVTTL, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+            <span class="enscript-comment">// We no longer depend on being able to get the received TTL, so don't worry if the option fails
+</span>        }
+    #endif
+
+        <span class="enscript-comment">// Add multicast group membership on this interface
+</span>        <span class="enscript-keyword">if</span> (err == 0 &amp;&amp; JoinMulticastGroup)
+        {
+            imr.imr_multiaddr.s_addr = AllDNSLinkGroup_v4.ip.v4.NotAnInteger;
+            imr.imr_interface        = ((<span class="enscript-type">struct</span> sockaddr_in*)intfAddr)-&gt;sin_addr;
+            err = setsockopt(*sktPtr, IPPROTO_IP, IP_ADD_MEMBERSHIP, &amp;imr, <span class="enscript-keyword">sizeof</span>(imr));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IP_ADD_MEMBERSHIP&quot;</span>); }
+        }
+
+        <span class="enscript-comment">// Specify outgoing interface too
+</span>        <span class="enscript-keyword">if</span> (err == 0 &amp;&amp; JoinMulticastGroup)
+        {
+            err = setsockopt(*sktPtr, IPPROTO_IP, IP_MULTICAST_IF, &amp;((<span class="enscript-type">struct</span> sockaddr_in*)intfAddr)-&gt;sin_addr, <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> in_addr));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IP_MULTICAST_IF&quot;</span>); }
+        }
+
+        <span class="enscript-comment">// Per the mDNS spec, send unicast packets with TTL 255
+</span>        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            err = setsockopt(*sktPtr, IPPROTO_IP, IP_TTL, &amp;kIntTwoFiveFive, <span class="enscript-keyword">sizeof</span>(kIntTwoFiveFive));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IP_TTL&quot;</span>); }
+        }
+
+        <span class="enscript-comment">// and multicast packets with TTL 255 too
+</span>        <span class="enscript-comment">// There's some debate as to whether IP_MULTICAST_TTL is an int or a byte so we just try both.
+</span>        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            err = setsockopt(*sktPtr, IPPROTO_IP, IP_MULTICAST_TTL, &amp;kByteTwoFiveFive, <span class="enscript-keyword">sizeof</span>(kByteTwoFiveFive));
+            <span class="enscript-keyword">if</span> (err &lt; 0 &amp;&amp; errno == EINVAL)
+                err = setsockopt(*sktPtr, IPPROTO_IP, IP_MULTICAST_TTL, &amp;kIntTwoFiveFive, <span class="enscript-keyword">sizeof</span>(kIntTwoFiveFive));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IP_MULTICAST_TTL&quot;</span>); }
+        }
+
+        <span class="enscript-comment">// And start listening for packets
+</span>        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            bindAddr.sin_family      = AF_INET;
+            bindAddr.sin_port        = port.NotAnInteger;
+            bindAddr.sin_addr.s_addr = INADDR_ANY; <span class="enscript-comment">// Want to receive multicasts AND unicasts on this socket
+</span>            err = bind(*sktPtr, (<span class="enscript-type">struct</span> sockaddr *) &amp;bindAddr, <span class="enscript-keyword">sizeof</span>(bindAddr));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;bind&quot;</span>); fflush(stderr); }
+        }
+    }     <span class="enscript-comment">// endif (intfAddr-&gt;sa_family == AF_INET)
+</span>
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (intfAddr-&gt;sa_family == AF_INET6)
+    {
+        <span class="enscript-type">struct</span> ipv6_mreq imr6;
+        <span class="enscript-type">struct</span> sockaddr_in6 bindAddr6;
+    #<span class="enscript-keyword">if</span> defined(IPV6_PKTINFO)
+        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            err = setsockopt(*sktPtr, IPPROTO_IPV6, IPV6_2292_PKTINFO, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IPV6_PKTINFO&quot;</span>); }
+        }
+    #<span class="enscript-keyword">else</span>
+        #warning This platform has no way to get the destination interface information <span class="enscript-keyword">for</span> IPv6 -- will only work <span class="enscript-keyword">for</span> single-homed hosts
+    #endif
+    #<span class="enscript-keyword">if</span> defined(IPV6_HOPLIMIT)
+        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            err = setsockopt(*sktPtr, IPPROTO_IPV6, IPV6_2292_HOPLIMIT, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IPV6_HOPLIMIT&quot;</span>); }
+        }
+    #endif
+
+        <span class="enscript-comment">// Add multicast group membership on this interface
+</span>        <span class="enscript-keyword">if</span> (err == 0 &amp;&amp; JoinMulticastGroup)
+        {
+            imr6.ipv6mr_multiaddr       = *(<span class="enscript-type">const</span> <span class="enscript-type">struct</span> in6_addr*)&amp;AllDNSLinkGroup_v6.ip.v6;
+            imr6.ipv6mr_interface       = interfaceIndex;
+            <span class="enscript-comment">//LogMsg(&quot;Joining %.16a on %d&quot;, &amp;imr6.ipv6mr_multiaddr, imr6.ipv6mr_interface);
+</span>            err = setsockopt(*sktPtr, IPPROTO_IPV6, IPV6_JOIN_GROUP, &amp;imr6, <span class="enscript-keyword">sizeof</span>(imr6));
+            <span class="enscript-keyword">if</span> (err &lt; 0)
+            {
+                err = errno;
+                verbosedebugf(<span class="enscript-string">&quot;IPV6_JOIN_GROUP %.16a on %d failed.\n&quot;</span>, &amp;imr6.ipv6mr_multiaddr, imr6.ipv6mr_interface);
+                perror(<span class="enscript-string">&quot;setsockopt - IPV6_JOIN_GROUP&quot;</span>);
+            }
+        }
+
+        <span class="enscript-comment">// Specify outgoing interface too
+</span>        <span class="enscript-keyword">if</span> (err == 0 &amp;&amp; JoinMulticastGroup)
+        {
+            u_int multicast_if = interfaceIndex;
+            err = setsockopt(*sktPtr, IPPROTO_IPV6, IPV6_MULTICAST_IF, &amp;multicast_if, <span class="enscript-keyword">sizeof</span>(multicast_if));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IPV6_MULTICAST_IF&quot;</span>); }
+        }
+
+        <span class="enscript-comment">// We want to receive only IPv6 packets on this socket.
+</span>        <span class="enscript-comment">// Without this option, we may get IPv4 addresses as mapped addresses.
+</span>        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            err = setsockopt(*sktPtr, IPPROTO_IPV6, IPV6_V6ONLY, &amp;kOn, <span class="enscript-keyword">sizeof</span>(kOn));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IPV6_V6ONLY&quot;</span>); }
+        }
+
+        <span class="enscript-comment">// Per the mDNS spec, send unicast packets with TTL 255
+</span>        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            err = setsockopt(*sktPtr, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &amp;kIntTwoFiveFive, <span class="enscript-keyword">sizeof</span>(kIntTwoFiveFive));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IPV6_UNICAST_HOPS&quot;</span>); }
+        }
+
+        <span class="enscript-comment">// and multicast packets with TTL 255 too
+</span>        <span class="enscript-comment">// There's some debate as to whether IPV6_MULTICAST_HOPS is an int or a byte so we just try both.
+</span>        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            err = setsockopt(*sktPtr, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &amp;kByteTwoFiveFive, <span class="enscript-keyword">sizeof</span>(kByteTwoFiveFive));
+            <span class="enscript-keyword">if</span> (err &lt; 0 &amp;&amp; errno == EINVAL)
+                err = setsockopt(*sktPtr, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &amp;kIntTwoFiveFive, <span class="enscript-keyword">sizeof</span>(kIntTwoFiveFive));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;setsockopt - IPV6_MULTICAST_HOPS&quot;</span>); }
+        }
+
+        <span class="enscript-comment">// And start listening for packets
+</span>        <span class="enscript-keyword">if</span> (err == 0)
+        {
+            mDNSPlatformMemZero(&amp;bindAddr6, <span class="enscript-keyword">sizeof</span>(bindAddr6));
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+            bindAddr6.sin6_len         = <span class="enscript-keyword">sizeof</span>(bindAddr6);
+#<span class="enscript-reference">endif</span>
+            bindAddr6.sin6_family      = AF_INET6;
+            bindAddr6.sin6_port        = port.NotAnInteger;
+            bindAddr6.sin6_flowinfo    = 0;
+            bindAddr6.sin6_addr        = in6addr_any; <span class="enscript-comment">// Want to receive multicasts AND unicasts on this socket
+</span>            bindAddr6.sin6_scope_id    = 0;
+            err = bind(*sktPtr, (<span class="enscript-type">struct</span> sockaddr *) &amp;bindAddr6, <span class="enscript-keyword">sizeof</span>(bindAddr6));
+            <span class="enscript-keyword">if</span> (err &lt; 0) { err = errno; perror(<span class="enscript-string">&quot;bind&quot;</span>); fflush(stderr); }
+        }
+    }     <span class="enscript-comment">// endif (intfAddr-&gt;sa_family == AF_INET6)
+</span>#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-comment">// Set the socket to non-blocking.
+</span>    <span class="enscript-keyword">if</span> (err == 0)
+    {
+        err = fcntl(*sktPtr, F_GETFL, 0);
+        <span class="enscript-keyword">if</span> (err &lt; 0) err = errno;
+        <span class="enscript-keyword">else</span>
+        {
+            err = fcntl(*sktPtr, F_SETFL, err | O_NONBLOCK);
+            <span class="enscript-keyword">if</span> (err &lt; 0) err = errno;
+        }
+    }
+
+    <span class="enscript-comment">// Clean up
+</span>    <span class="enscript-keyword">if</span> (err != 0 &amp;&amp; *sktPtr != -1)
+    {
+        <span class="enscript-type">int</span> rv;
+        rv = close(*sktPtr);
+        assert(rv == 0);
+        *sktPtr = -1;
+    }
+    assert((err == 0) == (*sktPtr != -1));
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-comment">// Creates a PosixNetworkInterface for the interface whose IP address is
+</span><span class="enscript-comment">// intfAddr and whose name is intfName and registers it with mDNS core.
+</span>mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">SetupOneInterface</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">struct</span> sockaddr *intfAddr, <span class="enscript-type">struct</span> sockaddr *intfMask, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *intfName, <span class="enscript-type">int</span> intfIndex)
+{
+    <span class="enscript-type">int</span> err = 0;
+    PosixNetworkInterface *intf;
+    PosixNetworkInterface *alias = NULL;
+
+    assert(m != NULL);
+    assert(intfAddr != NULL);
+    assert(intfName != NULL);
+    assert(intfMask != NULL);
+
+    <span class="enscript-comment">// Allocate the interface structure itself.
+</span>    intf = (PosixNetworkInterface*)calloc(1, <span class="enscript-keyword">sizeof</span>(*intf));
+    <span class="enscript-keyword">if</span> (intf == NULL) { assert(0); err = ENOMEM; }
+
+    <span class="enscript-comment">// And make a copy of the intfName.
+</span>    <span class="enscript-keyword">if</span> (err == 0)
+    {
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">LINUX</span>
+        <span class="enscript-type">char</span> *s;
+        <span class="enscript-type">int</span> len;
+        s = strchr(intfName, <span class="enscript-string">':'</span>);
+        <span class="enscript-keyword">if</span> (s != NULL)
+        {
+            len = (s - intfName) + 1;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            len = strlen(intfName) + 1;
+        }
+        intf-&gt;intfName = malloc(len);
+        <span class="enscript-keyword">if</span> (intf-&gt;intfName == NULL) { assert(0); err = ENOMEM; }
+        memcpy(intf-&gt;intfName, intfName, len - 1);
+        intfName[len - 1] = 0;
+#<span class="enscript-reference">else</span>
+        intf-&gt;intfName = strdup(intfName);
+        <span class="enscript-keyword">if</span> (intf-&gt;intfName == NULL) { assert(0); err = ENOMEM; }
+#<span class="enscript-reference">endif</span>
+    }
+
+    <span class="enscript-keyword">if</span> (err == 0)
+    {
+        <span class="enscript-comment">// Set up the fields required by the mDNS core.
+</span>        SockAddrTomDNSAddr(intfAddr, &amp;intf-&gt;coreIntf.ip, NULL);
+        SockAddrTomDNSAddr(intfMask, &amp;intf-&gt;coreIntf.mask, NULL);
+
+        <span class="enscript-comment">//LogMsg(&quot;SetupOneInterface: %#a %#a&quot;,  &amp;intf-&gt;coreIntf.ip,  &amp;intf-&gt;coreIntf.mask);
+</span>        strncpy(intf-&gt;coreIntf.ifname, intfName, <span class="enscript-keyword">sizeof</span>(intf-&gt;coreIntf.ifname));
+        intf-&gt;coreIntf.ifname[<span class="enscript-keyword">sizeof</span>(intf-&gt;coreIntf.ifname)-1] = 0;
+
+        intf-&gt;coreIntf.Advertise = m-&gt;AdvertiseLocalAddresses;
+        intf-&gt;coreIntf.McastTxRx = mDNStrue;
+
+        <span class="enscript-comment">// Set up the extra fields in PosixNetworkInterface.
+</span>        assert(intf-&gt;intfName != NULL);         <span class="enscript-comment">// intf-&gt;intfName already set up above
+</span>        intf-&gt;index                = intfIndex;
+        intf-&gt;multicastSocket4     = -1;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+        intf-&gt;multicastSocket6     = -1;
+#<span class="enscript-reference">endif</span>
+        alias                      = SearchForInterfaceByName(m, intf-&gt;intfName);
+        <span class="enscript-keyword">if</span> (alias == NULL) alias   = intf;
+        intf-&gt;coreIntf.InterfaceID = (mDNSInterfaceID)alias;
+
+        <span class="enscript-keyword">if</span> (alias != intf)
+            debugf(<span class="enscript-string">&quot;SetupOneInterface: %s %#a is an alias of %#a&quot;</span>, intfName, &amp;intf-&gt;coreIntf.ip, &amp;alias-&gt;coreIntf.ip);
+    }
+
+    <span class="enscript-comment">// Set up the multicast socket
+</span>    <span class="enscript-keyword">if</span> (err == 0)
+    {
+        <span class="enscript-keyword">if</span> (alias-&gt;multicastSocket4 == -1 &amp;&amp; intfAddr-&gt;sa_family == AF_INET)
+            err = SetupSocket(intfAddr, MulticastDNSPort, intf-&gt;index, &amp;alias-&gt;multicastSocket4);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (alias-&gt;multicastSocket6 == -1 &amp;&amp; intfAddr-&gt;sa_family == AF_INET6)
+            err = SetupSocket(intfAddr, MulticastDNSPort, intf-&gt;index, &amp;alias-&gt;multicastSocket6);
+#<span class="enscript-reference">endif</span>
+    }
+
+    <span class="enscript-comment">// If interface is a direct link, address record will be marked as kDNSRecordTypeKnownUnique
+</span>    <span class="enscript-comment">// and skip the probe phase of the probe/announce packet sequence.
+</span>    intf-&gt;coreIntf.DirectLink = mDNSfalse;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DIRECTLINK_INTERFACE_NAME</span>
+    <span class="enscript-keyword">if</span> (strcmp(intfName, STRINGIFY(DIRECTLINK_INTERFACE_NAME)) == 0)
+        intf-&gt;coreIntf.DirectLink = mDNStrue;
+#<span class="enscript-reference">endif</span>
+    intf-&gt;coreIntf.SupportsUnicastMDNSResponse = mDNStrue;
+
+    <span class="enscript-comment">// The interface is all ready to go, let's register it with the mDNS core.
+</span>    <span class="enscript-keyword">if</span> (err == 0)
+        err = mDNS_RegisterInterface(m, &amp;intf-&gt;coreIntf, NormalActivation);
+
+    <span class="enscript-comment">// Clean up.
+</span>    <span class="enscript-keyword">if</span> (err == 0)
+    {
+        num_registered_interfaces++;
+        debugf(<span class="enscript-string">&quot;SetupOneInterface: %s %#a Registered&quot;</span>, intf-&gt;intfName, &amp;intf-&gt;coreIntf.ip);
+        <span class="enscript-keyword">if</span> (gMDNSPlatformPosixVerboseLevel &gt; 0)
+            fprintf(stderr, <span class="enscript-string">&quot;Registered interface %s\n&quot;</span>, intf-&gt;intfName);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-comment">// Use intfName instead of intf-&gt;intfName in the next line to avoid dereferencing NULL.
+</span>        debugf(<span class="enscript-string">&quot;SetupOneInterface: %s %#a failed to register %d&quot;</span>, intfName, &amp;intf-&gt;coreIntf.ip, err);
+        <span class="enscript-keyword">if</span> (intf) { FreePosixNetworkInterface(intf); intf = NULL; }
+    }
+
+    assert((err == 0) == (intf != NULL));
+
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-comment">// Call get_ifi_info() to obtain a list of active interfaces and call SetupOneInterface() on each one.
+</span>mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">SetupInterfaceList</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    mDNSBool foundav4       = mDNSfalse;
+    <span class="enscript-type">int</span> err            = 0;
+    <span class="enscript-type">struct</span> ifaddrs *intfList;
+    <span class="enscript-type">struct</span> ifaddrs *firstLoopback = NULL;
+    <span class="enscript-type">int</span> firstLoopbackIndex = 0;
+
+    assert(m != NULL);
+    debugf(<span class="enscript-string">&quot;SetupInterfaceList&quot;</span>);
+
+    <span class="enscript-keyword">if</span> (getifaddrs(&amp;intfList) &lt; 0)
+    {
+        err = errno;
+    }
+    <span class="enscript-keyword">if</span> (intfList == NULL) err = ENOENT;
+
+    <span class="enscript-keyword">if</span> (err == 0)
+    {
+        <span class="enscript-type">struct</span> ifaddrs *i = intfList;
+        <span class="enscript-keyword">while</span> (i)
+        {
+            <span class="enscript-keyword">if</span> (     ((i-&gt;ifa_addr-&gt;sa_family == AF_INET)
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+                      || (i-&gt;ifa_addr-&gt;sa_family == AF_INET6)
+#<span class="enscript-reference">endif</span>
+                      ) &amp;&amp;  (i-&gt;ifa_flags &amp; IFF_UP) &amp;&amp; !(i-&gt;ifa_flags &amp; IFF_POINTOPOINT))
+            {
+                <span class="enscript-type">int</span> ifIndex = if_nametoindex(i-&gt;ifa_name);
+                <span class="enscript-keyword">if</span> (ifIndex == 0)
+                {
+                    <span class="enscript-keyword">continue</span>;
+                }
+                <span class="enscript-keyword">if</span> (i-&gt;ifa_flags &amp; IFF_LOOPBACK)
+                {
+                    <span class="enscript-keyword">if</span> (firstLoopback == NULL)
+                    {
+                        firstLoopback = i;
+                        firstLoopbackIndex = ifIndex;
+                    }
+                }
+                <span class="enscript-keyword">else</span>
+                {
+                    <span class="enscript-keyword">if</span> (SetupOneInterface(m, i-&gt;ifa_addr, i-&gt;ifa_netmask, i-&gt;ifa_name, ifIndex) == 0)
+                    {
+                        <span class="enscript-keyword">if</span> (i-&gt;ifa_addr-&gt;sa_family == AF_INET)
+                        {
+                            foundav4 = mDNStrue;
+                        }
+                    }
+                }
+            }
+            i = i-&gt;ifa_next;
+        }
+
+        <span class="enscript-comment">// If we found no normal interfaces but we did find a loopback interface, register the
+</span>        <span class="enscript-comment">// loopback interface.  This allows self-discovery if no interfaces are configured.
+</span>        <span class="enscript-comment">// Temporary workaround: Multicast loopback on IPv6 interfaces appears not to work.
+</span>        <span class="enscript-comment">// In the interim, we skip loopback interface only if we found at least one v4 interface to use
+</span>        <span class="enscript-comment">// if ((m-&gt;HostInterfaces == NULL) &amp;&amp; (firstLoopback != NULL))
+</span>        <span class="enscript-keyword">if</span> (!foundav4 &amp;&amp; firstLoopback)
+        {
+            (<span class="enscript-type">void</span>)SetupOneInterface(m, firstLoopback-&gt;ifa_addr, firstLoopback-&gt;ifa_netmask, firstLoopback-&gt;ifa_name,
+                                    firstLoopbackIndex);
+        }
+    }
+
+    <span class="enscript-comment">// Clean up.
+</span>    <span class="enscript-keyword">if</span> (intfList != NULL) freeifaddrs(intfList);
+
+    <span class="enscript-comment">// Clean up any interfaces that have been hanging around on the RecentInterfaces list for more than a minute
+</span>    PosixNetworkInterface **ri = &amp;gRecentInterfaces;
+    <span class="enscript-type">const</span> mDNSs32 utc = mDNSPlatformUTC();
+    <span class="enscript-keyword">while</span> (*ri)
+    {
+        PosixNetworkInterface *pi = *ri;
+        <span class="enscript-keyword">if</span> (utc - pi-&gt;LastSeen &lt; 60) ri = (PosixNetworkInterface **)&amp;pi-&gt;coreIntf.next;
+        <span class="enscript-keyword">else</span> { *ri = (PosixNetworkInterface *)pi-&gt;coreIntf.next; free(pi); }
+    }
+
+    <span class="enscript-keyword">return</span> err;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">USES_NETLINK</span>
+
+<span class="enscript-comment">// See &lt;<a href="http://www.faqs.org/rfcs/rfc3549.html">http://www.faqs.org/rfcs/rfc3549.html</a>&gt; for a description of NetLink
+</span>
+<span class="enscript-comment">// Open a socket that will receive interface change notifications
+</span>mDNSlocal mStatus <span class="enscript-function-name">OpenIfNotifySocket</span>(<span class="enscript-type">int</span> *pFD)
+{
+    mStatus err = mStatus_NoError;
+    <span class="enscript-type">struct</span> sockaddr_nl snl;
+    <span class="enscript-type">int</span> sock;
+    <span class="enscript-type">int</span> ret;
+
+    sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    <span class="enscript-keyword">if</span> (sock &lt; 0)
+        <span class="enscript-keyword">return</span> errno;
+
+    <span class="enscript-comment">// Configure read to be non-blocking because inbound msg size is not known in advance
+</span>    (<span class="enscript-type">void</span>) fcntl(sock, F_SETFL, O_NONBLOCK);
+
+    <span class="enscript-comment">/* Subscribe the socket to Link &amp; IP addr notifications. */</span>
+    mDNSPlatformMemZero(&amp;snl, <span class="enscript-keyword">sizeof</span> snl);
+    snl.nl_family = AF_NETLINK;
+    snl.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR;
+    ret = bind(sock, (<span class="enscript-type">struct</span> sockaddr *) &amp;snl, <span class="enscript-keyword">sizeof</span> snl);
+    <span class="enscript-keyword">if</span> (0 == ret)
+        *pFD = sock;
+    <span class="enscript-keyword">else</span>
+        err = errno;
+
+    <span class="enscript-keyword">return</span> err;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span>
+mDNSlocal <span class="enscript-type">void</span>      <span class="enscript-function-name">PrintNetLinkMsg</span>(<span class="enscript-type">const</span> <span class="enscript-type">struct</span> nlmsghdr *pNLMsg)
+{
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *kNLMsgTypes[] = { <span class="enscript-string">&quot;&quot;</span>, <span class="enscript-string">&quot;NLMSG_NOOP&quot;</span>, <span class="enscript-string">&quot;NLMSG_ERROR&quot;</span>, <span class="enscript-string">&quot;NLMSG_DONE&quot;</span>, <span class="enscript-string">&quot;NLMSG_OVERRUN&quot;</span> };
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *kNLRtMsgTypes[] = { <span class="enscript-string">&quot;RTM_NEWLINK&quot;</span>, <span class="enscript-string">&quot;RTM_DELLINK&quot;</span>, <span class="enscript-string">&quot;RTM_GETLINK&quot;</span>, <span class="enscript-string">&quot;RTM_NEWADDR&quot;</span>, <span class="enscript-string">&quot;RTM_DELADDR&quot;</span>, <span class="enscript-string">&quot;RTM_GETADDR&quot;</span> };
+
+    printf(<span class="enscript-string">&quot;nlmsghdr len=%d, type=%s, flags=0x%x\n&quot;</span>, pNLMsg-&gt;nlmsg_len,
+           pNLMsg-&gt;nlmsg_type &lt; RTM_BASE ? kNLMsgTypes[pNLMsg-&gt;nlmsg_type] : kNLRtMsgTypes[pNLMsg-&gt;nlmsg_type - RTM_BASE],
+           pNLMsg-&gt;nlmsg_flags);
+
+    <span class="enscript-keyword">if</span> (RTM_NEWLINK &lt;= pNLMsg-&gt;nlmsg_type &amp;&amp; pNLMsg-&gt;nlmsg_type &lt;= RTM_GETLINK)
+    {
+        <span class="enscript-type">struct</span> ifinfomsg    *pIfInfo = (<span class="enscript-type">struct</span> ifinfomsg*) NLMSG_DATA(pNLMsg);
+        printf(<span class="enscript-string">&quot;ifinfomsg family=%d, type=%d, index=%d, flags=0x%x, change=0x%x\n&quot;</span>, pIfInfo-&gt;ifi_family,
+               pIfInfo-&gt;ifi_type, pIfInfo-&gt;ifi_index, pIfInfo-&gt;ifi_flags, pIfInfo-&gt;ifi_change);
+
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (RTM_NEWADDR &lt;= pNLMsg-&gt;nlmsg_type &amp;&amp; pNLMsg-&gt;nlmsg_type &lt;= RTM_GETADDR)
+    {
+        <span class="enscript-type">struct</span> ifaddrmsg    *pIfAddr = (<span class="enscript-type">struct</span> ifaddrmsg*) NLMSG_DATA(pNLMsg);
+        printf(<span class="enscript-string">&quot;ifaddrmsg family=%d, index=%d, flags=0x%x\n&quot;</span>, pIfAddr-&gt;ifa_family,
+               pIfAddr-&gt;ifa_index, pIfAddr-&gt;ifa_flags);
+    }
+    printf(<span class="enscript-string">&quot;\n&quot;</span>);
+}
+#<span class="enscript-reference">endif</span>
+
+mDNSlocal mDNSu32       <span class="enscript-function-name">ProcessRoutingNotification</span>(<span class="enscript-type">int</span> sd)
+<span class="enscript-comment">// Read through the messages on sd and if any indicate that any interface records should
+</span><span class="enscript-comment">// be torn down and rebuilt, return affected indices as a bitmask. Otherwise return 0.
+</span>{
+    ssize_t readCount;
+    <span class="enscript-type">char</span> buff[4096];
+    <span class="enscript-type">struct</span> nlmsghdr         *pNLMsg = (<span class="enscript-type">struct</span> nlmsghdr*) buff;
+    mDNSu32 result = 0;
+
+    <span class="enscript-comment">// The structure here is more complex than it really ought to be because,
+</span>    <span class="enscript-comment">// unfortunately, there's no good way to size a buffer in advance large
+</span>    <span class="enscript-comment">// enough to hold all pending data and so avoid message fragmentation.
+</span>    <span class="enscript-comment">// (Note that FIONREAD is not supported on AF_NETLINK.)
+</span>
+    readCount = read(sd, buff, <span class="enscript-keyword">sizeof</span> buff);
+    <span class="enscript-keyword">while</span> (1)
+    {
+        <span class="enscript-comment">// Make sure we've got an entire nlmsghdr in the buffer, and payload, too.
+</span>        <span class="enscript-comment">// If not, discard already-processed messages in buffer and read more data.
+</span>        <span class="enscript-keyword">if</span> (((<span class="enscript-type">char</span>*) &amp;pNLMsg[1] &gt; (buff + readCount)) ||    <span class="enscript-comment">// i.e. *pNLMsg extends off end of buffer
+</span>            ((<span class="enscript-type">char</span>*) pNLMsg + pNLMsg-&gt;nlmsg_len &gt; (buff + readCount)))
+        {
+            <span class="enscript-keyword">if</span> (buff &lt; (<span class="enscript-type">char</span>*) pNLMsg)      <span class="enscript-comment">// we have space to shuffle
+</span>            {
+                <span class="enscript-comment">// discard processed data
+</span>                readCount -= ((<span class="enscript-type">char</span>*) pNLMsg - buff);
+                memmove(buff, pNLMsg, readCount);
+                pNLMsg = (<span class="enscript-type">struct</span> nlmsghdr*) buff;
+
+                <span class="enscript-comment">// read more data
+</span>                readCount += read(sd, buff + readCount, <span class="enscript-keyword">sizeof</span> buff - readCount);
+                <span class="enscript-keyword">continue</span>;                   <span class="enscript-comment">// spin around and revalidate with new readCount
+</span>            }
+            <span class="enscript-keyword">else</span>
+                <span class="enscript-keyword">break</span>;  <span class="enscript-comment">// Otherwise message does not fit in buffer
+</span>        }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span>
+        PrintNetLinkMsg(pNLMsg);
+#<span class="enscript-reference">endif</span>
+
+        <span class="enscript-comment">// Process the NetLink message
+</span>        <span class="enscript-keyword">if</span> (pNLMsg-&gt;nlmsg_type == RTM_GETLINK || pNLMsg-&gt;nlmsg_type == RTM_NEWLINK)
+            result |= 1 &lt;&lt; ((<span class="enscript-type">struct</span> ifinfomsg*) NLMSG_DATA(pNLMsg))-&gt;ifi_index;
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (pNLMsg-&gt;nlmsg_type == RTM_DELADDR || pNLMsg-&gt;nlmsg_type == RTM_NEWADDR)
+            result |= 1 &lt;&lt; ((<span class="enscript-type">struct</span> ifaddrmsg*) NLMSG_DATA(pNLMsg))-&gt;ifa_index;
+
+        <span class="enscript-comment">// Advance pNLMsg to the next message in the buffer
+</span>        <span class="enscript-keyword">if</span> ((pNLMsg-&gt;nlmsg_flags &amp; NLM_F_MULTI) != 0 &amp;&amp; pNLMsg-&gt;nlmsg_type != NLMSG_DONE)
+        {
+            ssize_t len = readCount - ((<span class="enscript-type">char</span>*)pNLMsg - buff);
+            pNLMsg = NLMSG_NEXT(pNLMsg, len);
+        }
+        <span class="enscript-keyword">else</span>
+            <span class="enscript-keyword">break</span>;  <span class="enscript-comment">// all done!
+</span>    }
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">USES_NETLINK</span>
+
+<span class="enscript-comment">// Open a socket that will receive interface change notifications
+</span>mDNSlocal mStatus <span class="enscript-function-name">OpenIfNotifySocket</span>(<span class="enscript-type">int</span> *pFD)
+{
+    *pFD = socket(AF_ROUTE, SOCK_RAW, 0);
+
+    <span class="enscript-keyword">if</span> (*pFD &lt; 0)
+        <span class="enscript-keyword">return</span> mStatus_UnknownErr;
+
+    <span class="enscript-comment">// Configure read to be non-blocking because inbound msg size is not known in advance
+</span>    (<span class="enscript-type">void</span>) fcntl(*pFD, F_SETFL, O_NONBLOCK);
+
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span>
+mDNSlocal <span class="enscript-type">void</span>      <span class="enscript-function-name">PrintRoutingSocketMsg</span>(<span class="enscript-type">const</span> <span class="enscript-type">struct</span> ifa_msghdr *pRSMsg)
+{
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *kRSMsgTypes[] = { <span class="enscript-string">&quot;&quot;</span>, <span class="enscript-string">&quot;RTM_ADD&quot;</span>, <span class="enscript-string">&quot;RTM_DELETE&quot;</span>, <span class="enscript-string">&quot;RTM_CHANGE&quot;</span>, <span class="enscript-string">&quot;RTM_GET&quot;</span>, <span class="enscript-string">&quot;RTM_LOSING&quot;</span>,
+                                  <span class="enscript-string">&quot;RTM_REDIRECT&quot;</span>, <span class="enscript-string">&quot;RTM_MISS&quot;</span>, <span class="enscript-string">&quot;RTM_LOCK&quot;</span>, <span class="enscript-string">&quot;RTM_OLDADD&quot;</span>, <span class="enscript-string">&quot;RTM_OLDDEL&quot;</span>, <span class="enscript-string">&quot;RTM_RESOLVE&quot;</span>,
+                                  <span class="enscript-string">&quot;RTM_NEWADDR&quot;</span>, <span class="enscript-string">&quot;RTM_DELADDR&quot;</span>, <span class="enscript-string">&quot;RTM_IFINFO&quot;</span>, <span class="enscript-string">&quot;RTM_NEWMADDR&quot;</span>, <span class="enscript-string">&quot;RTM_DELMADDR&quot;</span> };
+
+    <span class="enscript-type">int</span> index = pRSMsg-&gt;ifam_type == RTM_IFINFO ? ((<span class="enscript-type">struct</span> if_msghdr*) pRSMsg)-&gt;ifm_index : pRSMsg-&gt;ifam_index;
+
+    printf(<span class="enscript-string">&quot;ifa_msghdr len=%d, type=%s, index=%d\n&quot;</span>, pRSMsg-&gt;ifam_msglen, kRSMsgTypes[pRSMsg-&gt;ifam_type], index);
+}
+#<span class="enscript-reference">endif</span>
+
+mDNSlocal mDNSu32       <span class="enscript-function-name">ProcessRoutingNotification</span>(<span class="enscript-type">int</span> sd)
+<span class="enscript-comment">// Read through the messages on sd and if any indicate that any interface records should
+</span><span class="enscript-comment">// be torn down and rebuilt, return affected indices as a bitmask. Otherwise return 0.
+</span>{
+    ssize_t readCount;
+    <span class="enscript-type">char</span> buff[4096];
+    <span class="enscript-type">struct</span> ifa_msghdr       *pRSMsg = (<span class="enscript-type">struct</span> ifa_msghdr*) buff;
+    mDNSu32 result = 0;
+
+    readCount = read(sd, buff, <span class="enscript-keyword">sizeof</span> buff);
+    <span class="enscript-keyword">if</span> (readCount &lt; (ssize_t) <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> ifa_msghdr))
+        <span class="enscript-keyword">return</span> mStatus_UnsupportedErr;      <span class="enscript-comment">// cannot decipher message
+</span>
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span>
+    PrintRoutingSocketMsg(pRSMsg);
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-comment">// Process the message
+</span>    <span class="enscript-keyword">if</span> (pRSMsg-&gt;ifam_type == RTM_NEWADDR || pRSMsg-&gt;ifam_type == RTM_DELADDR ||
+        pRSMsg-&gt;ifam_type == RTM_IFINFO)
+    {
+        <span class="enscript-keyword">if</span> (pRSMsg-&gt;ifam_type == RTM_IFINFO)
+            result |= 1 &lt;&lt; ((<span class="enscript-type">struct</span> if_msghdr*) pRSMsg)-&gt;ifm_index;
+        <span class="enscript-keyword">else</span>
+            result |= 1 &lt;&lt; pRSMsg-&gt;ifam_index;
+    }
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">USES_NETLINK</span>
+
+<span class="enscript-comment">// Called when data appears on interface change notification socket
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">InterfaceChangeCallback</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">void</span> *context)
+{
+    IfChangeRec     *pChgRec = (IfChangeRec*) context;
+    fd_set readFDs;
+    mDNSu32 changedInterfaces = 0;
+    <span class="enscript-type">struct</span> timeval zeroTimeout = { 0, 0 };
+
+    (<span class="enscript-type">void</span>)fd; <span class="enscript-comment">// Unused
+</span>
+    FD_ZERO(&amp;readFDs);
+    FD_SET(pChgRec-&gt;NotifySD, &amp;readFDs);
+
+    <span class="enscript-keyword">do</span>
+    {
+        changedInterfaces |= ProcessRoutingNotification(pChgRec-&gt;NotifySD);
+    }
+    <span class="enscript-keyword">while</span> (0 &lt; select(pChgRec-&gt;NotifySD + 1, &amp;readFDs, (fd_set*) NULL, (fd_set*) NULL, &amp;zeroTimeout));
+
+    <span class="enscript-comment">// Currently we rebuild the entire interface list whenever any interface change is
+</span>    <span class="enscript-comment">// detected. If this ever proves to be a performance issue in a multi-homed
+</span>    <span class="enscript-comment">// configuration, more care should be paid to changedInterfaces.
+</span>    <span class="enscript-keyword">if</span> (changedInterfaces)
+        mDNSPlatformPosixRefreshInterfaceList(pChgRec-&gt;mDNS);
+}
+
+<span class="enscript-comment">// Register with either a Routing Socket or RtNetLink to listen for interface changes.
+</span>mDNSlocal mStatus <span class="enscript-function-name">WatchForInterfaceChange</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    mStatus err;
+    IfChangeRec *pChgRec;
+
+    pChgRec = (IfChangeRec*) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span> *pChgRec);
+    <span class="enscript-keyword">if</span> (pChgRec == NULL)
+        <span class="enscript-keyword">return</span> mStatus_NoMemoryErr;
+
+    pChgRec-&gt;mDNS = m;
+    err = OpenIfNotifySocket(&amp;pChgRec-&gt;NotifySD);
+    <span class="enscript-keyword">if</span> (err == 0)
+        err = mDNSPosixAddFDToEventLoop(pChgRec-&gt;NotifySD, InterfaceChangeCallback, pChgRec);
+    <span class="enscript-keyword">if</span> (err)
+        mDNSPlatformMemFree(pChgRec);
+
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-comment">// Test to see if we're the first client running on UDP port 5353, by trying to bind to 5353 without using SO_REUSEPORT.
+</span><span class="enscript-comment">// If we fail, someone else got here first. That's not a big problem; we can share the port for multicast responses --
+</span><span class="enscript-comment">// we just need to be aware that we shouldn't expect to successfully receive unicast UDP responses.
+</span>mDNSlocal mDNSBool <span class="enscript-function-name">mDNSPlatformInit_CanReceiveUnicast</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-type">int</span> err;
+    <span class="enscript-type">int</span> s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    <span class="enscript-type">struct</span> sockaddr_in s5353;
+    s5353.sin_family      = AF_INET;
+    s5353.sin_port        = MulticastDNSPort.NotAnInteger;
+    s5353.sin_addr.s_addr = 0;
+    err = bind(s, (<span class="enscript-type">struct</span> sockaddr *)&amp;s5353, <span class="enscript-keyword">sizeof</span>(s5353));
+    close(s);
+    <span class="enscript-keyword">if</span> (err) debugf(<span class="enscript-string">&quot;No unicast UDP responses&quot;</span>);
+    <span class="enscript-keyword">else</span> debugf(<span class="enscript-string">&quot;Unicast UDP responses okay&quot;</span>);
+    <span class="enscript-keyword">return</span>(err == 0);
+}
+
+<span class="enscript-comment">// mDNS core calls this routine to initialise the platform-specific data.
+</span>mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformInit</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    <span class="enscript-type">int</span> err = 0;
+    <span class="enscript-type">struct</span> sockaddr sa;
+    assert(m != NULL);
+
+    <span class="enscript-keyword">if</span> (mDNSPlatformInit_CanReceiveUnicast()) m-&gt;CanReceiveUnicastOn5353 = mDNStrue;
+
+    <span class="enscript-comment">// Tell mDNS core the names of this machine.
+</span>
+    <span class="enscript-comment">// Set up the nice label
+</span>    m-&gt;nicelabel.c[0] = 0;
+    GetUserSpecifiedFriendlyComputerName(&amp;m-&gt;nicelabel);
+    <span class="enscript-keyword">if</span> (m-&gt;nicelabel.c[0] == 0) MakeDomainLabelFromLiteralString(&amp;m-&gt;nicelabel, <span class="enscript-string">&quot;Computer&quot;</span>);
+
+    <span class="enscript-comment">// Set up the RFC 1034-compliant label
+</span>    m-&gt;hostlabel.c[0] = 0;
+    GetUserSpecifiedRFC1034ComputerName(&amp;m-&gt;hostlabel);
+    <span class="enscript-keyword">if</span> (m-&gt;hostlabel.c[0] == 0) MakeDomainLabelFromLiteralString(&amp;m-&gt;hostlabel, <span class="enscript-string">&quot;Computer&quot;</span>);
+
+    mDNS_SetFQDN(m);
+
+    sa.sa_family = AF_INET;
+    m-&gt;p-&gt;unicastSocket4 = -1;
+    <span class="enscript-keyword">if</span> (err == mStatus_NoError) err = SetupSocket(&amp;sa, zeroIPPort, 0, &amp;m-&gt;p-&gt;unicastSocket4);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    sa.sa_family = AF_INET6;
+    m-&gt;p-&gt;unicastSocket6 = -1;
+    <span class="enscript-keyword">if</span> (err == mStatus_NoError) err = SetupSocket(&amp;sa, zeroIPPort, 0, &amp;m-&gt;p-&gt;unicastSocket6);
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-comment">// Tell mDNS core about the network interfaces on this machine.
+</span>    <span class="enscript-keyword">if</span> (err == mStatus_NoError) err = SetupInterfaceList(m);
+
+    <span class="enscript-comment">// Tell mDNS core about DNS Servers
+</span>    mDNS_Lock(m);
+    <span class="enscript-keyword">if</span> (err == mStatus_NoError) ParseDNSServers(m, uDNS_SERVERS_FILE);
+    mDNS_Unlock(m);
+
+    <span class="enscript-keyword">if</span> (err == mStatus_NoError)
+    {
+        err = WatchForInterfaceChange(m);
+        <span class="enscript-comment">// Failure to observe interface changes is non-fatal.
+</span>        <span class="enscript-keyword">if</span> (err != mStatus_NoError)
+        {
+            fprintf(stderr, <span class="enscript-string">&quot;mDNS(%d) WARNING: Unable to detect interface changes (%d).\n&quot;</span>, getpid(), err);
+            err = mStatus_NoError;
+        }
+    }
+
+    <span class="enscript-comment">// We don't do asynchronous initialization on the Posix platform, so by the time
+</span>    <span class="enscript-comment">// we get here the setup will already have succeeded or failed.  If it succeeded,
+</span>    <span class="enscript-comment">// we should just call mDNSCoreInitComplete() immediately.
+</span>    <span class="enscript-keyword">if</span> (err == mStatus_NoError)
+        mDNSCoreInitComplete(m, mStatus_NoError);
+
+    <span class="enscript-keyword">return</span> PosixErrorToStatus(err);
+}
+
+<span class="enscript-comment">// mDNS core calls this routine to clean up the platform-specific data.
+</span><span class="enscript-comment">// In our case all we need to do is to tear down every network interface.
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformClose</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    <span class="enscript-type">int</span> rv;
+    assert(m != NULL);
+    ClearInterfaceList(m);
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;unicastSocket4 != -1)
+    {
+        rv = close(m-&gt;p-&gt;unicastSocket4);
+        assert(rv == 0);
+    }
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;unicastSocket6 != -1)
+    {
+        rv = close(m-&gt;p-&gt;unicastSocket6);
+        assert(rv == 0);
+    }
+#<span class="enscript-reference">endif</span>
+}
+
+<span class="enscript-comment">// This is used internally by InterfaceChangeCallback.
+</span><span class="enscript-comment">// It's also exported so that the Standalone Responder (mDNSResponderPosix)
+</span><span class="enscript-comment">// can call it in response to a SIGHUP (mainly for debugging purposes).
+</span>mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformPosixRefreshInterfaceList</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    <span class="enscript-type">int</span> err;
+    <span class="enscript-comment">// This is a pretty heavyweight way to process interface changes --
+</span>    <span class="enscript-comment">// destroying the entire interface list and then making fresh one from scratch.
+</span>    <span class="enscript-comment">// We should make it like the OS X version, which leaves unchanged interfaces alone.
+</span>    ClearInterfaceList(m);
+    err = SetupInterfaceList(m);
+    <span class="enscript-keyword">return</span> PosixErrorToStatus(err);
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> ***** <span class="enscript-variable-name">Locking</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// On the Posix platform, locking is a no-op because we only ever enter
+</span><span class="enscript-comment">// mDNS core on the main thread.
+</span>
+<span class="enscript-comment">// mDNS core calls this routine when it wants to prevent
+</span><span class="enscript-comment">// the platform from reentering mDNS core code.
+</span>mDNSexport <span class="enscript-type">void</span>    <span class="enscript-function-name">mDNSPlatformLock</span>   (<span class="enscript-type">const</span> mDNS *<span class="enscript-type">const</span> m)
+{
+    (<span class="enscript-type">void</span>) m;   <span class="enscript-comment">// Unused
+</span>}
+
+<span class="enscript-comment">// mDNS core calls this routine when it release the lock taken by
+</span><span class="enscript-comment">// mDNSPlatformLock and allow the platform to reenter mDNS core code.
+</span>mDNSexport <span class="enscript-type">void</span>    <span class="enscript-function-name">mDNSPlatformUnlock</span> (<span class="enscript-type">const</span> mDNS *<span class="enscript-type">const</span> m)
+{
+    (<span class="enscript-type">void</span>) m;   <span class="enscript-comment">// Unused
+</span>}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> ***** <span class="enscript-variable-name">Strings</span>
+#<span class="enscript-reference">endif</span>
+
+mDNSexport mDNSu32  <span class="enscript-function-name">mDNSPlatformStrLCopy</span>(<span class="enscript-type">void</span> *dst, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *src, mDNSu32 len)
+{
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_STRLCPY</span>
+    <span class="enscript-keyword">return</span> ((mDNSu32)strlcpy((<span class="enscript-type">char</span> *)dst, (<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)src, len));
+#<span class="enscript-reference">else</span>
+    size_t srcLen;
+
+    srcLen = strlen((<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)src);
+    <span class="enscript-keyword">if</span> (srcLen &lt; len)
+    {
+        memcpy(dst, src, srcLen + 1);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (len &gt; 0)
+    {
+        memcpy(dst, src, len - 1);
+        ((<span class="enscript-type">char</span> *)dst)[len - 1] = <span class="enscript-string">'\0'</span>;
+    }
+
+    <span class="enscript-keyword">return</span> ((mDNSu32)srcLen);
+#<span class="enscript-reference">endif</span>
+}
+
+<span class="enscript-comment">// mDNS core calls this routine to get the length of a C string.
+</span><span class="enscript-comment">// On the Posix platform this maps directly to the ANSI C strlen.
+</span>mDNSexport mDNSu32  <span class="enscript-function-name">mDNSPlatformStrLen</span> (<span class="enscript-type">const</span> <span class="enscript-type">void</span> *src)
+{
+    <span class="enscript-keyword">return</span> strlen((<span class="enscript-type">const</span> <span class="enscript-type">char</span>*)src);
+}
+
+<span class="enscript-comment">// mDNS core calls this routine to copy memory.
+</span><span class="enscript-comment">// On the Posix platform this maps directly to the ANSI C memcpy.
+</span>mDNSexport <span class="enscript-type">void</span>    <span class="enscript-function-name">mDNSPlatformMemCopy</span>(<span class="enscript-type">void</span> *dst, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *src, mDNSu32 len)
+{
+    memcpy(dst, src, len);
+}
+
+<span class="enscript-comment">// mDNS core calls this routine to test whether blocks of memory are byte-for-byte
+</span><span class="enscript-comment">// identical. On the Posix platform this is a simple wrapper around ANSI C memcmp.
+</span>mDNSexport mDNSBool <span class="enscript-function-name">mDNSPlatformMemSame</span>(<span class="enscript-type">const</span> <span class="enscript-type">void</span> *dst, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *src, mDNSu32 len)
+{
+    <span class="enscript-keyword">return</span> memcmp(dst, src, len) == 0;
+}
+
+<span class="enscript-comment">// If the caller wants to know the exact return of memcmp, then use this instead
+</span><span class="enscript-comment">// of mDNSPlatformMemSame
+</span>mDNSexport <span class="enscript-type">int</span> <span class="enscript-function-name">mDNSPlatformMemCmp</span>(<span class="enscript-type">const</span> <span class="enscript-type">void</span> *dst, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *src, mDNSu32 len)
+{
+    <span class="enscript-keyword">return</span> (memcmp(dst, src, len));
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformQsort</span>(<span class="enscript-type">void</span> *base, <span class="enscript-type">int</span> nel, <span class="enscript-type">int</span> width, <span class="enscript-type">int</span> (*compar)(<span class="enscript-type">const</span> <span class="enscript-type">void</span> *, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *))
+{
+    <span class="enscript-keyword">return</span> (qsort(base, nel, width, compar));
+}
+
+<span class="enscript-comment">// DNSSEC stub functions
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">VerifySignature</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, DNSQuestion *q)
+{
+    (<span class="enscript-type">void</span>)m;
+    (<span class="enscript-type">void</span>)dv;
+    (<span class="enscript-type">void</span>)q;
+}
+
+mDNSexport mDNSBool <span class="enscript-function-name">AddNSECSForCacheRecord</span>(mDNS *<span class="enscript-type">const</span> m, CacheRecord *crlist, CacheRecord *negcr, mDNSu8 rcode)
+{
+    (<span class="enscript-type">void</span>)m;
+    (<span class="enscript-type">void</span>)crlist;
+    (<span class="enscript-type">void</span>)negcr;
+    (<span class="enscript-type">void</span>)rcode;
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">BumpDNSSECStats</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECStatsAction action, DNSSECStatsType type, mDNSu32 value)
+{
+    (<span class="enscript-type">void</span>)m;
+    (<span class="enscript-type">void</span>)action;
+    (<span class="enscript-type">void</span>)type;
+    (<span class="enscript-type">void</span>)value;
+}
+
+<span class="enscript-comment">// Proxy stub functions
+</span>mDNSexport mDNSu8 *<span class="enscript-function-name">DNSProxySetAttributes</span>(DNSQuestion *q, DNSMessageHeader *h, DNSMessage *msg, mDNSu8 *ptr, mDNSu8 *limit)
+{
+    (<span class="enscript-type">void</span>) q;
+    (<span class="enscript-type">void</span>) h;
+    (<span class="enscript-type">void</span>) msg;
+    (<span class="enscript-type">void</span>) ptr;
+    (<span class="enscript-type">void</span>) limit;
+
+    <span class="enscript-keyword">return</span> ptr;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNSProxyInit</span>(mDNSu32 IpIfArr[], mDNSu32 OpIf)
+{
+    (<span class="enscript-type">void</span>) IpIfArr;
+    (<span class="enscript-type">void</span>) OpIf;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNSProxyTerminate</span>(<span class="enscript-type">void</span>)
+{
+}
+
+<span class="enscript-comment">// mDNS core calls this routine to clear blocks of memory.
+</span><span class="enscript-comment">// On the Posix platform this is a simple wrapper around ANSI C memset.
+</span>mDNSexport <span class="enscript-type">void</span>  <span class="enscript-function-name">mDNSPlatformMemZero</span>(<span class="enscript-type">void</span> *dst, mDNSu32 len)
+{
+    memset(dst, 0, len);
+}
+
+#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">MDNS_MALLOC_DEBUGGING</span>
+mDNSexport <span class="enscript-type">void</span> *<span class="enscript-function-name">mDNSPlatformMemAllocate</span>(mDNSu32 len)      { <span class="enscript-keyword">return</span>(mallocL(<span class="enscript-string">&quot;mDNSPlatformMemAllocate&quot;</span>, len)); }
+mDNSexport <span class="enscript-type">void</span> *<span class="enscript-function-name">mDNSPlatformMemAllocateClear</span>(mDNSu32 len) { <span class="enscript-keyword">return</span>(callocL(name, len)); }
+mDNSexport <span class="enscript-type">void</span>  <span class="enscript-function-name">mDNSPlatformMemFree</span>    (<span class="enscript-type">void</span> *mem)        {          freeL(<span class="enscript-string">&quot;mDNSPlatformMemFree&quot;</span>, mem); }
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_PLATFORM_HAS_STRONG_PRNG_</span>
+mDNSexport mDNSu32 <span class="enscript-function-name">mDNSPlatformRandomNumber</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-keyword">return</span>(arc4random());
+}
+#<span class="enscript-reference">else</span>
+mDNSexport mDNSu32 <span class="enscript-function-name">mDNSPlatformRandomSeed</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-type">struct</span> timeval tv;
+    gettimeofday(&amp;tv, NULL);
+    <span class="enscript-keyword">return</span>(tv.tv_usec);
+}
+#<span class="enscript-reference">endif</span>
+
+mDNSexport mDNSs32 mDNSPlatformOneSecond = 1024;
+
+mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformTimeInit</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-comment">// No special setup is required on Posix -- we just use gettimeofday();
+</span>    <span class="enscript-comment">// This is not really safe, because gettimeofday can go backwards if the user manually changes the date or time
+</span>    <span class="enscript-comment">// We should find a better way to do this
+</span>    <span class="enscript-keyword">return</span>(mStatus_NoError);
+}
+
+mDNSexport mDNSs32  <span class="enscript-function-name">mDNSPlatformRawTime</span>()
+{
+    <span class="enscript-type">struct</span> timespec tm;
+    <span class="enscript-type">int</span> ret = clock_gettime(CLOCK_MONOTONIC, &amp;tm);
+    assert(ret == 0); <span class="enscript-comment">// This call will only fail if the number of seconds does not fit in an object of type time_t.
+</span>
+    <span class="enscript-comment">// tm.tv_sec is seconds since some unspecified starting point (it is usually the system start up time)
+</span>    <span class="enscript-comment">// tm.tv_nsec is nanoseconds since the start of this second (i.e. values 0 to 999999999)
+</span>    <span class="enscript-comment">// We use the lower 22 bits of tm.tv_sec for the top 22 bits of our result
+</span>    <span class="enscript-comment">// and we multiply tm.tv_nsec by 2 / 1953125 to get a value in the range 0-1023 to go in the bottom 10 bits.
+</span>    <span class="enscript-comment">// This gives us a proper modular (cyclic) counter that has a resolution of roughly 1ms (actually 1/1024 second)
+</span>    <span class="enscript-comment">// and correctly cycles every 2^22 seconds (4194304 seconds = approx 48 days).
+</span>
+    <span class="enscript-keyword">return</span> ((tm.tv_sec &lt;&lt; 10) | (tm.tv_nsec * 2 / 1953125));
+}
+
+mDNSexport mDNSs32 <span class="enscript-function-name">mDNSPlatformUTC</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-keyword">return</span> time(NULL);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformSendWakeupPacket</span>(mDNSInterfaceID InterfaceID, <span class="enscript-type">char</span> *EthAddr, <span class="enscript-type">char</span> *IPAddr, <span class="enscript-type">int</span> iteration)
+{
+    (<span class="enscript-type">void</span>) InterfaceID;
+    (<span class="enscript-type">void</span>) EthAddr;
+    (<span class="enscript-type">void</span>) IPAddr;
+    (<span class="enscript-type">void</span>) iteration;
+}
+
+mDNSexport mDNSBool <span class="enscript-function-name">mDNSPlatformValidRecordForInterface</span>(<span class="enscript-type">const</span> AuthRecord *rr, mDNSInterfaceID InterfaceID)
+{
+    (<span class="enscript-type">void</span>) rr;
+    (<span class="enscript-type">void</span>) InterfaceID;
+
+    <span class="enscript-keyword">return</span> 1;
+}
+
+mDNSexport mDNSBool <span class="enscript-function-name">mDNSPlatformValidQuestionForInterface</span>(DNSQuestion *q, <span class="enscript-type">const</span> NetworkInterfaceInfo *intf)
+{
+    (<span class="enscript-type">void</span>) q;
+    (<span class="enscript-type">void</span>) intf;
+
+    <span class="enscript-keyword">return</span> 1;
+}
+
+<span class="enscript-comment">// Used for debugging purposes. For now, just set the buffer to zero
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformFormatTime</span>(<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span> te, mDNSu8 *buf, <span class="enscript-type">int</span> bufsize)
+{
+    (<span class="enscript-type">void</span>) te;
+    <span class="enscript-keyword">if</span> (bufsize) buf[0] = 0;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformSendKeepalive</span>(mDNSAddr *sadd, mDNSAddr *dadd, mDNSIPPort *lport, mDNSIPPort *rport, mDNSu32 seq, mDNSu32 ack, mDNSu16 win)
+{
+    (<span class="enscript-type">void</span>) sadd;    <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) dadd;    <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) lport;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) rport;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) seq;     <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) ack;     <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) win;     <span class="enscript-comment">// Unused
+</span>}
+
+mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformRetrieveTCPInfo</span>(mDNSAddr *laddr, mDNSIPPort *lport, mDNSAddr *raddr, mDNSIPPort *rport, mDNSTCPInfo *mti)
+{
+    (<span class="enscript-type">void</span>) laddr;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) raddr;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) lport;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) rport;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) mti;     <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformGetRemoteMacAddr</span>(mDNSAddr *raddr)
+{
+    (<span class="enscript-type">void</span>) raddr; <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSexport mStatus    <span class="enscript-function-name">mDNSPlatformStoreSPSMACAddr</span>(mDNSAddr *spsaddr, <span class="enscript-type">char</span> *ifname)
+{
+    (<span class="enscript-type">void</span>) spsaddr; <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) ifname;  <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSexport mStatus    <span class="enscript-function-name">mDNSPlatformClearSPSData</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">mDNSPlatformStoreOwnerOptRecord</span>(<span class="enscript-type">char</span> *ifname, DNSMessage *msg, <span class="enscript-type">int</span> length)
+{
+    (<span class="enscript-type">void</span>) ifname; <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) msg;    <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>) length; <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span> mStatus_UnsupportedErr;
+}
+
+mDNSexport mDNSu16 <span class="enscript-function-name">mDNSPlatformGetUDPPort</span>(UDPSocket *sock)
+{
+    (<span class="enscript-type">void</span>) sock; <span class="enscript-comment">// unused
+</span>
+    <span class="enscript-keyword">return</span> (mDNSu16)-1;
+}
+
+mDNSexport mDNSBool <span class="enscript-function-name">mDNSPlatformInterfaceIsD2D</span>(mDNSInterfaceID InterfaceID)
+{
+    (<span class="enscript-type">void</span>) InterfaceID; <span class="enscript-comment">// unused
+</span>
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformSetSocktOpt</span>(<span class="enscript-type">void</span> *sock, mDNSTransport_Type transType, mDNSAddr_Type addrType, <span class="enscript-type">const</span> DNSQuestion *q)
+{
+    (<span class="enscript-type">void</span>) sock;
+    (<span class="enscript-type">void</span>) transType;
+    (<span class="enscript-type">void</span>) addrType;
+    (<span class="enscript-type">void</span>) q;
+}
+
+mDNSexport mDNSs32 <span class="enscript-function-name">mDNSPlatformGetPID</span>()
+{
+    <span class="enscript-keyword">return</span> 0;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPosixAddToFDSet</span>(<span class="enscript-type">int</span> *nfds, fd_set *readfds, <span class="enscript-type">int</span> s)
+{
+    <span class="enscript-keyword">if</span> (*nfds &lt; s + 1) *nfds = s + 1;
+    FD_SET(s, readfds);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPosixGetFDSetForSelect</span>(mDNS *m, <span class="enscript-type">int</span> *nfds, fd_set *readfds, fd_set *writefds)
+{
+    <span class="enscript-type">int</span> numFDs = *nfds;
+    PosixEventSource *iSource;
+
+    <span class="enscript-comment">// 2. Build our list of active file descriptors
+</span>    PosixNetworkInterface *info = (PosixNetworkInterface *)(m-&gt;HostInterfaces);
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;unicastSocket4 != -1) mDNSPosixAddToFDSet(&amp;numFDs, readfds, m-&gt;p-&gt;unicastSocket4);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;unicastSocket6 != -1) mDNSPosixAddToFDSet(&amp;numFDs, readfds, m-&gt;p-&gt;unicastSocket6);
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-keyword">while</span> (info)
+    {
+        <span class="enscript-keyword">if</span> (info-&gt;multicastSocket4 != -1) mDNSPosixAddToFDSet(&amp;numFDs, readfds, info-&gt;multicastSocket4);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+        <span class="enscript-keyword">if</span> (info-&gt;multicastSocket6 != -1) mDNSPosixAddToFDSet(&amp;numFDs, readfds, info-&gt;multicastSocket6);
+#<span class="enscript-reference">endif</span>
+        info = (PosixNetworkInterface *)(info-&gt;coreIntf.next);
+    }
+
+    <span class="enscript-comment">// Copy over the event fds.   We have to do it this way because client-provided event loops expect
+</span>    <span class="enscript-comment">// to initialize their FD sets first and then call mDNSPosixGetFDSet()
+</span>    <span class="enscript-keyword">for</span> (iSource = gEventSources; iSource; iSource = iSource-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (iSource-&gt;readCallback != NULL)
+            FD_SET(iSource-&gt;fd, readfds);
+        <span class="enscript-keyword">if</span> (iSource-&gt;writeCallback != NULL)
+            FD_SET(iSource-&gt;fd, writefds);
+        <span class="enscript-keyword">if</span> (numFDs &lt;= iSource-&gt;fd)
+            numFDs = iSource-&gt;fd + 1;
+    }
+    *nfds = numFDs;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPosixGetNextDNSEventTime</span>(mDNS *m, <span class="enscript-type">struct</span> timeval *timeout)
+{
+    mDNSs32 ticks;
+    <span class="enscript-type">struct</span> timeval interval;
+
+    <span class="enscript-comment">// 1. Call mDNS_Execute() to let mDNSCore do what it needs to do
+</span>    mDNSs32 nextevent = mDNS_Execute(m);
+
+    <span class="enscript-comment">// 3. Calculate the time remaining to the next scheduled event (in struct timeval format)
+</span>    ticks = nextevent - mDNS_TimeNow(m);
+    <span class="enscript-keyword">if</span> (ticks &lt; 1) ticks = 1;
+    interval.tv_sec  = ticks &gt;&gt; 10;                     <span class="enscript-comment">// The high 22 bits are seconds
+</span>    interval.tv_usec = ((ticks &amp; 0x3FF) * 15625) / 16;  <span class="enscript-comment">// The low 10 bits are 1024ths
+</span>
+    <span class="enscript-comment">// 4. If client's proposed timeout is more than what we want, then reduce it
+</span>    <span class="enscript-keyword">if</span> (timeout-&gt;tv_sec &gt; interval.tv_sec ||
+        (timeout-&gt;tv_sec == interval.tv_sec &amp;&amp; timeout-&gt;tv_usec &gt; interval.tv_usec))
+        *timeout = interval;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPosixGetFDSet</span>(mDNS *m, <span class="enscript-type">int</span> *nfds, fd_set *readfds, fd_set *writefds, <span class="enscript-type">struct</span> timeval *timeout)
+{
+    mDNSPosixGetNextDNSEventTime(m, timeout);
+    mDNSPosixGetFDSetForSelect(m, nfds, readfds, writefds);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPosixProcessFDSet</span>(mDNS *<span class="enscript-type">const</span> m, fd_set *readfds, fd_set *writefds)
+{
+    PosixNetworkInterface *info;
+    PosixEventSource    *iSource;
+    assert(m       != NULL);
+    assert(readfds != NULL);
+    info = (PosixNetworkInterface *)(m-&gt;HostInterfaces);
+
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;unicastSocket4 != -1 &amp;&amp; FD_ISSET(m-&gt;p-&gt;unicastSocket4, readfds))
+    {
+        FD_CLR(m-&gt;p-&gt;unicastSocket4, readfds);
+        SocketDataReady(m, NULL, m-&gt;p-&gt;unicastSocket4);
+    }
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;unicastSocket6 != -1 &amp;&amp; FD_ISSET(m-&gt;p-&gt;unicastSocket6, readfds))
+    {
+        FD_CLR(m-&gt;p-&gt;unicastSocket6, readfds);
+        SocketDataReady(m, NULL, m-&gt;p-&gt;unicastSocket6);
+    }
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">while</span> (info)
+    {
+        <span class="enscript-keyword">if</span> (info-&gt;multicastSocket4 != -1 &amp;&amp; FD_ISSET(info-&gt;multicastSocket4, readfds))
+        {
+            FD_CLR(info-&gt;multicastSocket4, readfds);
+            SocketDataReady(m, info, info-&gt;multicastSocket4);
+        }
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">HAVE_IPV6</span>
+        <span class="enscript-keyword">if</span> (info-&gt;multicastSocket6 != -1 &amp;&amp; FD_ISSET(info-&gt;multicastSocket6, readfds))
+        {
+            FD_CLR(info-&gt;multicastSocket6, readfds);
+            SocketDataReady(m, info, info-&gt;multicastSocket6);
+        }
+#<span class="enscript-reference">endif</span>
+        info = (PosixNetworkInterface *)(info-&gt;coreIntf.next);
+    }
+
+    <span class="enscript-comment">// Now process routing socket events, discovery relay events and anything else of that ilk.
+</span>    <span class="enscript-keyword">for</span> (iSource = gEventSources; iSource; iSource = iSource-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (iSource-&gt;readCallback != NULL &amp;&amp; FD_ISSET(iSource-&gt;fd, readfds))
+        {
+            iSource-&gt;readCallback(iSource-&gt;fd, iSource-&gt;readContext);
+            <span class="enscript-keyword">break</span>;  <span class="enscript-comment">// in case callback removed elements from gEventSources
+</span>        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (iSource-&gt;writeCallback != NULL &amp;&amp; FD_ISSET(iSource-&gt;fd, writefds))
+        {
+            mDNSPosixEventCallback writeCallback = iSource-&gt;writeCallback;
+            <span class="enscript-comment">// Write events are one-shot: to get another event, the consumer has to put in a new request.
+</span>            <span class="enscript-comment">// We reset this before calling the callback just in case the callback requests another write
+</span>            <span class="enscript-comment">// callback, or deletes the event context from the list.
+</span>            iSource-&gt;writeCallback = NULL;
+            writeCallback(iSource-&gt;fd, iSource-&gt;writeContext);
+            <span class="enscript-keyword">break</span>;  <span class="enscript-comment">// in case callback removed elements from gEventSources
+</span>        }
+    }
+}
+
+mDNSu32 mDNSPlatformEventContextSize = <span class="enscript-keyword">sizeof</span> (PosixEventSource);
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">requestIOEvents</span>(PosixEventSource *newSource, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *taskName,
+                                  mDNSPosixEventCallback callback, <span class="enscript-type">void</span> *context, <span class="enscript-type">int</span> flag)
+{
+    PosixEventSource **epp = &amp;gEventSources;
+
+    <span class="enscript-keyword">if</span> (newSource-&gt;fd &gt;= (<span class="enscript-type">int</span>) FD_SETSIZE || newSource-&gt;fd &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;requestIOEvents called with fd %d &gt; FD_SETSIZE %d.&quot;</span>, newSource-&gt;fd, FD_SETSIZE);
+        assert(0);
+    }
+    <span class="enscript-keyword">if</span> (callback == NULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;requestIOEvents called no callback.&quot;</span>, newSource-&gt;fd, FD_SETSIZE);
+        assert(0);
+    }
+
+    <span class="enscript-comment">// See if this event context is already on the list; if it is, no need to scan the list.
+</span>    <span class="enscript-keyword">if</span> (!(newSource-&gt;flags &amp; PosixEventFlag_OnList))
+    {
+        <span class="enscript-keyword">while</span> (*epp)
+        {
+            <span class="enscript-comment">// This should never happen.
+</span>            <span class="enscript-keyword">if</span> (newSource == *epp)
+            {
+                LogMsg(<span class="enscript-string">&quot;Event context marked not on list but is on list.&quot;</span>);
+                assert(0);
+            }
+            epp = &amp;(*epp)-&gt;next;
+        }
+        <span class="enscript-keyword">if</span> (*epp == NULL)
+        {
+            *epp = newSource;
+            newSource-&gt;next = NULL;
+            newSource-&gt;flags = PosixEventFlag_OnList;
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (flag &amp; PosixEventFlag_Read)
+    {
+        newSource-&gt;readCallback = callback;
+        newSource-&gt;readContext = context;
+        newSource-&gt;flags |= PosixEventFlag_Read;
+        newSource-&gt;readTaskName = taskName;
+    }
+    <span class="enscript-keyword">if</span> (flag &amp; PosixEventFlag_Write)
+    {
+        newSource-&gt;writeCallback = callback;
+        newSource-&gt;writeContext = context;
+        newSource-&gt;flags |= PosixEventFlag_Write;
+        newSource-&gt;writeTaskName = taskName;
+    }
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">requestReadEvents</span>(PosixEventSource *eventSource,
+                                    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *taskName, mDNSPosixEventCallback callback, <span class="enscript-type">void</span> *context)
+{
+    requestIOEvents(eventSource, taskName, callback, context, PosixEventFlag_Read);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">requestWriteEvents</span>(PosixEventSource *eventSource,
+                                     <span class="enscript-type">const</span> <span class="enscript-type">char</span> *taskName, mDNSPosixEventCallback callback, <span class="enscript-type">void</span> *context)
+{
+    requestIOEvents(eventSource, taskName, callback, context, PosixEventFlag_Write);
+}
+
+<span class="enscript-comment">// Remove a file descriptor from the set that mDNSPosixRunEventLoopOnce() listens to.
+</span>mDNSlocal mStatus <span class="enscript-function-name">stopReadOrWriteEvents</span>(<span class="enscript-type">int</span> fd, mDNSBool freeContext, mDNSBool removeContext, <span class="enscript-type">int</span> flags)
+{
+    PosixEventSource *iSource, **epp = &amp;gEventSources;
+
+    <span class="enscript-keyword">while</span> (*epp)
+    {
+        iSource = *epp;
+        <span class="enscript-keyword">if</span> (fd == iSource-&gt;fd)
+        {
+            <span class="enscript-keyword">if</span> (flags &amp; PosixEventFlag_Read)
+            {
+                iSource-&gt;readCallback = NULL;
+                iSource-&gt;readContext = NULL;
+            }
+            <span class="enscript-keyword">if</span> (flags &amp; PosixEventFlag_Write)
+            {
+                iSource-&gt;writeCallback = NULL;
+                iSource-&gt;writeContext = NULL;
+            }
+            <span class="enscript-keyword">if</span> (iSource-&gt;writeCallback == NULL &amp;&amp; iSource-&gt;readCallback == NULL)
+            {
+                <span class="enscript-keyword">if</span> (removeContext || freeContext)
+                    *epp = iSource-&gt;next;
+                <span class="enscript-keyword">if</span> (freeContext)
+                    free(iSource);
+            }
+            <span class="enscript-keyword">return</span> mStatus_NoError;
+        }
+        epp = &amp;(*epp)-&gt;next;
+    }
+    <span class="enscript-keyword">return</span> mStatus_NoSuchNameErr;
+}
+
+<span class="enscript-comment">// Some of the mDNSPosix client code relies on being able to add FDs to the event loop without
+</span><span class="enscript-comment">// providing storage for the event-related info.   mDNSPosixAddFDToEventLoop and
+</span><span class="enscript-comment">// mDNSPosixRemoveFDFromEventLoop handle the event structure storage automatically.
+</span>mStatus <span class="enscript-function-name">mDNSPosixAddFDToEventLoop</span>(<span class="enscript-type">int</span> fd, mDNSPosixEventCallback callback, <span class="enscript-type">void</span> *context)
+{
+    PosixEventSource *newSource;
+
+    newSource = (PosixEventSource*) malloc(<span class="enscript-keyword">sizeof</span> *newSource);
+    <span class="enscript-keyword">if</span> (NULL == newSource)
+        <span class="enscript-keyword">return</span> mStatus_NoMemoryErr;
+    memset(newSource, 0, <span class="enscript-keyword">sizeof</span> *newSource);
+    newSource-&gt;fd = fd;
+
+    requestReadEvents(newSource, <span class="enscript-string">&quot;mDNSPosixAddFDToEventLoop&quot;</span>, callback, context);
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mStatus <span class="enscript-function-name">mDNSPosixRemoveFDFromEventLoop</span>(<span class="enscript-type">int</span> fd)
+{
+    <span class="enscript-keyword">return</span> stopReadOrWriteEvents(fd, mDNStrue, mDNStrue, PosixEventFlag_Read | PosixEventFlag_Write);
+}
+
+<span class="enscript-comment">// Simply note the received signal in gEventSignals.
+</span>mDNSlocal <span class="enscript-type">void</span>  <span class="enscript-function-name">NoteSignal</span>(<span class="enscript-type">int</span> signum)
+{
+    sigaddset(&amp;gEventSignals, signum);
+}
+
+<span class="enscript-comment">// Tell the event package to listen for signal and report it in mDNSPosixRunEventLoopOnce().
+</span>mStatus <span class="enscript-function-name">mDNSPosixListenForSignalInEventLoop</span>(<span class="enscript-type">int</span> signum)
+{
+    <span class="enscript-type">struct</span> sigaction action;
+    mStatus err;
+
+    mDNSPlatformMemZero(&amp;action, <span class="enscript-keyword">sizeof</span> action);        <span class="enscript-comment">// more portable than member-wise assignment
+</span>    action.sa_handler = NoteSignal;
+    err = sigaction(signum, &amp;action, (<span class="enscript-type">struct</span> sigaction*) NULL);
+
+    sigaddset(&amp;gEventSignalSet, signum);
+
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-comment">// Tell the event package to stop listening for signal in mDNSPosixRunEventLoopOnce().
+</span>mStatus <span class="enscript-function-name">mDNSPosixIgnoreSignalInEventLoop</span>(<span class="enscript-type">int</span> signum)
+{
+    <span class="enscript-type">struct</span> sigaction action;
+    mStatus err;
+
+    mDNSPlatformMemZero(&amp;action, <span class="enscript-keyword">sizeof</span> action);        <span class="enscript-comment">// more portable than member-wise assignment
+</span>    action.sa_handler = SIG_DFL;
+    err = sigaction(signum, &amp;action, (<span class="enscript-type">struct</span> sigaction*) NULL);
+
+    sigdelset(&amp;gEventSignalSet, signum);
+
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-comment">// Do a single pass through the attendent event sources and dispatch any found to their callbacks.
+</span><span class="enscript-comment">// Return as soon as internal timeout expires, or a signal we're listening for is received.
+</span>mStatus <span class="enscript-function-name">mDNSPosixRunEventLoopOnce</span>(mDNS *m, <span class="enscript-type">const</span> <span class="enscript-type">struct</span> timeval *pTimeout,
+                                  sigset_t *pSignalsReceived, mDNSBool *pDataDispatched)
+{
+    fd_set listenFDs;
+    fd_set writeFDs;
+    <span class="enscript-type">int</span> numFDs = 0, numReady;
+    <span class="enscript-type">struct</span> timeval timeout = *pTimeout;
+
+    <span class="enscript-comment">// 1. Set up the fd_set as usual here.
+</span>    <span class="enscript-comment">// This example client has no file descriptors of its own,
+</span>    <span class="enscript-comment">// but a real application would call FD_SET to add them to the set here
+</span>    FD_ZERO(&amp;listenFDs);
+    FD_ZERO(&amp;writeFDs);
+
+    <span class="enscript-comment">// 2. Set up the timeout.
+</span>    mDNSPosixGetNextDNSEventTime(m, &amp;timeout);
+
+    <span class="enscript-comment">// Include the sockets that are listening to the wire in our select() set
+</span>    mDNSPosixGetFDSetForSelect(m, &amp;numFDs, &amp;listenFDs, &amp;writeFDs);
+    numReady = select(numFDs, &amp;listenFDs, &amp;writeFDs, (fd_set*) NULL, &amp;timeout);
+
+    <span class="enscript-keyword">if</span> (numReady &gt; 0)
+    {
+        mDNSPosixProcessFDSet(m, &amp;listenFDs, &amp;writeFDs);
+        *pDataDispatched = mDNStrue;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (numReady &lt; 0)
+    {
+	<span class="enscript-keyword">if</span> (errno != EINTR) {
+            <span class="enscript-comment">// This should never happen, represents a coding error, and is not recoverable, since
+</span>            <span class="enscript-comment">// we'll just sit here spinning and never receive another event.   The usual reason for
+</span>            <span class="enscript-comment">// it to happen is that an FD was closed but not removed from the event list.
+</span>            LogMsg(<span class="enscript-string">&quot;select failed: %s&quot;</span>, strerror(errno));
+            abort();
+        }
+    }
+    <span class="enscript-keyword">else</span>
+        *pDataDispatched = mDNSfalse;
+
+    (<span class="enscript-type">void</span>) sigprocmask(SIG_BLOCK, &amp;gEventSignalSet, (sigset_t*) NULL);
+    *pSignalsReceived = gEventSignals;
+    sigemptyset(&amp;gEventSignals);
+    (<span class="enscript-type">void</span>) sigprocmask(SIG_UNBLOCK, &amp;gEventSignalSet, (sigset_t*) NULL);
+
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+</pre>
+<hr />
+</body></html>

@@ -1,0 +1,775 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>fromwire.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">fromwire.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="fromwire.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* fromwire.c
+ *
+ * Copyright (c) 2018 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * DNS wire-format functions.
+ *
+ * These are really simple functions for constructing DNS messages wire format.
+ * The flow is that there is a transaction structure which contains pointers to both
+ * a message output buffer and a response input buffer.   The structure is initialized,
+ * and then the various wire format functions are called repeatedly to store data.
+ * If an error occurs during this process, it's okay to just keep going, because the
+ * error is recorded in the transaction; once all of the copy-in functions have been
+ * called, the error status can be checked once at the end.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;ctype.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;srp.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns-msg.h&quot;</span>
+
+bool
+<span class="enscript-function-name">dns_opt_parse</span>(dns_edns0_t *NONNULL *NULLABLE ret, dns_rr_t *rr)
+{
+    <span class="enscript-keyword">return</span> true;
+}
+
+dns_label_t * NULLABLE
+<span class="enscript-function-name">dns_label_parse</span>(<span class="enscript-type">const</span> uint8_t *buf, <span class="enscript-type">unsigned</span> mlen, <span class="enscript-type">unsigned</span> *NONNULL offp)
+{
+    uint8_t llen = buf[*offp];
+    dns_label_t *rv;
+
+    <span class="enscript-comment">// Make sure that we got the data this label claims to encompass.
+</span>    <span class="enscript-keyword">if</span> (*offp + llen + 1 &gt; mlen) {
+        DEBUG(<span class="enscript-string">&quot;claimed length of label is too long: %u &gt; %u.\n&quot;</span>, *offp + llen + 1, mlen);
+        <span class="enscript-keyword">return</span> NULL;
+    }
+
+    rv = calloc(llen + 1 - DNS_MAX_LABEL_SIZE + <span class="enscript-keyword">sizeof</span> *rv, 1);
+    <span class="enscript-keyword">if</span> (rv == NULL) {
+        DEBUG(<span class="enscript-string">&quot;memory allocation for %u byte label (%.*s) failed.\n&quot;</span>,
+              *offp + llen + 1, *offp + llen + 1, &amp;buf[*offp + 1]);
+        <span class="enscript-keyword">return</span> NULL;
+    }
+
+    rv-&gt;len = llen;
+    memcpy(rv-&gt;data, &amp;buf[*offp + 1], llen);
+    rv-&gt;data[llen] = 0; <span class="enscript-comment">// We NUL-terminate the label for convenience
+</span>    *offp += llen + 1;
+    <span class="enscript-keyword">return</span> rv;
+}
+
+bool
+<span class="enscript-function-name">dns_name_parse</span>(dns_label_t *NONNULL *NULLABLE ret, <span class="enscript-type">const</span> uint8_t *buf, <span class="enscript-type">unsigned</span> len,
+               <span class="enscript-type">unsigned</span> *NONNULL offp, <span class="enscript-type">unsigned</span> base)
+{
+    dns_label_t *rv;
+
+    <span class="enscript-keyword">if</span> (*offp == len) {
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    <span class="enscript-comment">// A pointer?
+</span>    <span class="enscript-keyword">if</span> ((buf[*offp] &amp; 0xC0) == 0xC0) {
+        <span class="enscript-type">unsigned</span> pointer;
+        <span class="enscript-keyword">if</span> (*offp + 2 &gt; len) {
+            DEBUG(<span class="enscript-string">&quot;incomplete compression pointer: %u &gt; %u&quot;</span>, *offp + 2, len);
+            <span class="enscript-keyword">return</span> false;
+        }
+        pointer = (((<span class="enscript-type">unsigned</span>)buf[*offp] &amp; 0x3f) &lt;&lt; 8) | (<span class="enscript-type">unsigned</span>)buf[*offp + 1];
+        *offp += 2;
+        <span class="enscript-keyword">if</span> (pointer &gt;= base) {
+            <span class="enscript-comment">// Don't allow a pointer forward, or to a pointer we've already visited.
+</span>            DEBUG(<span class="enscript-string">&quot;compression pointer points forward: %u &gt;= %u.\n&quot;</span>, pointer, base);
+            <span class="enscript-keyword">return</span> false;
+        }
+        <span class="enscript-keyword">if</span> (pointer &lt; DNS_HEADER_SIZE) {
+            <span class="enscript-comment">// Don't allow pointers into the header.
+</span>            DEBUG(<span class="enscript-string">&quot;compression pointer points into header: %u.\n&quot;</span>, pointer);
+            <span class="enscript-keyword">return</span> false;
+        }
+        pointer -= DNS_HEADER_SIZE;
+        <span class="enscript-keyword">if</span> (buf[pointer] &amp; 0xC0) {
+            <span class="enscript-comment">// If this is a pointer to a pointer, it's not valid.
+</span>            DEBUG(<span class="enscript-string">&quot;compression pointer points into pointer: %u %02x%02x.\n&quot;</span>, pointer,
+                  buf[pointer], pointer + 1 &lt; len ? buf[pointer + 1] : 0xFF);
+            <span class="enscript-keyword">return</span> false;
+        }
+        <span class="enscript-keyword">if</span> (buf[pointer] + pointer &gt;= base || buf[pointer] + pointer &gt;= *offp) {
+            <span class="enscript-comment">// Possibly this isn't worth checking.
+</span>            DEBUG(<span class="enscript-string">&quot;compression pointer points to something that goes past current position: %u %u\n&quot;</span>,
+                  pointer, buf[pointer]);
+            <span class="enscript-keyword">return</span> false;
+        }
+        <span class="enscript-keyword">return</span> dns_name_parse(ret, buf, len, &amp;pointer, pointer);
+    }
+    <span class="enscript-comment">// We don't support binary labels, which are historical, and at this time there are no other valid
+</span>    <span class="enscript-comment">// DNS label types.
+</span>    <span class="enscript-keyword">if</span> (buf[*offp] &amp; 0xC0) {
+        DEBUG(<span class="enscript-string">&quot;invalid label type: %x\n&quot;</span>, buf[*offp]);
+        <span class="enscript-keyword">return</span> false;
+    }
+    
+    rv = dns_label_parse(buf, len, offp);
+    <span class="enscript-keyword">if</span> (rv == NULL) {
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    *ret = rv;
+
+    <span class="enscript-keyword">if</span> (rv-&gt;len == 0) {
+        <span class="enscript-keyword">return</span> true;
+    }
+    <span class="enscript-keyword">return</span> dns_name_parse(&amp;rv-&gt;next, buf, len, offp, base);
+}
+
+bool
+<span class="enscript-function-name">dns_u8_parse</span>(<span class="enscript-type">const</span> uint8_t *buf, <span class="enscript-type">unsigned</span> len, <span class="enscript-type">unsigned</span> *NONNULL offp, uint8_t *NONNULL ret)
+{
+    uint8_t rv;
+    <span class="enscript-keyword">if</span> (*offp + 1 &gt; len) {
+        DEBUG(<span class="enscript-string">&quot;dns_u8_parse: not enough room: %u &gt; %u.\n&quot;</span>, *offp + 1, len);
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    rv = buf[*offp];
+    *offp += 1;
+    *ret = rv;
+    <span class="enscript-keyword">return</span> true;
+}
+
+bool
+<span class="enscript-function-name">dns_u16_parse</span>(<span class="enscript-type">const</span> uint8_t *buf, <span class="enscript-type">unsigned</span> len, <span class="enscript-type">unsigned</span> *NONNULL offp, uint16_t *NONNULL ret)
+{
+    uint16_t rv;
+    <span class="enscript-keyword">if</span> (*offp + 2 &gt; len) {
+        DEBUG(<span class="enscript-string">&quot;dns_u16_parse: not enough room: %u &gt; %u.\n&quot;</span>, *offp + 2, len);
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    rv = ((uint16_t)(buf[*offp]) &lt;&lt; 8) | (uint16_t)(buf[*offp + 1]);
+    *offp += 2;
+    *ret = rv;
+    <span class="enscript-keyword">return</span> true;
+}
+
+bool
+<span class="enscript-function-name">dns_u32_parse</span>(<span class="enscript-type">const</span> uint8_t *buf, <span class="enscript-type">unsigned</span> len, <span class="enscript-type">unsigned</span> *NONNULL offp, uint32_t *NONNULL ret)
+{
+    uint32_t rv;
+    <span class="enscript-keyword">if</span> (*offp + 4 &gt; len) {
+        DEBUG(<span class="enscript-string">&quot;dns_u32_parse: not enough room: %u &gt; %u.\n&quot;</span>, *offp + 4, len);
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    rv = (((uint32_t)(buf[*offp]) &lt;&lt; 24) | ((uint32_t)(buf[*offp + 1]) &lt;&lt; 16) |
+          ((uint32_t)(buf[*offp + 2]) &lt;&lt; 8) | (uint32_t)(buf[*offp + 3]));
+    *offp += 4;
+    *ret = rv;
+    <span class="enscript-keyword">return</span> true;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_name_dump</span>(FILE *outfile, dns_label_t *name)
+{
+    <span class="enscript-type">char</span> buf[DNS_MAX_NAME_SIZE_ESCAPED + 1];
+    
+    dns_name_print(name, buf, <span class="enscript-keyword">sizeof</span> buf);
+    fputs(buf, outfile);
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_rrdata_dump</span>(FILE *outfile, dns_rr_t *rr)
+{
+    <span class="enscript-type">int</span> i;
+    <span class="enscript-type">char</span> nbuf[80];
+    dns_txt_element_t *txt;
+
+    <span class="enscript-keyword">switch</span>(rr-&gt;type) {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_key</span>:
+        fprintf(outfile, <span class="enscript-string">&quot;KEY &lt;AC %d&gt; &lt;Z %d&gt; &lt;XT %d&gt; &lt;ZZ %d&gt; &lt;NAMTYPE %d&gt; &lt;ZZZZ %d&gt; &lt;ORY %d&gt; %d %d &quot;</span>,
+                ((rr-&gt;data.key.flags &amp; 0xC000) &gt;&gt; 14 &amp; 3), ((rr-&gt;data.key.flags &amp; 0x2000) &gt;&gt; 13) &amp; 1,
+                ((rr-&gt;data.key.flags &amp; 0x1000) &gt;&gt; 12) &amp; 1, ((rr-&gt;data.key.flags &amp; 0xC00) &gt;&gt; 10) &amp; 3,
+                ((rr-&gt;data.key.flags &amp; 0x300) &gt;&gt; 8) &amp; 3, ((rr-&gt;data.key.flags &amp; 0xF0) &gt;&gt; 4) &amp; 15, rr-&gt;data.key.flags &amp; 15,
+                rr-&gt;data.key.protocol, rr-&gt;data.key.algorithm);
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; rr-&gt;data.key.len; i++) {
+            <span class="enscript-keyword">if</span> (i == 0) {
+                fprintf(outfile, <span class="enscript-string">&quot;%d [%02x&quot;</span>, rr-&gt;data.key.len, rr-&gt;data.key.key[i]);
+            } <span class="enscript-keyword">else</span> {
+                fprintf(outfile, <span class="enscript-string">&quot; %02x&quot;</span>, rr-&gt;data.key.key[i]);
+            }
+        }
+        fputc(<span class="enscript-string">']'</span>, outfile);
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_sig</span>:
+        fprintf(outfile, <span class="enscript-string">&quot;SIG %d %d %d %lu %lu %lu %d &quot;</span>,
+                rr-&gt;data.sig.type, rr-&gt;data.sig.algorithm, rr-&gt;data.sig.label,
+                (<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)rr-&gt;data.sig.rrttl, (<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)rr-&gt;data.sig.expiry,
+                (<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)rr-&gt;data.sig.inception, rr-&gt;data.sig.key_tag);
+        dns_name_dump(outfile, rr-&gt;data.sig.signer);
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; rr-&gt;data.sig.len; i++) {
+            <span class="enscript-keyword">if</span> (i == 0) {
+                fprintf(outfile, <span class="enscript-string">&quot;%d [%02x&quot;</span>, rr-&gt;data.sig.len, rr-&gt;data.sig.signature[i]);
+            } <span class="enscript-keyword">else</span> {
+                fprintf(outfile, <span class="enscript-string">&quot; %02x&quot;</span>, rr-&gt;data.sig.signature[i]);
+            }
+        }
+        fputc(<span class="enscript-string">']'</span>, outfile);
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_srv</span>:
+        fprintf(outfile, <span class="enscript-string">&quot;SRV %d %d %d &quot;</span>, rr-&gt;data.srv.priority, rr-&gt;data.srv.weight, rr-&gt;data.srv.port);
+        dns_name_dump(outfile, rr-&gt;data.ptr.name);
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_ptr</span>:
+        fputs(<span class="enscript-string">&quot;PTR &quot;</span>, outfile);
+        dns_name_dump(outfile, rr-&gt;data.ptr.name);
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_cname</span>:
+        fputs(<span class="enscript-string">&quot;CNAME &quot;</span>, outfile);
+        dns_name_dump(outfile, rr-&gt;data.ptr.name);
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_a</span>:
+        fputs(<span class="enscript-string">&quot;A&quot;</span>, outfile);
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; rr-&gt;data.a.num; i++) {
+            inet_ntop(AF_INET, &amp;rr-&gt;data.a.addrs[i], nbuf, <span class="enscript-keyword">sizeof</span> nbuf);
+            putc(<span class="enscript-string">' '</span>, outfile);
+            fputs(nbuf, outfile);
+        }
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_aaaa</span>:
+        fputs(<span class="enscript-string">&quot;AAAA&quot;</span>, outfile);
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; rr-&gt;data.aaaa.num; i++) {
+            inet_ntop(AF_INET6, &amp;rr-&gt;data.aaaa.addrs[i], nbuf, <span class="enscript-keyword">sizeof</span> nbuf);
+            putc(<span class="enscript-string">' '</span>, outfile);
+            fputs(nbuf, outfile);
+        }
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_txt</span>:
+        fputs(<span class="enscript-string">&quot;TXT&quot;</span>, outfile);
+        <span class="enscript-keyword">for</span> (txt = rr-&gt;data.txt; txt; txt = txt-&gt;next) {
+            putc(<span class="enscript-string">' '</span>, outfile);
+            putc(<span class="enscript-string">'&quot;'</span>, outfile);
+            <span class="enscript-keyword">for</span> (i = 0; i &lt; txt-&gt;len; i++) {
+                <span class="enscript-keyword">if</span> (isascii(txt-&gt;data[i]) &amp;&amp; isprint(txt-&gt;data[i])) {
+                    putc(txt-&gt;data[i], outfile);
+                } <span class="enscript-keyword">else</span> {
+                    fprintf(outfile, <span class="enscript-string">&quot;&lt;%x&gt;&quot;</span>, txt-&gt;data[i]);
+                }
+            }
+            putc(<span class="enscript-string">'&quot;'</span>, outfile);
+        }
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-reference">default</span>:
+        fprintf(outfile, <span class="enscript-string">&quot;&lt;rrtype %d&gt;:&quot;</span>, rr-&gt;type);
+        <span class="enscript-keyword">if</span> (rr-&gt;data.unparsed.len == 0) {
+            fputs(<span class="enscript-string">&quot; &lt;none&gt;&quot;</span>, outfile);
+        } <span class="enscript-keyword">else</span> {
+            <span class="enscript-keyword">for</span> (i = 0; i &lt; rr-&gt;data.unparsed.len; i++) {
+                fprintf(outfile, <span class="enscript-string">&quot; %02x&quot;</span>, rr-&gt;data.unparsed.data[i]);
+            }
+        }
+        <span class="enscript-keyword">break</span>;
+    }
+}
+
+bool
+<span class="enscript-function-name">dns_rdata_parse_data</span>(dns_rr_t *NONNULL rr, <span class="enscript-type">const</span> uint8_t *buf, <span class="enscript-type">unsigned</span> *NONNULL offp, <span class="enscript-type">unsigned</span> target, <span class="enscript-type">unsigned</span> rdlen, <span class="enscript-type">unsigned</span> rrstart)
+{
+    uint16_t addrlen;
+    dns_txt_element_t *txt, **ptxt;
+
+    <span class="enscript-keyword">switch</span>(rr-&gt;type) {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_key</span>:
+        <span class="enscript-keyword">if</span> (!dns_u16_parse(buf, target, offp, &amp;rr-&gt;data.key.flags) ||
+            !dns_u8_parse(buf, target, offp, &amp;rr-&gt;data.key.protocol) ||
+            !dns_u8_parse(buf, target, offp, &amp;rr-&gt;data.key.algorithm)) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        rr-&gt;data.key.len = target - *offp;
+        rr-&gt;data.key.key = malloc(rr-&gt;data.key.len);
+        <span class="enscript-keyword">if</span> (!rr-&gt;data.key.key) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        memcpy(rr-&gt;data.key.key, &amp;buf[*offp], rr-&gt;data.key.len);
+        *offp += rr-&gt;data.key.len;
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_sig</span>:
+        rr-&gt;data.sig.start = rrstart;
+        <span class="enscript-keyword">if</span> (!dns_u16_parse(buf, target, offp, &amp;rr-&gt;data.sig.type) ||
+            !dns_u8_parse(buf, target, offp, &amp;rr-&gt;data.sig.algorithm) ||
+            !dns_u8_parse(buf, target, offp, &amp;rr-&gt;data.sig.label) ||
+            !dns_u32_parse(buf, target, offp, &amp;rr-&gt;data.sig.rrttl) ||
+            !dns_u32_parse(buf, target, offp, &amp;rr-&gt;data.sig.expiry) ||
+            !dns_u32_parse(buf, target, offp, &amp;rr-&gt;data.sig.inception) ||
+            !dns_u16_parse(buf, target, offp, &amp;rr-&gt;data.sig.key_tag) ||
+            !dns_name_parse(&amp;rr-&gt;data.sig.signer, buf, target, offp, *offp)) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        <span class="enscript-comment">// The signature is what's left of the RRDATA.  It covers the message up to the signature, so we
+</span>        <span class="enscript-comment">// remember where it starts so as to know what memory to cover to validate it.
+</span>        rr-&gt;data.sig.len = target - *offp;
+        rr-&gt;data.sig.signature = malloc(rr-&gt;data.sig.len);
+        <span class="enscript-keyword">if</span> (!rr-&gt;data.sig.signature) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        memcpy(rr-&gt;data.sig.signature, &amp;buf[*offp], rr-&gt;data.sig.len);
+        *offp += rr-&gt;data.sig.len;
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_srv</span>:
+        <span class="enscript-keyword">if</span> (!dns_u16_parse(buf, target, offp, &amp;rr-&gt;data.srv.priority) ||
+            !dns_u16_parse(buf, target, offp, &amp;rr-&gt;data.srv.weight) ||
+            !dns_u16_parse(buf, target, offp, &amp;rr-&gt;data.srv.port)) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        <span class="enscript-comment">// This fallthrough assumes that the first element in the srv, ptr and cname structs is
+</span>        <span class="enscript-comment">// a pointer to a domain name.
+</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_ptr</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_cname</span>:
+        <span class="enscript-keyword">if</span> (!dns_name_parse(&amp;rr-&gt;data.ptr.name, buf, target, offp, *offp)) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        <span class="enscript-keyword">break</span>;
+
+        <span class="enscript-comment">// We assume below that the a and aaaa structures in the data union are exact aliases of
+</span>        <span class="enscript-comment">// each another.
+</span>    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_a</span>:
+        addrlen = 4;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">addr_parse</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_aaaa</span>:
+        addrlen = 16;
+    <span class="enscript-reference">addr_parse</span>:
+        <span class="enscript-keyword">if</span> (rdlen &amp; (addrlen - 1)) {
+            DEBUG(<span class="enscript-string">&quot;dns_rdata_parse: %s rdlen not an even multiple of %u: %u&quot;</span>,
+                  addrlen == 4 ? <span class="enscript-string">&quot;A&quot;</span> : <span class="enscript-string">&quot;AAAA&quot;</span>, addrlen, rdlen);
+            <span class="enscript-keyword">return</span> false;
+        }
+        rr-&gt;data.a.addrs = malloc(rdlen);
+        <span class="enscript-keyword">if</span> (rr-&gt;data.a.addrs == NULL) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        rr-&gt;data.a.num = rdlen /  addrlen;
+        memcpy(rr-&gt;data.a.addrs, &amp;buf[*offp], rdlen);
+        *offp = target;
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_txt</span>:
+        ptxt = &amp;rr-&gt;data.txt;
+        <span class="enscript-keyword">while</span> (*offp &lt; target) {
+            <span class="enscript-type">unsigned</span> tlen = buf[*offp];
+            <span class="enscript-keyword">if</span> (*offp + tlen + 1 &gt; target) {
+                DEBUG(<span class="enscript-string">&quot;dns_rdata_parse: TXT RR length is larger than available space: %u %u&quot;</span>,
+                      *offp + tlen + 1, target);
+                *ptxt = NULL;
+                <span class="enscript-keyword">return</span> false;
+            }
+            txt = malloc(tlen + 1 + <span class="enscript-keyword">sizeof</span> *txt);
+            <span class="enscript-keyword">if</span> (txt == NULL) {
+                DEBUG(<span class="enscript-string">&quot;dns_rdata_parse: no memory for TXT RR&quot;</span>);
+                <span class="enscript-keyword">return</span> false;
+            }
+            txt-&gt;len = tlen;
+            ++*offp;
+            memcpy(txt-&gt;data, &amp;buf[*offp], tlen);
+            *offp += tlen;
+            txt-&gt;data[tlen] = 0;
+            *ptxt = txt;
+            ptxt = &amp;txt-&gt;next;
+        }
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-reference">default</span>:
+        <span class="enscript-keyword">if</span> (rdlen &gt; 0) {
+            rr-&gt;data.unparsed.data = malloc(rdlen);
+            <span class="enscript-keyword">if</span> (rr-&gt;data.unparsed.data == NULL) {
+                <span class="enscript-keyword">return</span> false;
+            }
+            memcpy(rr-&gt;data.unparsed.data, &amp;buf[*offp], rdlen);
+        }
+        rr-&gt;data.unparsed.len = rdlen;
+        *offp = target;
+        <span class="enscript-keyword">break</span>;
+    }
+    <span class="enscript-keyword">if</span> (*offp != target) {
+        DEBUG(<span class="enscript-string">&quot;dns_rdata_parse: parse for rrtype %d not fully contained: %u %u&quot;</span>, rr-&gt;type, target, *offp);
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">return</span> true;
+}
+
+<span class="enscript-type">static</span> bool
+<span class="enscript-function-name">dns_rdata_parse</span>(dns_rr_t *NONNULL rr,
+                <span class="enscript-type">const</span> uint8_t *buf, <span class="enscript-type">unsigned</span> len, <span class="enscript-type">unsigned</span> *NONNULL offp, <span class="enscript-type">unsigned</span> rrstart)
+{
+    uint16_t rdlen;
+    <span class="enscript-type">unsigned</span> target;
+    
+    <span class="enscript-keyword">if</span> (!dns_u16_parse(buf, len, offp, &amp;rdlen)) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    target = *offp + rdlen;
+    <span class="enscript-keyword">if</span> (target &gt; len) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">return</span> dns_rdata_parse_data(rr, buf, offp, target, rdlen, rrstart);
+}
+
+bool
+<span class="enscript-function-name">dns_rr_parse</span>(dns_rr_t *NONNULL rr,
+             <span class="enscript-type">const</span> uint8_t *buf, <span class="enscript-type">unsigned</span> len, <span class="enscript-type">unsigned</span> *NONNULL offp, bool rrdata_expected)
+{
+    <span class="enscript-type">int</span> rrstart = *offp; <span class="enscript-comment">// Needed to mark the start of the SIG RR for SIG(0).
+</span>    memset(rr, 0, <span class="enscript-keyword">sizeof</span> *rr);
+    <span class="enscript-keyword">if</span> (!dns_name_parse(&amp;rr-&gt;name, buf, len, offp, *offp)) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    
+    <span class="enscript-keyword">if</span> (!dns_u16_parse(buf, len, offp, &amp;rr-&gt;type)) {
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    <span class="enscript-keyword">if</span> (!dns_u16_parse(buf, len, offp, &amp;rr-&gt;qclass)) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    
+    <span class="enscript-keyword">if</span> (rrdata_expected) {
+        <span class="enscript-keyword">if</span> (!dns_u32_parse(buf, len, offp, &amp;rr-&gt;ttl)) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        <span class="enscript-keyword">if</span> (!dns_rdata_parse(rr, buf, len, offp, rrstart)) {
+            <span class="enscript-keyword">return</span> false;
+        }
+    }
+        
+    printf(<span class="enscript-string">&quot;rrtype: %u  qclass: %u  name: &quot;</span>, rr-&gt;type, rr-&gt;qclass);
+    dns_name_dump(stdout, rr-&gt;name);
+    <span class="enscript-keyword">if</span> (rrdata_expected) {
+        printf(<span class="enscript-string">&quot;  rrdata: &quot;</span>);
+        dns_rrdata_dump(stdout, rr);
+    }
+    printf(<span class="enscript-string">&quot;\n&quot;</span>);
+    <span class="enscript-keyword">return</span> true;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dns_name_free</span>(dns_label_t *name)
+{
+    dns_label_t *next;
+    <span class="enscript-keyword">if</span> (name == NULL) {
+        <span class="enscript-keyword">return</span>;
+    }
+    next = name-&gt;next;
+    free(name);
+    <span class="enscript-keyword">return</span> dns_name_free(next);
+}    
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_rrdata_free</span>(dns_rr_t *rr)
+{
+    <span class="enscript-keyword">switch</span>(rr-&gt;type) {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_key</span>:
+        free(rr-&gt;data.key.key);
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_sig</span>:
+        dns_name_free(rr-&gt;data.sig.signer);
+        free(rr-&gt;data.sig.signature);
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_srv</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_ptr</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_cname</span>:
+        dns_name_free(rr-&gt;data.ptr.name);
+        rr-&gt;data.ptr.name = NULL;
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_a</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_aaaa</span>:
+        free(rr-&gt;data.a.addrs);
+        rr-&gt;data.a.addrs = NULL;
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_txt</span>:
+    <span class="enscript-reference">default</span>:
+        free(rr-&gt;data.unparsed.data);
+        rr-&gt;data.unparsed.data = NULL;
+        <span class="enscript-keyword">break</span>;
+    }
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_message_free</span>(dns_message_t *message)
+{
+    <span class="enscript-type">int</span> i;
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">FREE</span>(count, sets)                           \
+    for (i = 0; i &lt; message-&gt;count; i++) {          \
+        dns_rr_t *set = &amp;message-&gt;sets[i];          \
+        if (set-&gt;name) {                            \
+            dns_name_free(set-&gt;name);               \
+            set-&gt;name = NULL;                       \
+        }                                           \
+        dns_rrdata_free(set);                       \
+    }                                               \
+    if (message-&gt;sets) {                            \
+        free(message-&gt;sets);                        \
+    }
+    FREE(qdcount, questions);
+    FREE(ancount, answers);
+    FREE(nscount, authority);
+    FREE(arcount, additional);
+#<span class="enscript-reference">undef</span> <span class="enscript-variable-name">FREE</span>
+}
+
+bool
+<span class="enscript-function-name">dns_wire_parse</span>(dns_message_t *NONNULL *NULLABLE ret, dns_wire_t *message, <span class="enscript-type">unsigned</span> len)
+{
+    <span class="enscript-type">unsigned</span> offset = 0;
+    dns_message_t *rv = calloc(<span class="enscript-keyword">sizeof</span> *rv, 1);
+    <span class="enscript-type">int</span> i;
+    
+    <span class="enscript-keyword">if</span> (rv == NULL) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">PARSE</span>(count, sets, name, rrdata_expected)                                   \
+    rv-&gt;count = ntohs(message-&gt;count);                                              \
+    if (rv-&gt;count &gt; 50) {                                                           \
+        dns_message_free(rv);                                                       \
+        return false;                                                               \
+    }                                                                               \
+                                                                                    \
+    if (rv-&gt;qdcount != 0) {                                                         \
+        rv-&gt;sets = calloc(sizeof *rv-&gt;sets, rv-&gt;count);                             \
+        if (rv-&gt;sets == NULL) {                                                     \
+            dns_message_free(rv);                                                   \
+            return false;                                                           \
+        }                                                                           \
+    }                                                                               \
+                                                                                    \
+    for (i = 0; i &lt; rv-&gt;count; i++) {                                               \
+        if (!dns_rr_parse(&amp;rv-&gt;sets[i], message-&gt;data, len, &amp;offset, rrdata_expected)) {  	\
+            dns_message_free(rv);                                                   \
+            fprintf(stderr, name <span class="enscript-string">&quot; %d RR parse failed.\n&quot;</span>, i);                      \
+            return false;                                                           \
+        }                                                                           \
+    }
+    PARSE(qdcount,  questions, <span class="enscript-string">&quot;question&quot;</span>, false);
+    PARSE(ancount,    answers, <span class="enscript-string">&quot;answers&quot;</span>, true);
+    PARSE(nscount,  authority, <span class="enscript-string">&quot;authority&quot;</span>, true);
+    PARSE(arcount, additional, <span class="enscript-string">&quot;additional&quot;</span>, true);
+#<span class="enscript-reference">undef</span> <span class="enscript-variable-name">PARSE</span>
+    
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; rv-&gt;ancount; i++) {
+        <span class="enscript-comment">// Parse EDNS(0)
+</span>        <span class="enscript-keyword">if</span> (rv-&gt;additional[i].type == dns_rrtype_opt) {
+            <span class="enscript-keyword">if</span> (!dns_opt_parse(&amp;rv-&gt;edns0, &amp;rv-&gt;additional[i])) {
+                dns_message_free(rv);
+                <span class="enscript-keyword">return</span> false;
+            }
+        }
+    }
+    *ret = rv;
+    <span class="enscript-keyword">return</span> true;
+}
+
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> *NONNULL
+<span class="enscript-function-name">dns_name_print</span>(dns_name_t *NONNULL name, <span class="enscript-type">char</span> *buf, <span class="enscript-type">int</span> bufmax)
+{
+    dns_label_t *lp;
+    <span class="enscript-type">int</span> ix = 0;
+    <span class="enscript-type">int</span> i;
+
+    <span class="enscript-comment">// Copy the labels in one at a time, putting a dot between each one; if there isn't room
+</span>    <span class="enscript-comment">// in the buffer (shouldn't be the case), copy as much as will fit, leaving room for a NUL
+</span>    <span class="enscript-comment">// termination.
+</span>    <span class="enscript-keyword">for</span> (lp = name; lp; lp = lp-&gt;next) {
+        <span class="enscript-keyword">if</span> (ix != 0) {
+            <span class="enscript-keyword">if</span> (ix + 2 &gt;= bufmax) {
+                <span class="enscript-keyword">break</span>;
+            }
+            buf[ix++] = <span class="enscript-string">'.'</span>;
+        }
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; lp-&gt;len; i++) {
+            <span class="enscript-keyword">if</span> (isascii(lp-&gt;data[i]) &amp;&amp; isprint(lp-&gt;data[i])) {
+                <span class="enscript-keyword">if</span> (ix + 2 &gt;= bufmax) {
+                    <span class="enscript-keyword">break</span>;
+                }
+                buf[ix++] = lp-&gt;data[i];
+            } <span class="enscript-keyword">else</span> {
+                <span class="enscript-keyword">if</span> (ix + 5 &gt;= bufmax) {
+                    <span class="enscript-keyword">break</span>;
+                }
+                buf[ix++] = <span class="enscript-string">'\\'</span>;
+                buf[ix++] = <span class="enscript-string">'0'</span> + (lp-&gt;data[i] &gt;&gt; 6);
+                buf[ix++] = <span class="enscript-string">'0'</span> + (lp-&gt;data[i] &gt;&gt; 3) &amp; 3;
+                buf[ix++] = <span class="enscript-string">'0'</span> + lp-&gt;data[i] &amp; 3;
+            }
+        }
+        <span class="enscript-keyword">if</span> (i != lp-&gt;len) {
+            <span class="enscript-keyword">break</span>;
+        }
+    }
+    buf[ix++] = 0;
+    <span class="enscript-keyword">return</span> buf;
+}
+
+bool
+<span class="enscript-function-name">labeleq</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *label1, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *label2, size_t len)
+{
+    <span class="enscript-type">int</span> i;
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; len; i++) {
+        <span class="enscript-keyword">if</span> (isascii(label1[i]) &amp;&amp; isascii(label2[i])) {
+            <span class="enscript-keyword">if</span> (tolower(label1[i]) != tolower(label2[i])) {
+                <span class="enscript-keyword">return</span> false;
+            }
+        }
+        <span class="enscript-keyword">else</span> {
+            <span class="enscript-keyword">if</span> (label1[i] != label2[i]) {
+                <span class="enscript-keyword">return</span> false;
+            }
+        }
+    }
+    <span class="enscript-keyword">return</span> true;
+}
+
+bool
+<span class="enscript-function-name">dns_names_equal</span>(dns_label_t *NONNULL name1, dns_label_t *NONNULL name2)
+{
+    <span class="enscript-keyword">if</span> (name1-&gt;len != name2-&gt;len) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">if</span> (name1-&gt;len != 0 &amp;&amp; !labeleq(name1-&gt;data, name2-&gt;data, name1-&gt;len) != 0) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">if</span> (name1-&gt;next != NULL &amp;&amp; name2-&gt;next != NULL) {
+        <span class="enscript-keyword">return</span> dns_names_equal(name1-&gt;next, name2-&gt;next);
+    }
+    <span class="enscript-keyword">if</span> (name1-&gt;next == NULL &amp;&amp; name2-&gt;next == NULL) {
+        <span class="enscript-keyword">return</span> true;
+    }
+    <span class="enscript-keyword">return</span> false;
+}
+
+<span class="enscript-comment">// Note that &quot;foo.arpa&quot; is not the same as &quot;foo.arpa.&quot;
+</span>bool
+<span class="enscript-function-name">dns_names_equal_text</span>(dns_label_t *NONNULL name1, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *NONNULL name2)
+{
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *ndot;
+    ndot = strchr(name2, <span class="enscript-string">'.'</span>);
+    <span class="enscript-keyword">if</span> (ndot == NULL) {
+        ndot = name2 + strlen(name2);
+    }
+    <span class="enscript-keyword">if</span> (name1-&gt;len != ndot - name2) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">if</span> (name1-&gt;len != 0 &amp;&amp; !labeleq(name1-&gt;data, name2, name1-&gt;len) != 0) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">if</span> (name1-&gt;next != NULL &amp;&amp; *ndot == <span class="enscript-string">'.'</span>) {
+        <span class="enscript-keyword">return</span> dns_names_equal_text(name1-&gt;next, ndot + 1);
+    }
+    <span class="enscript-keyword">if</span> (name1-&gt;next == NULL &amp;&amp; *ndot == 0) {
+        <span class="enscript-keyword">return</span> true;
+    }
+    <span class="enscript-keyword">return</span> false;
+}
+
+<span class="enscript-comment">// Find the length of a name in uncompressed wire format.
+</span><span class="enscript-comment">// This is in fromwire because we use it for validating signatures, and don't need it for
+</span><span class="enscript-comment">// sending.
+</span><span class="enscript-type">static</span> size_t
+<span class="enscript-function-name">dns_name_wire_length_in</span>(dns_label_t *NONNULL name, size_t ret)
+{
+    <span class="enscript-comment">// Root label.
+</span>    <span class="enscript-keyword">if</span> (name == NULL)
+        <span class="enscript-keyword">return</span> ret;
+    <span class="enscript-keyword">return</span> dns_name_wire_length_in(name-&gt;next, ret + name-&gt;len + 1);
+}
+
+size_t
+<span class="enscript-function-name">dns_name_wire_length</span>(dns_label_t *NONNULL name)
+{
+    <span class="enscript-keyword">return</span> dns_name_wire_length_in(name, 0);
+}
+
+<span class="enscript-comment">// Copy a name we've parsed from a message out in canonical wire format so that we can
+</span><span class="enscript-comment">// use it to verify a signature.   As above, not actually needed for copying to a message
+</span><span class="enscript-comment">// we're going to send, since in that case we want to try to compress.
+</span><span class="enscript-type">static</span> size_t
+<span class="enscript-function-name">dns_name_to_wire_canonical_in</span>(uint8_t *NONNULL buf, size_t max, size_t ret, dns_label_t *NONNULL name)
+{
+    INFO(<span class="enscript-string">&quot;dns_name_to_wire_canonical_in: buf %p max %zd ret %zd  name = %p '%.*s'&quot;</span>,
+         buf, max, ret, name, name ? name-&gt;len : 0, name ? name-&gt;data : <span class="enscript-string">&quot;&quot;</span>);
+    <span class="enscript-keyword">if</span> (name == NULL) {
+        <span class="enscript-keyword">return</span> ret;
+    }
+    <span class="enscript-keyword">if</span> (max &lt; name-&gt;len + 1) {
+        <span class="enscript-keyword">return</span> 0;
+    }
+    *buf = name-&gt;len;
+    memcpy(buf + 1, name-&gt;data, name-&gt;len);
+    <span class="enscript-keyword">return</span> dns_name_to_wire_canonical_in(buf + name-&gt;len + 1,
+                                         max - name-&gt;len - 1, ret + name-&gt;len + 1, name-&gt;next);
+}
+
+size_t
+<span class="enscript-function-name">dns_name_to_wire_canonical</span>(uint8_t *NONNULL buf, size_t max, dns_label_t *NONNULL name)
+{
+    <span class="enscript-keyword">return</span> dns_name_to_wire_canonical_in(buf, max, 0, name);
+}
+    
+
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

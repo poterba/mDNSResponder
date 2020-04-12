@@ -1,0 +1,299 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>DNSServiceReg.m</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">DNSServiceReg.m&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="DNSServiceReg.m">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2002-2003 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may <span class="enscript-type">not</span> use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ * 
+ * Unless required by applicable law <span class="enscript-type">or</span> agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express <span class="enscript-type">or</span> implied.
+ * See the License <span class="enscript-keyword">for</span> the specific language governing permissions <span class="enscript-type">and</span>
+ * limitations under the License.
+ */
+
+#include &quot;dns_sd.h&quot;
+
+@interface RegistrationController : NSObject
+{
+    IBOutlet NSTableColumn 	*typeColumn;
+    IBOutlet NSTableColumn 	*nameColumn;
+    IBOutlet NSTableColumn 	*portColumn;
+    IBOutlet NSTableColumn 	*domainColumn;
+    IBOutlet NSTableColumn 	*textColumn;
+
+    IBOutlet NSTableView	*serviceDisplayTable;
+
+    IBOutlet NSTextField	*serviceTypeField;
+    IBOutlet NSTextField	*serviceNameField;
+    IBOutlet NSTextField	*servicePortField;
+    IBOutlet NSTextField	*serviceDomainField;
+    IBOutlet NSTextField	*serviceTextField;
+    
+    NSMutableArray		*srvtypeKeys;
+    NSMutableArray		*srvnameKeys;
+    NSMutableArray		*srvportKeys;
+    NSMutableArray		*srvdomainKeys;
+    NSMutableArray		*srvtextKeys;
+
+    NSMutableDictionary		*registeredDict;
+}
+
+- (IBAction)registerService:(id)sender;
+- (IBAction)unregisterService:(id)sender;
+
+- (IBAction)addNewService:(id)sender;
+- (IBAction)removeSelected:(id)sender;
+
+@<span class="enscript-keyword">end</span>
+
+void reg_reply
+    (
+    DNSServiceRef                       sdRef,
+    DNSServiceFlags                     flags,
+    DNSServiceErrorType                 errorCode,
+    const <span class="enscript-type">char</span>                          *name,
+    const <span class="enscript-type">char</span>                          *regtype,
+    const <span class="enscript-type">char</span>                          *domain,
+    void                                *context
+    )
+{
+    // registration reply
+    printf(&quot;Got a reply from the server with <span class="enscript-keyword">error</span> <span class="enscript-comment">%d\n&quot;, errorCode);
+</span>    <span class="enscript-keyword">return</span>;
+}
+
+static void myCFSocketCallBack(CFSocketRef cfs, CFSocketCallBackType CallBackType, CFDataRef address, const void *data, void *context)
+	{
+	DNSServiceProcessResult((DNSServiceRef)context);
+	}
+
+static void addDNSServiceRefToRunLoop(DNSServiceRef ref)
+	{
+	int s = DNSServiceRefSockFD(ref);
+	CFSocketContext myCFSocketContext = { 0, ref, NULL, NULL, NULL };
+	CFSocketRef c = CFSocketCreateWithNative(kCFAllocatorDefault, s, kCFSocketReadCallBack, myCFSocketCallBack, &amp;myCFSocketContext);
+	CFRunLoopSourceRef rls = CFSocketCreateRunLoopSource(kCFAllocatorDefault, c, 0);
+	CFRunLoopAddSource(CFRunLoopGetCurrent(), rls, kCFRunLoopDefaultMode);
+	CFRelease(rls);
+	}
+
+
+@implementation RegistrationController
+
+- (void)registerDefaults
+{
+    NSMutableDictionary *regDict = <span class="enscript-type">[</span>NSMutableDictionary dictionary<span class="enscript-type">]</span>;
+
+    NSArray *typeArray   = <span class="enscript-type">[</span>NSArray arrayWithObjects:@&quot;_ftp._tcp.&quot;,    @&quot;_ssh._tcp.&quot;,  @&quot;_tftp._tcp.&quot;,        @&quot;_http._tcp.&quot;,      @&quot;_printer._tcp.&quot;,  @&quot;_afpovertcp._tcp.&quot;,         nil<span class="enscript-type">]</span>;
+    NSArray *nameArray   = <span class="enscript-type">[</span>NSArray arrayWithObjects:@&quot;My ftp Server&quot;, @&quot;My Computer&quot;, @&quot;Testing Boot Image&quot;, @&quot;A Web Server&quot;,     @&quot;Steve<span class="enscript-keyword">'</span>s Printer&quot;, @&quot;Company AppleShare Server&quot;, nil<span class="enscript-type">]</span>;
+    NSArray *portArray   = <span class="enscript-type">[</span>NSArray arrayWithObjects:@&quot;21&quot;,            @&quot;22&quot;,          @&quot;69&quot;,                 @&quot;80&quot;,               @&quot;515&quot;,             @&quot;548&quot;,                       nil<span class="enscript-type">]</span>;
+    NSArray *domainArray = <span class="enscript-type">[</span>NSArray arrayWithObjects:@&quot;&quot;,              @&quot;&quot;,            @&quot;&quot;,                   @&quot;&quot;,                 @&quot;&quot;,                @&quot;&quot;,                          nil<span class="enscript-type">]</span>;
+    NSArray *textArray   = <span class="enscript-type">[</span>NSArray arrayWithObjects:@&quot;&quot;,              @&quot;&quot;,            @&quot;<span class="enscript-type">image</span>=mybootimage&quot;,  @&quot;<span class="enscript-type">path</span>=/index.html&quot;, @&quot;rn=lpt1&quot;,         @&quot;Vol=Public&quot;,                nil<span class="enscript-type">]</span>;
+
+    <span class="enscript-type">[</span>regDict setObject:typeArray forKey:@&quot;SrvTypeKeys&quot;<span class="enscript-type">]</span>;
+    <span class="enscript-type">[</span>regDict setObject:nameArray forKey:@&quot;SrvNameKeys&quot;<span class="enscript-type">]</span>;
+    <span class="enscript-type">[</span>regDict setObject:portArray forKey:@&quot;SrvPortKeys&quot;<span class="enscript-type">]</span>;
+    <span class="enscript-type">[</span>regDict setObject:domainArray forKey:@&quot;SrvDomainKeys&quot;<span class="enscript-type">]</span>;
+    <span class="enscript-type">[</span>regDict setObject:textArray forKey:@&quot;SrvTextKeys&quot;<span class="enscript-type">]</span>;
+
+    <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> registerDefaults:regDict<span class="enscript-type">]</span>;
+}
+
+- (id)init
+{
+    srvtypeKeys = <span class="enscript-type">[</span><span class="enscript-type">[</span>NSMutableArray array<span class="enscript-type">]</span> retain<span class="enscript-type">]</span>;	//Define arrays <span class="enscript-keyword">for</span> Type, Domain, <span class="enscript-type">and</span> Name
+    srvnameKeys = <span class="enscript-type">[</span><span class="enscript-type">[</span>NSMutableArray array<span class="enscript-type">]</span> retain<span class="enscript-type">]</span>;
+    srvportKeys = <span class="enscript-type">[</span><span class="enscript-type">[</span>NSMutableArray array<span class="enscript-type">]</span> retain<span class="enscript-type">]</span>;
+    srvdomainKeys = <span class="enscript-type">[</span><span class="enscript-type">[</span>NSMutableArray array<span class="enscript-type">]</span> retain<span class="enscript-type">]</span>;
+    srvtextKeys = <span class="enscript-type">[</span><span class="enscript-type">[</span>NSMutableArray array<span class="enscript-type">]</span> retain<span class="enscript-type">]</span>;
+
+    registeredDict = <span class="enscript-type">[</span><span class="enscript-type">[</span>NSMutableDictionary alloc<span class="enscript-type">]</span> init<span class="enscript-type">]</span>;
+    
+    <span class="enscript-type">[</span>self registerDefaults<span class="enscript-type">]</span>;
+    <span class="enscript-keyword">return</span> <span class="enscript-type">[</span>super init<span class="enscript-type">]</span>;
+}
+
+- (void)awakeFromNib				//BrowserController <span class="enscript-type">startup</span> procedure
+{
+    <span class="enscript-type">[</span>srvtypeKeys addObjectsFromArray:<span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> arrayForKey:@&quot;SrvTypeKeys&quot;<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+    <span class="enscript-type">[</span>srvnameKeys addObjectsFromArray:<span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> arrayForKey:@&quot;SrvNameKeys&quot;<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+    <span class="enscript-type">[</span>srvportKeys addObjectsFromArray:<span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> arrayForKey:@&quot;SrvPortKeys&quot;<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+    <span class="enscript-type">[</span>srvdomainKeys addObjectsFromArray:<span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> arrayForKey:@&quot;SrvDomainKeys&quot;<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+    <span class="enscript-type">[</span>srvtextKeys addObjectsFromArray:<span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> arrayForKey:@&quot;SrvTextKeys&quot;<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+
+    <span class="enscript-type">[</span>serviceDisplayTable reloadData<span class="enscript-type">]</span>;				//Reload (redraw) data in fields
+
+}
+
+
+
+ - (IBAction)registerService:(id)sender
+{
+    int selectedRow = <span class="enscript-type">[</span>serviceDisplayTable selectedRow<span class="enscript-type">]</span>;
+    CFMachPortContext       context;
+    DNSServiceRef 	        dns_client;
+
+    <span class="enscript-keyword">if</span> (selectedRow &lt; 0) {
+        <span class="enscript-keyword">return</span>;
+    }
+
+	NSString *key = <span class="enscript-type">[</span>srvtypeKeys objectAtIndex:selectedRow<span class="enscript-type">]</span>;
+	<span class="enscript-keyword">if</span> (<span class="enscript-type">[</span>registeredDict objectForKey:key<span class="enscript-type">]</span>) { printf(&quot;Already registered\n&quot;); <span class="enscript-keyword">return</span>; }
+
+    context.<span class="enscript-type">version</span>                 = 1;
+    context.info                    = 0;
+    context.retain                  = NULL;
+    context.release                 = NULL;
+    context.copyDescription 	    = NULL;
+    unsigned <span class="enscript-type">char</span> txtbuffer<span class="enscript-type">[</span>300<span class="enscript-type">]</span>;
+	strncpy(txtbuffer+1, <span class="enscript-type">[</span><span class="enscript-type">[</span>srvtextKeys objectAtIndex:selectedRow<span class="enscript-type">]</span> UTF8String<span class="enscript-type">]</span>, sizeof(txtbuffer)-1);
+	txtbuffer<span class="enscript-type">[</span>0<span class="enscript-type">]</span> = strlen(txtbuffer+1);
+
+    DNSServiceErrorType err = DNSServiceRegister
+        (
+        	&amp;dns_client, 0, 0,
+            <span class="enscript-type">[</span><span class="enscript-type">[</span>srvnameKeys objectAtIndex:selectedRow<span class="enscript-type">]</span> UTF8String<span class="enscript-type">]</span>,
+            <span class="enscript-type">[</span>key UTF8String<span class="enscript-type">]</span>,
+            <span class="enscript-type">[</span><span class="enscript-type">[</span>srvdomainKeys objectAtIndex:selectedRow<span class="enscript-type">]</span> UTF8String<span class="enscript-type">]</span>,
+            NULL, htons(<span class="enscript-type">[</span><span class="enscript-type">[</span>srvportKeys objectAtIndex:selectedRow<span class="enscript-type">]</span> intValue<span class="enscript-type">]</span>),
+            txtbuffer<span class="enscript-type">[</span>0<span class="enscript-type">]</span>+1, txtbuffer,
+            reg_reply,
+            nil
+            );
+	<span class="enscript-keyword">if</span> (err)
+		printf(&quot;DNSServiceRegister failed <span class="enscript-comment">%d\n&quot;, err);
+</span>	<span class="enscript-keyword">else</span>
+	{
+		addDNSServiceRefToRunLoop(dns_client);
+		<span class="enscript-type">[</span>registeredDict setObject:<span class="enscript-type">[</span>NSNumber numberWithUnsignedInt:(unsigned int)dns_client<span class="enscript-type">]</span> forKey:key<span class="enscript-type">]</span>;
+	}
+}
+
+- (IBAction)unregisterService:(id)sender
+{
+    int selectedRow = <span class="enscript-type">[</span>serviceDisplayTable selectedRow<span class="enscript-type">]</span>;
+    NSString *key = <span class="enscript-type">[</span>srvtypeKeys objectAtIndex:selectedRow<span class="enscript-type">]</span>;
+
+    NSNumber *refPtr = <span class="enscript-type">[</span>registeredDict objectForKey:key<span class="enscript-type">]</span>;
+    DNSServiceRef ref = (DNSServiceRef)<span class="enscript-type">[</span>refPtr unsignedIntValue<span class="enscript-type">]</span>;
+
+    <span class="enscript-keyword">if</span> (ref) {
+        DNSServiceRefDeallocate(ref);
+        <span class="enscript-type">[</span>registeredDict removeObjectForKey:key<span class="enscript-type">]</span>;
+    }
+}
+
+-(void)tableView:(NSTableView *)theTableView setObjectValue:(id)object forTableColumn:(NSTableColumn *)tableColumn row:(int)row
+{
+    <span class="enscript-keyword">if</span> (row&lt;0) <span class="enscript-keyword">return</span>;
+}
+
+- (int)numberOfRowsInTableView:(NSTableView *)theTableView	//Begin mandatory TableView methods
+{
+    <span class="enscript-keyword">return</span> <span class="enscript-type">[</span>srvtypeKeys count<span class="enscript-type">]</span>;
+}
+
+- (id)tableView:(NSTableView *)theTableView objectValueForTableColumn:(NSTableColumn *)theColumn row:(int)rowIndex
+{
+    <span class="enscript-keyword">if</span> (theColumn == typeColumn) {
+        <span class="enscript-keyword">return</span> <span class="enscript-type">[</span>srvtypeKeys objectAtIndex:rowIndex<span class="enscript-type">]</span>;
+    }
+    <span class="enscript-keyword">if</span> (theColumn == nameColumn) {
+        <span class="enscript-keyword">return</span> <span class="enscript-type">[</span>srvnameKeys objectAtIndex:rowIndex<span class="enscript-type">]</span>;
+    }
+    <span class="enscript-keyword">if</span> (theColumn == portColumn) {
+        <span class="enscript-keyword">return</span> <span class="enscript-type">[</span>srvportKeys objectAtIndex:rowIndex<span class="enscript-type">]</span>;
+    }
+    <span class="enscript-keyword">if</span> (theColumn == domainColumn) {
+        <span class="enscript-keyword">return</span> <span class="enscript-type">[</span>srvdomainKeys objectAtIndex:rowIndex<span class="enscript-type">]</span>;
+    }
+    <span class="enscript-keyword">if</span> (theColumn == textColumn) {
+        <span class="enscript-keyword">return</span> <span class="enscript-type">[</span>srvtextKeys objectAtIndex:rowIndex<span class="enscript-type">]</span>;
+    }
+    
+    <span class="enscript-keyword">return</span>(0);
+}						//End of mandatory TableView methods
+
+- (IBAction)removeSelected:(id)sender
+{
+    // remove the selected row <span class="enscript-type">and</span> force a <span class="enscript-type">refresh</span>
+
+    int selectedRow = <span class="enscript-type">[</span>serviceDisplayTable selectedRow<span class="enscript-type">]</span>;
+
+    <span class="enscript-keyword">if</span> (selectedRow) {
+
+        <span class="enscript-type">[</span>srvtypeKeys removeObjectAtIndex:selectedRow<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span>srvnameKeys removeObjectAtIndex:selectedRow<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span>srvportKeys removeObjectAtIndex:selectedRow<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span>srvdomainKeys removeObjectAtIndex:selectedRow<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span>srvtextKeys removeObjectAtIndex:selectedRow<span class="enscript-type">]</span>;
+
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvtypeKeys forKey:@&quot;SrvTypeKeys&quot;<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvnameKeys forKey:@&quot;SrvNameKeys&quot;<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvportKeys forKey:@&quot;SrvPortKeys&quot;<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvdomainKeys forKey:@&quot;SrvDomainKeys&quot;<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvtextKeys forKey:@&quot;SrvTextKeys&quot;<span class="enscript-type">]</span>;
+        
+        <span class="enscript-type">[</span>serviceDisplayTable reloadData<span class="enscript-type">]</span>;
+    }
+}
+
+- (IBAction)addNewService:(id)sender
+{
+    // add new entries from the edit fields to the arrays <span class="enscript-keyword">for</span> the defaults
+
+    <span class="enscript-keyword">if</span> (<span class="enscript-type">[</span><span class="enscript-type">[</span>serviceTypeField stringValue<span class="enscript-type">]</span> <span class="enscript-type">length</span><span class="enscript-type">]</span> &amp;&amp; <span class="enscript-type">[</span><span class="enscript-type">[</span>serviceNameField stringValue<span class="enscript-type">]</span> <span class="enscript-type">length</span><span class="enscript-type">]</span> &amp;&amp; <span class="enscript-type">[</span><span class="enscript-type">[</span>serviceDomainField stringValue<span class="enscript-type">]</span> <span class="enscript-type">length</span><span class="enscript-type">]</span>&amp;&amp; <span class="enscript-type">[</span><span class="enscript-type">[</span>servicePortField stringValue<span class="enscript-type">]</span> <span class="enscript-type">length</span><span class="enscript-type">]</span>) {
+        <span class="enscript-type">[</span>srvtypeKeys addObject:<span class="enscript-type">[</span>serviceTypeField stringValue<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span>srvnameKeys addObject:<span class="enscript-type">[</span>serviceNameField stringValue<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span>srvportKeys addObject:<span class="enscript-type">[</span>servicePortField stringValue<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span>srvdomainKeys addObject:<span class="enscript-type">[</span>serviceDomainField stringValue<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span>srvtextKeys addObject:<span class="enscript-type">[</span>serviceTextField stringValue<span class="enscript-type">]</span><span class="enscript-type">]</span>;
+
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvtypeKeys forKey:@&quot;SrvTypeKeys&quot;<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvnameKeys forKey:@&quot;SrvNameKeys&quot;<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvportKeys forKey:@&quot;SrvPortKeys&quot;<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvdomainKeys forKey:@&quot;SrvDomainKeys&quot;<span class="enscript-type">]</span>;
+        <span class="enscript-type">[</span><span class="enscript-type">[</span>NSUserDefaults standardUserDefaults<span class="enscript-type">]</span> setObject:srvtextKeys forKey:@&quot;SrvTextKeys&quot;<span class="enscript-type">]</span>;
+
+        <span class="enscript-type">[</span>serviceDisplayTable reloadData<span class="enscript-type">]</span>;
+    } <span class="enscript-keyword">else</span> {
+        NSBeep();
+    }
+
+}
+
+@<span class="enscript-keyword">end</span>
+
+int main(int argc, const <span class="enscript-type">char</span> *argv<span class="enscript-type">[</span><span class="enscript-type">]</span>)
+{
+    <span class="enscript-keyword">return</span> NSApplicationMain(argc, argv);
+}
+</pre>
+<hr />
+</body></html>

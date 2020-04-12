@@ -1,0 +1,333 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>mDNSMacOSX.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">mDNSMacOSX.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="mDNSMacOSX.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4; c-file-style: &quot;bsd&quot;; c-basic-offset: 4; fill-column: 108; indent-tabs-mode: nil; -*-
+ *
+ * Copyright (c) 2002-2018 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__mDNSMacOSX_h</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__mDNSMacOSX_h</span>
+
+#<span class="enscript-reference">ifdef</span>  <span class="enscript-variable-name">__cplusplus</span>
+<span class="enscript-type">extern</span> <span class="enscript-string">&quot;C&quot;</span> {
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;SystemConfiguration/SystemConfiguration.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;IOKit/pwr_mgt/IOPM.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;IOKit/pwr_mgt/IOPMLib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;IOKit/pwr_mgt/IOPMLibPrivate.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>        // for domain name structure
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mdns_private.h&quot;</span>           // for mdns_interface_monitor_t struct
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/if.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;os/log.h&gt;</span>
+
+<span class="enscript-comment">//#define MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM
+</span>#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;dispatch/dispatch.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;dispatch/private.h&gt;</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TARGET_OS_IPHONE</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NO_SECURITYFRAMEWORK</span> 1
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NO_CFUSERNOTIFICATION</span> 1
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NO_SECURITYFRAMEWORK</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;Security/SecureTransport.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;Security/Security.h&gt;</span>
+#<span class="enscript-reference">endif</span> <span class="enscript-comment">/* NO_SECURITYFRAMEWORK */</span>
+
+<span class="enscript-type">enum</span> mDNSDynamicStoreSetConfigKey
+{
+    kmDNSMulticastConfig = 1,
+    kmDNSDynamicConfig,
+    kmDNSPrivateConfig,
+    kmDNSBackToMyMacConfig,
+    kmDNSSleepProxyServersState,
+    kmDNSDebugState, 
+};
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> NetworkInterfaceInfoOSX_struct NetworkInterfaceInfoOSX;
+
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*KQueueEventCallback)(<span class="enscript-type">int</span> fd, <span class="enscript-type">short</span> filter, <span class="enscript-type">void</span> *context, mDNSBool encounteredEOF);
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    KQueueEventCallback KQcallback;
+    <span class="enscript-type">void</span>                *KQcontext;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>          *KQtask;        <span class="enscript-comment">// For debugging messages
+</span>#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+    dispatch_source_t readSource;
+    dispatch_source_t writeSource;
+    mDNSBool fdClosed;
+#<span class="enscript-reference">endif</span>
+} KQueueEntry;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    mDNSIPPort port; <span class="enscript-comment">// MUST BE FIRST FIELD -- UDPSocket_struct begins with a KQSocketSet,
+</span>    <span class="enscript-comment">// and mDNSCore requires every UDPSocket_struct to begin with a mDNSIPPort port
+</span>    mDNS                    *m;
+    <span class="enscript-type">int</span> sktv4;
+    KQueueEntry kqsv4;
+    <span class="enscript-type">int</span> sktv6;
+    KQueueEntry kqsv6;
+    <span class="enscript-type">int</span>                     *closeFlag;
+    mDNSBool proxy;
+    mDNSBool sktv4EOF;
+    mDNSBool sktv6EOF;
+} KQSocketSet;
+
+<span class="enscript-type">struct</span> UDPSocket_struct
+{
+    KQSocketSet ss;     <span class="enscript-comment">// First field of KQSocketSet has to be mDNSIPPort -- mDNSCore requires every UDPSocket_struct to begin with mDNSIPPort port
+</span>};
+
+<span class="enscript-comment">// TCP socket support
+</span>
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span>
+{
+    handshake_required,
+    handshake_in_progress,
+    handshake_completed,
+    handshake_to_be_closed
+} handshakeStatus;
+
+<span class="enscript-type">struct</span> TCPSocket_struct
+{
+    mDNSIPPort port;                <span class="enscript-comment">// MUST BE FIRST FIELD -- mDNSCore expects every TCPSocket_struct to begin with mDNSIPPort
+</span>    TCPSocketFlags flags;           <span class="enscript-comment">// MUST BE SECOND FIELD -- mDNSCore expects every TCPSocket_struct have TCPSocketFlags flags after mDNSIPPort
+</span>    TCPConnectionCallback callback;
+    <span class="enscript-type">int</span> fd;
+    KQueueEntry kqEntry;
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NO_SECURITYFRAMEWORK</span>
+    SSLContextRef tlsContext;
+    pthread_t handshake_thread;
+#<span class="enscript-reference">endif</span> <span class="enscript-comment">/* NO_SECURITYFRAMEWORK */</span>
+    domainname *hostname;
+    <span class="enscript-type">void</span> *context;
+    mDNSBool setup;
+    mDNSBool connected;
+    handshakeStatus handshake;
+    mDNS *m; <span class="enscript-comment">// So we can call KQueueLock from the SSLHandshake thread
+</span>    mStatus err;
+};
+
+<span class="enscript-type">struct</span> TCPListener_struct
+{
+    TCPAcceptedCallback callback;
+    <span class="enscript-type">int</span> fd;
+    KQueueEntry kqEntry;
+    <span class="enscript-type">void</span> *context;
+    mDNSAddr_Type addressType;
+    TCPSocketFlags socketFlags;
+    mDNS *m; <span class="enscript-comment">// So we can call KQueueLock from the SSLHandshake thread
+</span>};
+
+<span class="enscript-comment">// Value assiged to 'Exists' to indicate the multicast state of the interface has changed.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MulticastStateChanged</span>   2
+
+<span class="enscript-type">struct</span> NetworkInterfaceInfoOSX_struct
+{
+    NetworkInterfaceInfo ifinfo;                <span class="enscript-comment">// MUST be the first element in this structure
+</span>    NetworkInterfaceInfoOSX *next;
+    mDNS                    *m;
+    mDNSu8 Exists;                              <span class="enscript-comment">// 1 = currently exists in getifaddrs list; 0 = doesn't
+</span>                                                <span class="enscript-comment">// 2 = exists, but McastTxRx state changed
+</span>    mDNSu8 Flashing;                            <span class="enscript-comment">// Set if interface appeared for less than 60 seconds and then vanished
+</span>    mDNSu8 Occulting;                           <span class="enscript-comment">// Set if interface vanished for less than 60 seconds and then came back
+</span>    mDNSu8 D2DInterface;                        <span class="enscript-comment">// IFEF_LOCALNET_PRIVATE flag indicates we should call
+</span>                                                <span class="enscript-comment">// D2D plugin for operations over this interface
+</span>    mDNSs32 AppearanceTime;                     <span class="enscript-comment">// Time this interface appeared most recently in getifaddrs list
+</span>                                                <span class="enscript-comment">// i.e. the first time an interface is seen, AppearanceTime is set.
+</span>                                                <span class="enscript-comment">// If an interface goes away temporarily and then comes back then
+</span>                                                <span class="enscript-comment">// AppearanceTime is updated to the time of the most recent appearance.
+</span>    mDNSs32 LastSeen;                           <span class="enscript-comment">// If Exists==0, last time this interface appeared in getifaddrs list
+</span>    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> ifa_flags;
+    <span class="enscript-type">struct</span> in_addr ifa_v4addr;
+    mDNSu32 scope_id;                           <span class="enscript-comment">// interface index / IPv6 scope ID
+</span>    mDNSEthAddr BSSID;                          <span class="enscript-comment">// BSSID of 802.11 base station, if applicable
+</span>    u_short sa_family;
+    <span class="enscript-type">int</span> BPF_fd;                                 <span class="enscript-comment">// -1 uninitialized; -2 requested BPF; -3 failed
+</span>    <span class="enscript-type">int</span> BPF_mcfd;                               <span class="enscript-comment">// Socket for our IPv6 ND group membership
+</span>    u_int BPF_len;
+    mDNSBool isAWDL;                            <span class="enscript-comment">// True if this interface has the IFEF_AWDL flag set.
+</span>#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+    dispatch_source_t BPF_source;
+#<span class="enscript-reference">else</span>
+    CFSocketRef BPF_cfs;
+    CFRunLoopSourceRef BPF_rls;
+#<span class="enscript-reference">endif</span>
+    NetworkInterfaceInfoOSX *Registered;        <span class="enscript-comment">// non-NULL means registered with mDNS Core
+</span>};
+
+<span class="enscript-type">struct</span> mDNS_PlatformSupport_struct
+{
+    NetworkInterfaceInfoOSX *InterfaceList;
+    CFMutableArrayRef InterfaceMonitors;
+    KQSocketSet permanentsockets;
+    <span class="enscript-type">int</span> num_mcasts;                             <span class="enscript-comment">// Number of multicasts received during this CPU scheduling period (used for CPU limiting)
+</span>    domainlabel userhostlabel;                  <span class="enscript-comment">// The hostlabel as it was set in System Preferences the last time we looked
+</span>    domainlabel usernicelabel;                  <span class="enscript-comment">// The nicelabel as it was set in System Preferences the last time we looked
+</span>    <span class="enscript-comment">// Following four variables are used for optimization where the helper is not
+</span>    <span class="enscript-comment">// invoked when not needed. It records the state of what we told helper the
+</span>    <span class="enscript-comment">// last time we invoked mDNSPreferencesSetName
+</span>    domainlabel prevoldhostlabel;               <span class="enscript-comment">// Previous m-&gt;p-&gt;userhostlabel
+</span>    domainlabel prevnewhostlabel;               <span class="enscript-comment">// Previous m-&gt;hostlabel
+</span>    domainlabel prevoldnicelabel;               <span class="enscript-comment">// Previous m-&gt;p-&gt;usernicelabel
+</span>    domainlabel prevnewnicelabel;               <span class="enscript-comment">// Previous m-&gt;nicelabel
+</span>    mDNSs32 NotifyUser;
+    mDNSs32 HostNameConflict;                   <span class="enscript-comment">// Time we experienced conflict on our link-local host name
+</span>    mDNSs32 KeyChainTimer;
+
+    SCDynamicStoreRef Store;
+    CFRunLoopSourceRef StoreRLS;
+    CFRunLoopSourceRef PMRLS;
+    <span class="enscript-type">int</span> SysEventNotifier;
+    KQueueEntry SysEventKQueue;
+    IONotificationPortRef PowerPortRef;
+    io_connect_t PowerConnection;
+    io_object_t PowerNotifier;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">kIOPMAcknowledgmentOptionSystemCapabilityRequirements</span>
+    IOPMConnection IOPMConnection;
+#<span class="enscript-reference">endif</span>
+    IOPMAssertionID IOPMAssertion;
+    <span class="enscript-type">long</span> SleepCookie;                           <span class="enscript-comment">// Cookie we need to pass to IOAllowPowerChange()
+</span>    <span class="enscript-type">long</span> WakeAtUTC;
+    mDNSs32 RequestReSleep;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+    dispatch_source_t timer;
+    dispatch_source_t custom;
+#<span class="enscript-reference">else</span>
+    pthread_mutex_t BigMutex;
+#<span class="enscript-reference">endif</span>
+    mDNSs32 BigMutexStartTime;
+    <span class="enscript-type">int</span> WakeKQueueLoopFD;
+    mDNSu8 v4answers;                  <span class="enscript-comment">// non-zero if we are receiving answers
+</span>    mDNSu8 v6answers;                  <span class="enscript-comment">// for A/AAAA from external DNS servers
+</span>    mDNSs32 DNSTrigger;                <span class="enscript-comment">// Time the DNSTrigger was given
+</span>    uint64_t LastConfigGeneration;     <span class="enscript-comment">// DNS configuration generation number
+</span>    mDNSBool if_interface_changed;     <span class="enscript-comment">// There are some changes that we do not know from LastConfigGeneration, such as
+</span>                                       <span class="enscript-comment">// if the interface is expensive/constrained or not. Therefore, we need an additional
+</span>                                       <span class="enscript-comment">// field to determine if the interface has changed.
+</span>    UDPSocket UDPProxy;
+    TCPSocket TCPProxyV4;
+    TCPSocket TCPProxyV6;
+    ProxyCallback *UDPProxyCallback;
+    ProxyCallback *TCPProxyCallback;
+};
+
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> OfferSleepProxyService;
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> DisableSleepProxyClient;
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> UseInternalSleepProxy;
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> OSXVers, iOSVers;
+
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> KQueueFD;
+
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">NotifyOfElusiveBug</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *title, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg); <span class="enscript-comment">// Both strings are UTF-8 text
+</span><span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">SetDomainSecrets</span>(mDNS *m);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSMacOSXNetworkChanged</span>(<span class="enscript-type">void</span>);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSMacOSXSystemBuildNumber</span>(<span class="enscript-type">char</span> *HINFO_SWstring);
+<span class="enscript-type">extern</span> NetworkInterfaceInfoOSX *<span class="enscript-function-name">IfindexToInterfaceInfoOSX</span>(mDNSInterfaceID ifindex);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSUpdatePacketFilter</span>(<span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> excludeRecord);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">myKQSocketCallBack</span>(<span class="enscript-type">int</span> s1, <span class="enscript-type">short</span> filter, <span class="enscript-type">void</span> *context, mDNSBool encounteredEOF);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSDynamicStoreSetConfig</span>(<span class="enscript-type">int</span> key, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *subkey, CFPropertyListRef value);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">UpdateDebugState</span>(<span class="enscript-type">void</span>);
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> <span class="enscript-function-name">KQueueSet</span>(<span class="enscript-type">int</span> fd, u_short flags, <span class="enscript-type">short</span> filter, KQueueEntry *<span class="enscript-type">const</span> entryRef);
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">TriggerEventCompletion</span>(<span class="enscript-type">void</span>);
+#<span class="enscript-reference">else</span>
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> <span class="enscript-function-name">KQueueSet</span>(<span class="enscript-type">int</span> fd, u_short flags, <span class="enscript-type">short</span> filter, <span class="enscript-type">const</span> KQueueEntry *<span class="enscript-type">const</span> entryRef);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// When events are processed on the non-kqueue thread (i.e. CFRunLoop notifications like Sleep/Wake,
+</span><span class="enscript-comment">// Interface changes, Keychain changes, etc.) they must use KQueueLock/KQueueUnlock to lock out the kqueue thread
+</span><span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">KQueueLock</span>(<span class="enscript-type">void</span>);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">KQueueUnlock</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span>* task);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformCloseFD</span>(KQueueEntry *kq, <span class="enscript-type">int</span> fd);
+<span class="enscript-type">extern</span> ssize_t <span class="enscript-function-name">myrecvfrom</span>(<span class="enscript-type">const</span> <span class="enscript-type">int</span> s, <span class="enscript-type">void</span> *<span class="enscript-type">const</span> buffer, <span class="enscript-type">const</span> size_t max,
+                             <span class="enscript-type">struct</span> sockaddr *<span class="enscript-type">const</span> from, size_t *<span class="enscript-type">const</span> fromlen, mDNSAddr *dstaddr, <span class="enscript-type">char</span> *ifname, mDNSu8 *ttl);
+
+<span class="enscript-type">extern</span> mDNSBool <span class="enscript-function-name">DictionaryIsEnabled</span>(CFDictionaryRef dict);
+
+<span class="enscript-comment">// If any event takes more than WatchDogReportingThreshold milliseconds to be processed, we log a warning message
+</span><span class="enscript-comment">// General event categories are:
+</span><span class="enscript-comment">//  o Mach client request initiated / terminated
+</span><span class="enscript-comment">//  o UDS client request
+</span><span class="enscript-comment">//  o Handling UDP packets received from the network
+</span><span class="enscript-comment">//  o Environmental change events:
+</span><span class="enscript-comment">//    - network interface changes
+</span><span class="enscript-comment">//    - sleep/wake
+</span><span class="enscript-comment">//    - keychain changes
+</span><span class="enscript-comment">//  o Name conflict dialog dismissal
+</span><span class="enscript-comment">//  o Reception of Unix signal (e.g. SIGINFO)
+</span><span class="enscript-comment">//  o Idle task processing
+</span><span class="enscript-comment">// If we find that we're getting warnings for any of these categories, and it's not evident
+</span><span class="enscript-comment">// what's causing the problem, we may need to subdivide some categories into finer-grained
+</span><span class="enscript-comment">// sub-categories (e.g. &quot;Idle task processing&quot; covers a pretty broad range of sub-tasks).
+</span>
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> WatchDogReportingThreshold;
+
+<span class="enscript-type">struct</span> CompileTimeAssertionChecks_mDNSMacOSX
+{
+    <span class="enscript-comment">// Check our structures are reasonable sizes. Including overly-large buffers, or embedding
+</span>    <span class="enscript-comment">// other overly-large structures instead of having a pointer to them, can inadvertently
+</span>    <span class="enscript-comment">// cause structure sizes (and therefore memory usage) to balloon unreasonably.
+</span>    <span class="enscript-type">char</span> sizecheck_NetworkInterfaceInfoOSX[(<span class="enscript-keyword">sizeof</span>(NetworkInterfaceInfoOSX) &lt;=  8488) ? 1 : -1];
+    <span class="enscript-type">char</span> sizecheck_mDNS_PlatformSupport   [(<span class="enscript-keyword">sizeof</span>(mDNS_PlatformSupport)    &lt;=  1378) ? 1 : -1];
+};
+
+<span class="enscript-type">extern</span> mDNSInterfaceID AWDLInterfaceID;
+<span class="enscript-type">void</span> <span class="enscript-function-name">initializeD2DPlugins</span>(mDNS *<span class="enscript-type">const</span> m);
+<span class="enscript-type">void</span> <span class="enscript-function-name">terminateD2DPlugins</span>(<span class="enscript-type">void</span>);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">REACHABILITY_TRIGGER</span>)
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformUpdateDNSStatus</span>(<span class="enscript-type">const</span> DNSQuestion *q);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformTriggerDNSRetry</span>(<span class="enscript-type">const</span> DNSQuestion *v4q, <span class="enscript-type">const</span> DNSQuestion *v6q);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">extern</span> mdns_interface_monitor_t <span class="enscript-function-name">GetInterfaceMonitorForIndex</span>(uint32_t ifIndex);
+
+#<span class="enscript-reference">ifdef</span>  <span class="enscript-variable-name">__cplusplus</span>
+}
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">endif</span>
+</pre>
+<hr />
+</body></html>

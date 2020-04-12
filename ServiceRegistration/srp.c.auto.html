@@ -1,0 +1,102 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>srp.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">srp.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="srp.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* srp.c
+ *
+ * Service Registration Protocol Client
+ *
+ * Discover the service registration domain
+ * Construct a DNS update
+ * Include:
+ *  Service Name: PTR Record
+ *  Service Instance Name: SRV record
+ *  Hostname: A, AAAA, KEY records
+ * Sign with key using SIG(0)
+ */</span>
+
+<span class="enscript-type">int</span>
+<span class="enscript-function-name">main</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> *argv)
+{
+    <span class="enscript-type">char</span> *host_name = <span class="enscript-string">&quot;thread-demo&quot;</span>;
+    <span class="enscript-type">char</span> *service_type <span class="enscript-string">&quot;_printer._tcp&quot;</span>;
+    <span class="enscript-type">char</span> *a_record = <span class="enscript-string">&quot;127.0.0.1&quot;</span>;
+    <span class="enscript-type">char</span> *aaaa_Record = <span class="enscript-string">&quot;::1&quot;</span>;
+    <span class="enscript-type">int</span> prKeyLen = 0;
+    <span class="enscript-type">int</span> puKeyLen = 0;
+    uint8_t *prKey = NULL;
+    uint8_t *puKey = NULL;
+    dns_message_t *update;
+    dns_name_t *hostname;
+    dns_name_t *service_name;
+    dns_name_t *service_instance_name;
+    dns_wire_t message;
+
+    message.id = srp_random16();
+    message.bitfield = 0;
+    dns_qr_set(message, dns_qr_query);
+    dns_opcode_set(message, dns_opcode_update);
+    message.qdcount = message.ancount = message.nscount = message.arcount = 0;
+
+    update = dns_message_create();
+    tld = dns_make_fqdn(update, <span class="enscript-string">&quot;services.arpa&quot;</span>);
+    dns_update_initialize(update, tld, <span class="enscript-string">&quot;2001:1::3&quot;</span>);
+    hostname = dns_make_fqdn(update, service_name, <span class="enscript-string">&quot;services.arpa.&quot;</span>);
+    service_name = dns_make_fqdn(message, service_type, <span class="enscript-string">&quot;services.arpa.&quot;</span>);
+    service_instance_name = dns_make_fqdn(message, service_name, service_name);
+
+    <span class="enscript-comment">// _printer._tcp.services.arpa IN PTR thread-demo._printer._tcp.services.arpa
+</span>    <span class="enscript-comment">// thread-demo._printer._tcp.services.arpa IN SRV 0 0 80 thread-demo.services.arpa
+</span>    <span class="enscript-comment">// thread-demo.services.arpa IN A    127.0.0.1
+</span>    <span class="enscript-comment">//                           IN AAAA ::1
+</span>    <span class="enscript-comment">//                           IN KEY ojwefoijweojfwoeijfoiwejfoiwejfoiejf
+</span>
+    dns_update_add(update, hostname, dns_make_a_rr(a_record));
+    dns_update_add(update, hostname, dns_make_a_rr(aaaa_record));
+    dns_update_add(update, service_instance_name, dns_make_srv_rr(0, 0, 80, hostname));
+    dns_update_add(update, service_name, dns_make_ptr_rr(service_instance_name));
+    dns_update_add(update, service_name, dns_make_key_rr(puKey, puKeyLen));
+    dns_message_to_wire(update);
+    dns_message_sign(update, prKey, prKeyLen, puKey, puKeyLen);
+    dns_message_send(update);
+    dns_message_await_response(update);
+
+    <span class="enscript-comment">// Get the service name and type
+</span>    <span class="enscript-comment">// Get the hostname
+</span>    <span class="enscript-comment">// Get the key
+</span>    <span class="enscript-comment">// Discover the registration domain (not for Thread)
+</span>    <span class="enscript-comment">// Discover the SRP server (not for Thread)
+</span>    <span class="enscript-comment">// Generate the update
+</span>    <span class="enscript-comment">// Sign the update
+</span>    <span class="enscript-comment">// Send the update
+</span>}
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

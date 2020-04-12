@@ -1,0 +1,297 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>srp-simple.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">srp-simple.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="srp-simple.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* srp-simple.c
+ *
+ * Copyright (c) 2018 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Simple Service Registration Protocol Client
+ *
+ * This is intended for the constrained node solution for SRP.   It's intended to be flexible and
+ * understandable while linking in the minimum possible support code to reduce code size.  It does
+ * no mallocs, does not put anything big on the stack, and doesn't require an event loop.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;srp.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns-msg.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;srp-crypto.h&quot;</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_response_callback</span>(dns_transaction_t *txn)
+{
+}
+
+<span class="enscript-type">int</span>
+<span class="enscript-function-name">main</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+{
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *host_name = <span class="enscript-string">&quot;thread-demo&quot;</span>;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *zone_name = <span class="enscript-string">&quot;default.service.arpa&quot;</span>;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *host_fqdn = <span class="enscript-string">&quot;thread-demo.default.service.arpa&quot;</span>;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *service_type = <span class="enscript-string">&quot;_ipps._tcp&quot;</span>;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *a_record = <span class="enscript-string">&quot;127.0.0.1&quot;</span>;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *aaaa_record = <span class="enscript-string">&quot;::1&quot;</span>;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *txt_record = <span class="enscript-string">&quot;0&quot;</span>;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *anycast_address = <span class="enscript-string">&quot;127.0.0.1&quot;</span>;
+<span class="enscript-comment">//    const char *anycast_address = &quot;73.186.137.119&quot;; // cer.fugue.com
+</span>    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *keyfile_name = <span class="enscript-string">&quot;srp-simple.key&quot;</span>;
+    <span class="enscript-type">int</span> port = 9992;
+    srp_key_t *key;
+    dns_wire_t message, response;
+    uint16_t key_tag;
+    <span class="enscript-type">static</span> dns_transaction_t txn;
+    dns_towire_state_t *towire = &amp;txn.towire;
+    dns_name_pointer_t p_host_name;
+    dns_name_pointer_t p_zone_name;
+    dns_name_pointer_t p_service_name;
+    dns_name_pointer_t p_service_instance_name;
+    <span class="enscript-type">int</span> line;
+
+    key = srp_load_keypair(keyfile_name);
+    <span class="enscript-keyword">if</span> (key == NULL) {
+        key = srp_generate_key();
+        <span class="enscript-keyword">if</span> (key == NULL) {
+            printf(<span class="enscript-string">&quot;Unable to load or generate a key.&quot;</span>);
+            exit(1);
+        }
+        <span class="enscript-keyword">if</span> (!srp_write_key_to_file(keyfile_name, key)) {
+            printf(<span class="enscript-string">&quot;Unable to safe generated key.&quot;</span>);
+            exit(1);
+        }
+    }
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">CH</span> if (towire-&gt;error) { line = __LINE__; goto fail; }
+
+    <span class="enscript-comment">// Generate a random UUID.
+</span>#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">NOTYET</span>
+    message.id = srp_random16();
+#<span class="enscript-reference">else</span>
+    srandomdev();
+    message.id = (uint32_t)(random()) &amp; 65535;
+#<span class="enscript-reference">endif</span>
+    message.bitfield = 0;
+    dns_qr_set(&amp;message, dns_qr_query);
+    dns_opcode_set(&amp;message, dns_opcode_update);
+
+    <span class="enscript-comment">// Message data...
+</span>    memset(&amp;txn, 0, <span class="enscript-keyword">sizeof</span> txn);
+    towire-&gt;p = &amp;message.data[0];  <span class="enscript-comment">// We start storing RR data here.
+</span>    towire-&gt;lim = &amp;message.data[DNS_DATA_SIZE]; <span class="enscript-comment">// This is the limit to how much we can store.
+</span>    towire-&gt;message = &amp;message;
+    txn.response = &amp;response;
+    txn.response_length = (<span class="enscript-type">int</span>)(<span class="enscript-keyword">sizeof</span> response);
+
+    message.qdcount = htons(1); <span class="enscript-comment">// ZOCOUNT = 1
+</span>    <span class="enscript-comment">// Copy in Zone name (and save pointer)
+</span>    <span class="enscript-comment">// ZTYPE = SOA
+</span>    <span class="enscript-comment">// ZCLASS = IN
+</span>    dns_full_name_to_wire(&amp;p_zone_name, towire, zone_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_soa); CH;
+    dns_u16_to_wire(towire, dns_qclass_in); CH;
+
+    message.ancount = 0;
+    <span class="enscript-comment">// PRCOUNT = 0
+</span>
+    message.nscount = 0;
+    <span class="enscript-comment">// UPCOUNT = ...
+</span>
+    <span class="enscript-comment">// Host Description:
+</span>    <span class="enscript-comment">//  * Delete all RRsets from &lt;hostname&gt;; remember the pointer to hostname
+</span>    <span class="enscript-comment">//      NAME = hostname label followed by pointer to SOA name.
+</span>    <span class="enscript-comment">//      TYPE = ANY
+</span>    <span class="enscript-comment">//      CLASS = ANY
+</span>    <span class="enscript-comment">//      TTL = 0
+</span>    <span class="enscript-comment">//      RDLENGTH = 0
+</span>    dns_name_to_wire(&amp;p_host_name, towire, host_name); CH;
+    dns_pointer_to_wire(&amp;p_host_name, towire, &amp;p_zone_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_any); CH;
+    dns_u16_to_wire(towire, dns_qclass_any); CH;
+    dns_ttl_to_wire(towire, 0); CH;
+    dns_u16_to_wire(towire, 0); CH;
+    message.nscount++;
+    <span class="enscript-comment">//  * Add either or both of an A or AAAA RRset, each of which contains one
+</span>    <span class="enscript-comment">//    or more A or AAAA RRs.
+</span>    <span class="enscript-comment">//      NAME = pointer to hostname from Delete (above)
+</span>    <span class="enscript-comment">//      TYPE = A or AAAA
+</span>    <span class="enscript-comment">//      CLASS = IN
+</span>    <span class="enscript-comment">//      TTL = 3600 ?
+</span>    <span class="enscript-comment">//      RDLENGTH = number of RRs * RR length (4 or 16)
+</span>    <span class="enscript-comment">//      RDATA = &lt;the data&gt;
+</span>    dns_pointer_to_wire(NULL, towire, &amp;p_host_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_a); CH;
+    dns_u16_to_wire(towire, dns_qclass_in); CH;
+    dns_ttl_to_wire(towire, 3600); CH;
+    dns_rdlength_begin(towire); CH;
+    dns_rdata_a_to_wire(towire, a_record); CH;
+    dns_rdlength_end(towire); CH;
+    message.nscount++;
+    
+    dns_pointer_to_wire(NULL, towire, &amp;p_host_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_aaaa); CH;
+    dns_u16_to_wire(towire, dns_qclass_in); CH;
+    dns_ttl_to_wire(towire, 3600); CH;
+    dns_rdlength_begin(towire); CH;
+    dns_rdata_aaaa_to_wire(towire, aaaa_record); CH;
+    dns_rdlength_end(towire); CH;
+    message.nscount++;
+    
+    <span class="enscript-comment">//  * Exactly one KEY RR:
+</span>    <span class="enscript-comment">//      NAME = pointer to hostname from Delete (above)
+</span>    <span class="enscript-comment">//      TYPE = KEY
+</span>    <span class="enscript-comment">//      CLASS = IN
+</span>    <span class="enscript-comment">//      TTL = 3600
+</span>    <span class="enscript-comment">//      RDLENGTH = length of key + 4 (32 bits)
+</span>    <span class="enscript-comment">//      RDATA = &lt;flags(16) = 0000 0010 0000 0001, protocol(8) = 3, algorithm(8) = 8?, public key(variable)&gt;
+</span>    dns_pointer_to_wire(NULL, towire, &amp;p_host_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_key); CH;
+    dns_u16_to_wire(towire, dns_qclass_in); CH;
+    dns_ttl_to_wire(towire, 3600); CH;
+    dns_rdlength_begin(towire); CH;
+    key_tag = dns_rdata_key_to_wire(towire, 0, 2, 1, key); CH;
+    dns_rdlength_end(towire); CH;
+    message.nscount++;
+
+    <span class="enscript-comment">// Service Discovery:
+</span>    <span class="enscript-comment">//   * Update PTR RR
+</span>    <span class="enscript-comment">//     NAME = service name (_a._b.service.arpa)
+</span>    <span class="enscript-comment">//     TYPE = PTR
+</span>    <span class="enscript-comment">//     CLASS = IN
+</span>    <span class="enscript-comment">//     TTL = 3600
+</span>    <span class="enscript-comment">//     RDLENGTH = 2
+</span>    <span class="enscript-comment">//     RDATA = service instance name
+</span>    dns_name_to_wire(&amp;p_service_name, towire, service_type); CH;
+    dns_pointer_to_wire(&amp;p_service_name, towire, &amp;p_zone_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_ptr); CH;
+    dns_u16_to_wire(towire, dns_qclass_in); CH;
+    dns_ttl_to_wire(towire, 3600); CH;
+    dns_rdlength_begin(towire); CH;
+    dns_name_to_wire(&amp;p_service_instance_name, towire, host_name); CH;
+    dns_pointer_to_wire(&amp;p_service_instance_name, towire, &amp;p_service_name); CH;
+    dns_rdlength_end(towire); CH;
+    message.nscount++;
+
+    <span class="enscript-comment">// Service Description:
+</span>    <span class="enscript-comment">//   * Delete all RRsets from service instance name
+</span>    <span class="enscript-comment">//      NAME = service instance name (save pointer to service name, which is the second label)
+</span>    <span class="enscript-comment">//      TYPE = ANY
+</span>    <span class="enscript-comment">//      CLASS = ANY
+</span>    <span class="enscript-comment">//      TTL = 0
+</span>    <span class="enscript-comment">//      RDLENGTH = 0
+</span>    dns_pointer_to_wire(NULL, towire, &amp;p_service_instance_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_any); CH;
+    dns_u16_to_wire(towire, dns_qclass_any); CH;
+    dns_ttl_to_wire(towire, 0); CH;
+    dns_u16_to_wire(towire, 0); CH;
+    message.nscount++;
+
+    <span class="enscript-comment">//   * Add one SRV RRset pointing to Host Description
+</span>    <span class="enscript-comment">//      NAME = pointer to service instance name from above
+</span>    <span class="enscript-comment">//      TYPE = SRV
+</span>    <span class="enscript-comment">//      CLASS = IN
+</span>    <span class="enscript-comment">//      TTL = 3600
+</span>    <span class="enscript-comment">//      RDLENGTH = 8
+</span>    <span class="enscript-comment">//      RDATA = &lt;priority(16) = 0, weight(16) = 0, port(16) = service port, target = pointer to hostname&gt;
+</span>    dns_pointer_to_wire(NULL, towire, &amp;p_service_instance_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_srv); CH;
+    dns_u16_to_wire(towire, dns_qclass_in); CH;
+    dns_ttl_to_wire(towire, 3600); CH;
+    dns_rdlength_begin(towire); CH;
+    dns_u16_to_wire(towire, 0); <span class="enscript-comment">// priority CH;
+</span>    dns_u16_to_wire(towire, 0); <span class="enscript-comment">// weight CH;
+</span>    dns_u16_to_wire(towire, port); <span class="enscript-comment">// port CH;
+</span>    dns_pointer_to_wire(NULL, towire, &amp;p_host_name); CH;
+    dns_rdlength_end(towire); CH;
+    message.nscount++;
+
+    <span class="enscript-comment">//   * Add one or more TXT records
+</span>    <span class="enscript-comment">//      NAME = pointer to service instance name from above
+</span>    <span class="enscript-comment">//      TYPE = TXT
+</span>    <span class="enscript-comment">//      CLASS = IN
+</span>    <span class="enscript-comment">//      TTL = 3600
+</span>    <span class="enscript-comment">//      RDLENGTH = &lt;length of text&gt;
+</span>    <span class="enscript-comment">//      RDATA = &lt;text&gt;
+</span>    dns_pointer_to_wire(NULL, towire, &amp;p_service_instance_name); CH;
+    dns_u16_to_wire(towire, dns_rrtype_txt); CH;
+    dns_u16_to_wire(towire, dns_qclass_in); CH;
+    dns_ttl_to_wire(towire, 3600); CH;
+    dns_rdlength_begin(towire); CH;
+    dns_rdata_txt_to_wire(towire, txt_record); CH;
+    dns_rdlength_end(towire); CH;
+    message.nscount++;
+    message.nscount = htons(message.nscount);
+    
+    <span class="enscript-comment">// What about services with more than one name?   Are these multiple service descriptions?
+</span>
+    <span class="enscript-comment">// ARCOUNT = 2
+</span>    <span class="enscript-comment">//   EDNS(0) options
+</span>    <span class="enscript-comment">//     ...
+</span>    <span class="enscript-comment">//   SIG(0)
+</span>    
+    message.arcount = htons(1);
+    dns_edns0_header_to_wire(towire, DNS_MAX_UDP_PAYLOAD, 0, 0, 1); CH;   <span class="enscript-comment">// XRCODE = 0; VERSION = 0; DO=1
+</span>    dns_rdlength_begin(towire); CH;
+    dns_u16_to_wire(towire, dns_opt_update_lease); CH;  <span class="enscript-comment">// OPTION-CODE
+</span>    dns_edns0_option_begin(towire); CH;                 <span class="enscript-comment">// OPTION-LENGTH
+</span>    dns_u32_to_wire(towire, 3600); CH;                  <span class="enscript-comment">// LEASE (1 hour)
+</span>    dns_u32_to_wire(towire, 604800); CH;                <span class="enscript-comment">// KEY-LEASE (7 days)
+</span>    dns_edns0_option_end(towire); CH;                   <span class="enscript-comment">// Now we know OPTION-LENGTH
+</span>    dns_rdlength_end(towire); CH;
+
+    dns_sig0_signature_to_wire(towire, key, key_tag, &amp;p_host_name, host_fqdn); CH;
+    <span class="enscript-comment">// The signature is computed before counting the signature RR in the header counts.
+</span>    message.arcount = htons(ntohs(message.arcount) + 1);
+
+    <span class="enscript-comment">// Send the update
+</span>    <span class="enscript-keyword">if</span> (dns_send_to_server(&amp;txn, anycast_address, 53, dns_response_callback) &lt; 0) {
+        line = __LINE__;
+    <span class="enscript-reference">fail</span>:
+        printf(<span class="enscript-string">&quot;dns_send_to_server failed: %s at line %d\n&quot;</span>, strerror(towire-&gt;error), line);
+    }
+}
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

@@ -1,0 +1,2525 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnssd_clientstub.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnssd_clientstub.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnssd_clientstub.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2003-2015 Apple Inc. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1.  Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ * 2.  Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ * 3.  Neither the name of Apple Inc. (&quot;Apple&quot;) nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS &quot;AS IS&quot; AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssd_ipc.h&quot;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mach-o/dyld.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;uuid/uuid.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;TargetConditionals.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd_internal.h&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN32</span>)
+
+    #define _SSIZE_T
+    #include &lt;CommonServices.h&gt;
+    #include &lt;DebugServices.h&gt;
+    #include &lt;winsock2.h&gt;
+    #include &lt;ws2tcpip.h&gt;
+    #include &lt;windows.h&gt;
+    #include &lt;stdarg.h&gt;
+    #include &lt;stdio.h&gt;
+
+    #define sockaddr_mdns sockaddr_in
+    #define AF_MDNS AF_INET
+
+<span class="enscript-comment">// Disable warning: &quot;'type cast' : from data pointer 'void *' to function pointer&quot;
+</span>    #pragma warning(disable:4055)
+
+<span class="enscript-comment">// Disable warning: &quot;nonstandard extension, function/data pointer conversion in expression&quot;
+</span>    #pragma warning(disable:4152)
+
+<span class="enscript-type">extern</span> BOOL <span class="enscript-function-name">IsSystemServiceDisabled</span>();
+
+    #define sleep(X) Sleep((X) * 1000)
+
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> g_initWinsock = 0;
+    #define LOG_WARNING kDebugLevelWarning
+    #define LOG_INFO kDebugLevelInfo
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">syslog</span>( <span class="enscript-type">int</span> priority, <span class="enscript-type">const</span> <span class="enscript-type">char</span> * message, ...)
+{
+    va_list args;
+    <span class="enscript-type">int</span> len;
+    <span class="enscript-type">char</span> * buffer;
+    DWORD err = WSAGetLastError();
+    (<span class="enscript-type">void</span>) priority;
+    va_start( args, message );
+    len = _vscprintf( message, args ) + 1;
+    buffer = malloc( len * <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">char</span>) );
+    <span class="enscript-keyword">if</span> ( buffer ) { vsnprintf( buffer, len, message, args ); OutputDebugString( buffer ); free( buffer ); }
+    WSASetLastError( err );
+}
+#<span class="enscript-reference">else</span>
+
+    #include &lt;fcntl.h&gt;      <span class="enscript-comment">// For O_RDWR etc.
+</span>    #include &lt;sys/time.h&gt;
+    #include &lt;sys/socket.h&gt;
+    #include &lt;syslog.h&gt;
+
+    #define sockaddr_mdns sockaddr_un
+    #define AF_MDNS AF_LOCAL
+
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN32</span>)
+<span class="enscript-comment">// &lt;rdar://problem/4096913&gt; Specifies how many times we'll try and connect to the server.
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_CLIENT_MAXTRIES</span> 4
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">_WIN32</span>
+
+<span class="enscript-comment">// Uncomment the line below to use the old error return mechanism of creating a temporary named socket (e.g. in /var/tmp)
+</span><span class="enscript-comment">//#define USE_NAMED_ERROR_RETURN_SOCKET 1
+</span>
+<span class="enscript-comment">// If the UDS client has not received a response from the daemon in 60 secs, it is unlikely to get one
+</span><span class="enscript-comment">// Note: Timeout of 3 secs should be sufficient in normal scenarios, but 60 secs is chosen as a safeguard since
+</span><span class="enscript-comment">// some clients may come up before mDNSResponder itself after a BOOT and on rare ocassions IOPM/Keychain/D2D calls
+</span><span class="enscript-comment">// in mDNSResponder's INIT may take a much longer time to return
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_CLIENT_TIMEOUT</span> 60
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">CTL_PATH_PREFIX</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">CTL_PATH_PREFIX</span> <span class="enscript-string">&quot;/var/tmp/dnssd_result_socket.&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    ipc_msg_hdr ipc_hdr;
+    DNSServiceFlags cb_flags;
+    uint32_t cb_interface;
+    DNSServiceErrorType cb_err;
+} CallbackHeader;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> _DNSServiceRef_t DNSServiceOp;
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> _DNSRecordRef_t DNSRecord;
+
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN32</span>)
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    <span class="enscript-type">void</span>             *AppCallback;      <span class="enscript-comment">// Client callback function and context
+</span>    <span class="enscript-type">void</span>             *AppContext;
+} SleepKAContext;
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// client stub callback to process message from server and deliver results to client application
+</span><span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*ProcessReplyFn)(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end);
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">ValidatorBits</span> 0x12345678
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DNSServiceRefValid</span>(X) (dnssd_SocketValid((X)-&gt;sockfd) &amp;&amp; (((X)-&gt;sockfd ^ (X)-&gt;validator) == ValidatorBits))
+
+<span class="enscript-comment">// When using kDNSServiceFlagsShareConnection, there is one primary _DNSServiceOp_t, and zero or more subordinates
+</span><span class="enscript-comment">// For the primary, the 'next' field points to the first subordinate, and its 'next' field points to the next, and so on.
+</span><span class="enscript-comment">// For the primary, the 'primary' field is NULL; for subordinates the 'primary' field points back to the associated primary
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// _DNS_SD_LIBDISPATCH is defined where libdispatch/GCD is available. This does not mean that the application will use the
+</span><span class="enscript-comment">// DNSServiceSetDispatchQueue API. Hence any new code guarded with _DNS_SD_LIBDISPATCH should still be backwards compatible.
+</span><span class="enscript-type">struct</span> _DNSServiceRef_t
+{
+    DNSServiceOp     *next;             <span class="enscript-comment">// For shared connection
+</span>    DNSServiceOp     *primary;          <span class="enscript-comment">// For shared connection
+</span>    dnssd_sock_t sockfd;                <span class="enscript-comment">// Connected socket between client and daemon
+</span>    dnssd_sock_t validator;             <span class="enscript-comment">// Used to detect memory corruption, double disposals, etc.
+</span>    client_context_t uid;               <span class="enscript-comment">// For shared connection requests, each subordinate DNSServiceRef has its own ID,
+</span>                                        <span class="enscript-comment">// unique within the scope of the same shared parent DNSServiceRef
+</span>    uint32_t op;                        <span class="enscript-comment">// request_op_t or reply_op_t
+</span>    uint32_t max_index;                 <span class="enscript-comment">// Largest assigned record index - 0 if no additional records registered
+</span>    uint32_t logcounter;                <span class="enscript-comment">// Counter used to control number of syslog messages we write
+</span>    <span class="enscript-type">int</span>              *moreptr;          <span class="enscript-comment">// Set while DNSServiceProcessResult working on this particular DNSServiceRef
+</span>    ProcessReplyFn ProcessReply;        <span class="enscript-comment">// Function pointer to the code to handle received messages
+</span>    <span class="enscript-type">void</span>             *AppCallback;      <span class="enscript-comment">// Client callback function and context
+</span>    <span class="enscript-type">void</span>             *AppContext;
+    DNSRecord        *rec;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+    dispatch_source_t disp_source;
+    dispatch_queue_t disp_queue;
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-type">void</span>             *kacontext;
+};
+
+<span class="enscript-type">struct</span> _DNSRecordRef_t
+{
+    DNSRecord       *recnext;
+    <span class="enscript-type">void</span> *AppContext;
+    DNSServiceRegisterRecordReply AppCallback;
+    DNSRecordRef recref;
+    uint32_t record_index;  <span class="enscript-comment">// index is unique to the ServiceDiscoveryRef
+</span>    client_context_t uid;  <span class="enscript-comment">// For demultiplexing multiple DNSServiceRegisterRecord calls
+</span>    DNSServiceOp *sdr;
+};
+
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_TCP_LOOPBACK</span>)
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">SetUDSPath</span>(<span class="enscript-type">struct</span> sockaddr_un *saddr, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *path)
+{
+    size_t pathLen;
+
+    pathLen = strlen(path);
+    <span class="enscript-keyword">if</span> (pathLen &lt; <span class="enscript-keyword">sizeof</span>(saddr-&gt;sun_path))
+        memcpy(saddr-&gt;sun_path, path, pathLen + 1);
+    <span class="enscript-keyword">else</span>
+        saddr-&gt;sun_path[0] = <span class="enscript-string">'\0'</span>;
+}
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">enum</span> { write_all_success = 0, write_all_fail = -1, write_all_defunct = -2 };
+
+<span class="enscript-comment">// Write len bytes. Return 0 on success, -1 on error
+</span><span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">write_all</span>(dnssd_sock_t sd, <span class="enscript-type">char</span> *buf, size_t len)
+{
+    <span class="enscript-comment">// Don't use &quot;MSG_WAITALL&quot;; it returns &quot;Invalid argument&quot; on some Linux versions; use an explicit while() loop instead.
+</span>    <span class="enscript-comment">//if (send(sd, buf, len, MSG_WAITALL) != len) return write_all_fail;
+</span>    <span class="enscript-keyword">while</span> (len)
+    {
+        ssize_t num_written = send(sd, buf, (<span class="enscript-type">long</span>)len, 0);
+        <span class="enscript-keyword">if</span> (num_written &lt; 0 || (size_t)num_written &gt; len)
+        {
+            <span class="enscript-comment">// Check whether socket has gone defunct,
+</span>            <span class="enscript-comment">// otherwise, an error here indicates some OS bug
+</span>            <span class="enscript-comment">// or that the mDNSResponder daemon crashed (which should never happen).
+</span>#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">__ppc__</span>) &amp;&amp; <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">SO_ISDEFUNCT</span>)
+            <span class="enscript-type">int</span> defunct = 0;
+            socklen_t dlen = <span class="enscript-keyword">sizeof</span> (defunct);
+            <span class="enscript-keyword">if</span> (getsockopt(sd, SOL_SOCKET, SO_ISDEFUNCT, &amp;defunct, &amp;dlen) &lt; 0)
+                syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub write_all: SO_ISDEFUNCT failed %d %s&quot;</span>, dnssd_errno, dnssd_strerror(dnssd_errno));
+            <span class="enscript-keyword">if</span> (!defunct)
+                syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub write_all(%d) failed %ld/%ld %d %s&quot;</span>, sd,
+                       (<span class="enscript-type">long</span>)num_written, (<span class="enscript-type">long</span>)len,
+                       (num_written &lt; 0) ? dnssd_errno                 : 0,
+                       (num_written &lt; 0) ? dnssd_strerror(dnssd_errno) : <span class="enscript-string">&quot;&quot;</span>);
+            <span class="enscript-keyword">else</span>
+                syslog(LOG_INFO, <span class="enscript-string">&quot;dnssd_clientstub write_all(%d) DEFUNCT&quot;</span>, sd);
+            <span class="enscript-keyword">return</span> defunct ? write_all_defunct : write_all_fail;
+#<span class="enscript-reference">else</span>
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub write_all(%d) failed %ld/%ld %d %s&quot;</span>, sd,
+                   (<span class="enscript-type">long</span>)num_written, (<span class="enscript-type">long</span>)len,
+                   (num_written &lt; 0) ? dnssd_errno                 : 0,
+                   (num_written &lt; 0) ? dnssd_strerror(dnssd_errno) : <span class="enscript-string">&quot;&quot;</span>);
+            <span class="enscript-keyword">return</span> write_all_fail;
+#<span class="enscript-reference">endif</span>
+        }
+        buf += num_written;
+        len -= num_written;
+    }
+    <span class="enscript-keyword">return</span> write_all_success;
+}
+
+<span class="enscript-type">enum</span> { read_all_success = 0, read_all_fail = -1, read_all_wouldblock = -2, read_all_defunct = -3 };
+
+<span class="enscript-comment">// Read len bytes. Return 0 on success, read_all_fail on error, or read_all_wouldblock for
+</span><span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">read_all</span>(dnssd_sock_t sd, <span class="enscript-type">char</span> *buf, <span class="enscript-type">int</span> len)
+{
+    <span class="enscript-comment">// Don't use &quot;MSG_WAITALL&quot;; it returns &quot;Invalid argument&quot; on some Linux versions; use an explicit while() loop instead.
+</span>    <span class="enscript-comment">//if (recv(sd, buf, len, MSG_WAITALL) != len) return -1;
+</span>
+    <span class="enscript-keyword">while</span> (len)
+    {
+        ssize_t num_read = recv(sd, buf, len, 0);
+        <span class="enscript-comment">// It is valid to get an interrupted system call error e.g., somebody attaching
+</span>        <span class="enscript-comment">// in a debugger, retry without failing
+</span>        <span class="enscript-keyword">if</span> ((num_read &lt; 0) &amp;&amp; (errno == EINTR)) 
+        { 
+            syslog(LOG_INFO, <span class="enscript-string">&quot;dnssd_clientstub read_all: EINTR continue&quot;</span>); 
+            <span class="enscript-keyword">continue</span>; 
+        }
+        <span class="enscript-keyword">if</span> ((num_read == 0) || (num_read &lt; 0) || (num_read &gt; len))
+        {
+            <span class="enscript-type">int</span> printWarn = 0;
+            <span class="enscript-type">int</span> defunct = 0;
+
+            <span class="enscript-comment">// Check whether socket has gone defunct,
+</span>            <span class="enscript-comment">// otherwise, an error here indicates some OS bug
+</span>            <span class="enscript-comment">// or that the mDNSResponder daemon crashed (which should never happen).
+</span>#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">WIN32</span>)
+            <span class="enscript-comment">// &lt;rdar://problem/7481776&gt; Suppress logs for &quot;A non-blocking socket operation
+</span>            <span class="enscript-comment">//                          could not be completed immediately&quot;
+</span>            <span class="enscript-keyword">if</span> (WSAGetLastError() != WSAEWOULDBLOCK)
+                printWarn = 1;
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">__ppc__</span>) &amp;&amp; <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">SO_ISDEFUNCT</span>)
+            {
+                socklen_t dlen = <span class="enscript-keyword">sizeof</span> (defunct);
+                <span class="enscript-keyword">if</span> (getsockopt(sd, SOL_SOCKET, SO_ISDEFUNCT, &amp;defunct, &amp;dlen) &lt; 0)
+                    syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub read_all: SO_ISDEFUNCT failed %d %s&quot;</span>, dnssd_errno, dnssd_strerror(dnssd_errno));
+            }
+            <span class="enscript-keyword">if</span> (!defunct)
+                printWarn = 1;
+#<span class="enscript-reference">endif</span>
+            <span class="enscript-keyword">if</span> (printWarn)
+                syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub read_all(%d) failed %ld/%ld %d %s&quot;</span>, sd,
+                       (<span class="enscript-type">long</span>)num_read, (<span class="enscript-type">long</span>)len,
+                       (num_read &lt; 0) ? dnssd_errno                 : 0,
+                       (num_read &lt; 0) ? dnssd_strerror(dnssd_errno) : <span class="enscript-string">&quot;&quot;</span>);
+            <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (defunct)
+                syslog(LOG_INFO, <span class="enscript-string">&quot;dnssd_clientstub read_all(%d) DEFUNCT&quot;</span>, sd);
+            <span class="enscript-keyword">return</span> (num_read &lt; 0 &amp;&amp; dnssd_errno == dnssd_EWOULDBLOCK) ? read_all_wouldblock : (defunct ? read_all_defunct : read_all_fail);
+        }
+        buf += num_read;
+        len -= num_read;
+    }
+    <span class="enscript-keyword">return</span> read_all_success;
+}
+
+<span class="enscript-comment">// Returns 1 if more bytes remain to be read on socket descriptor sd, 0 otherwise
+</span><span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">more_bytes</span>(dnssd_sock_t sd)
+{
+    <span class="enscript-type">struct</span> timeval tv = { 0, 0 };
+    fd_set readfds;
+    fd_set *fs;
+    <span class="enscript-type">int</span> ret;
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN32</span>)
+    fs = &amp;readfds;
+    FD_ZERO(fs);
+    FD_SET(sd, fs);
+    ret = select((<span class="enscript-type">int</span>)sd+1, fs, (fd_set*)NULL, (fd_set*)NULL, &amp;tv);
+#<span class="enscript-reference">else</span>
+    <span class="enscript-comment">// This whole thing would probably be better done using kevent() instead of select()
+</span>    <span class="enscript-keyword">if</span> (sd &lt; FD_SETSIZE)
+    {
+        fs = &amp;readfds;
+        FD_ZERO(fs);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-comment">// Compute the number of integers needed for storing &quot;sd&quot;. Internally fd_set is stored
+</span>        <span class="enscript-comment">// as an array of ints with one bit for each fd and hence we need to compute
+</span>        <span class="enscript-comment">// the number of ints needed rather than the number of bytes. If &quot;sd&quot; is 32, we need
+</span>        <span class="enscript-comment">// two ints and not just one.
+</span>        <span class="enscript-type">int</span> nfdbits = <span class="enscript-keyword">sizeof</span> (<span class="enscript-type">int</span>) * 8;
+        <span class="enscript-type">int</span> nints = (sd/nfdbits) + 1;
+        fs = (fd_set *)calloc(nints, (size_t)<span class="enscript-keyword">sizeof</span>(<span class="enscript-type">int</span>));
+        <span class="enscript-keyword">if</span> (fs == NULL) 
+        { 
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub more_bytes: malloc failed&quot;</span>); 
+            <span class="enscript-keyword">return</span> 0; 
+        }
+    }
+    FD_SET(sd, fs);
+    ret = select((<span class="enscript-type">int</span>)sd+1, fs, (fd_set*)NULL, (fd_set*)NULL, &amp;tv);
+    <span class="enscript-keyword">if</span> (fs != &amp;readfds) 
+        free(fs);
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-keyword">return</span> (ret &gt; 0);
+}
+
+<span class="enscript-comment">// set_waitlimit() implements a timeout using select. It is called from deliver_request() before recv() OR accept()
+</span><span class="enscript-comment">// to ensure the UDS clients are not blocked in these system calls indefinitely.
+</span><span class="enscript-comment">// Note: Ideally one should never be blocked here, because it indicates either mDNSResponder daemon is not yet up/hung/
+</span><span class="enscript-comment">// superbusy/crashed or some other OS bug. For eg: On Windows which suffers from 3rd party software 
+</span><span class="enscript-comment">// (primarily 3rd party firewall software) interfering with proper functioning of the TCP protocol stack it is possible 
+</span><span class="enscript-comment">// the next operation on this socket(recv/accept) is blocked since we depend on TCP to communicate with the system service.
+</span><span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">set_waitlimit</span>(dnssd_sock_t sock, <span class="enscript-type">int</span> timeout)
+{
+    <span class="enscript-type">int</span> gDaemonErr = kDNSServiceErr_NoError;
+
+    <span class="enscript-comment">// The comment below is wrong. The select() routine does not cause stack corruption.
+</span>    <span class="enscript-comment">// The use of FD_SET out of range for the bitmap is what causes stack corruption.
+</span>    <span class="enscript-comment">// For how to do this correctly, see the example using calloc() in more_bytes() above.
+</span>    <span class="enscript-comment">// Even better, both should be changed to use kevent() instead of select().
+</span>    <span class="enscript-comment">// To prevent stack corruption since select does not work with timeout if fds &gt; FD_SETSIZE(1024)
+</span>    <span class="enscript-keyword">if</span> (!gDaemonErr &amp;&amp; sock &lt; FD_SETSIZE)
+    {
+        <span class="enscript-type">struct</span> timeval tv;
+        fd_set set;
+
+        FD_ZERO(&amp;set);
+        FD_SET(sock, &amp;set);
+        tv.tv_sec = timeout;
+        tv.tv_usec = 0;
+        <span class="enscript-keyword">if</span> (!select((<span class="enscript-type">int</span>)(sock + 1), &amp;set, NULL, NULL, &amp;tv))
+        {
+            <span class="enscript-comment">// Ideally one should never hit this case: See comments before set_waitlimit()
+</span>            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub set_waitlimit:_daemon timed out (%d secs) without any response: Socket %d&quot;</span>, timeout, sock);
+            gDaemonErr = kDNSServiceErr_Timeout;
+        }
+    }
+    <span class="enscript-keyword">return</span> gDaemonErr;
+}
+
+<span class="enscript-comment">/* create_hdr
+ *
+ * allocate and initialize an ipc message header. Value of len should initially be the
+ * length of the data, and is set to the value of the data plus the header. data_start
+ * is set to point to the beginning of the data section. SeparateReturnSocket should be
+ * non-zero for calls that can't receive an immediate error return value on their primary
+ * socket, and therefore require a separate return path for the error code result.
+ * if zero, the path to a control socket is appended at the beginning of the message buffer.
+ * data_start is set past this string.
+ */</span>
+<span class="enscript-type">static</span> ipc_msg_hdr *<span class="enscript-function-name">create_hdr</span>(uint32_t op, size_t *len, <span class="enscript-type">char</span> **data_start, <span class="enscript-type">int</span> SeparateReturnSocket, DNSServiceOp *ref)
+{
+    <span class="enscript-type">char</span> *msg = NULL;
+    ipc_msg_hdr *hdr;
+    <span class="enscript-type">int</span> datalen;
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_TCP_LOOPBACK</span>)
+    <span class="enscript-type">char</span> ctrl_path[64] = <span class="enscript-string">&quot;&quot;</span>;    <span class="enscript-comment">// &quot;/var/tmp/dnssd_result_socket.xxxxxxxxxx-xxx-xxxxxx&quot;
+</span>#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (SeparateReturnSocket)
+    {
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_TCP_LOOPBACK</span>)
+        *len += 2;  <span class="enscript-comment">// Allocate space for two-byte port number
+</span>#<span class="enscript-reference">elif</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_NAMED_ERROR_RETURN_SOCKET</span>)
+        <span class="enscript-type">struct</span> timeval tv;
+        <span class="enscript-keyword">if</span> (gettimeofday(&amp;tv, NULL) &lt; 0)
+        { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub create_hdr: gettimeofday failed %d %s&quot;</span>, dnssd_errno, dnssd_strerror(dnssd_errno)); <span class="enscript-keyword">return</span> NULL; }
+        snprintf(ctrl_path, <span class="enscript-keyword">sizeof</span>(ctrl_path), <span class="enscript-string">&quot;%s%d-%.3lx-%.6lu&quot;</span>, CTL_PATH_PREFIX, (<span class="enscript-type">int</span>)getpid(),
+                (<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)(tv.tv_sec &amp; 0xFFF), (<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)(tv.tv_usec));
+        *len += strlen(ctrl_path) + 1;
+#<span class="enscript-reference">else</span>
+        *len += 1;      <span class="enscript-comment">// Allocate space for single zero byte (empty C string)
+</span>#<span class="enscript-reference">endif</span>
+    }
+
+    datalen = (<span class="enscript-type">int</span>) *len;
+    *len += <span class="enscript-keyword">sizeof</span>(ipc_msg_hdr);
+
+    <span class="enscript-comment">// Write message to buffer
+</span>    msg = malloc(*len);
+    <span class="enscript-keyword">if</span> (!msg) { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub create_hdr: malloc failed&quot;</span>); <span class="enscript-keyword">return</span> NULL; }
+
+    memset(msg, 0, *len);
+    hdr = (ipc_msg_hdr *)msg;
+    hdr-&gt;version                = VERSION;
+    hdr-&gt;datalen                = datalen;
+    hdr-&gt;ipc_flags              = 0;
+    hdr-&gt;op                     = op;
+    hdr-&gt;client_context         = ref-&gt;uid;
+    hdr-&gt;reg_index              = 0;
+    *data_start = msg + <span class="enscript-keyword">sizeof</span>(ipc_msg_hdr);
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_TCP_LOOPBACK</span>)
+    <span class="enscript-comment">// Put dummy data in for the port, since we don't know what it is yet.
+</span>    <span class="enscript-comment">// The data will get filled in before we send the message. This happens in deliver_request().
+</span>    <span class="enscript-keyword">if</span> (SeparateReturnSocket) put_uint16(0, data_start);
+#<span class="enscript-reference">else</span>
+    <span class="enscript-keyword">if</span> (SeparateReturnSocket) put_string(ctrl_path, data_start);
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-keyword">return</span> hdr;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">FreeDNSRecords</span>(DNSServiceOp *sdRef)
+{
+    DNSRecord *rec = sdRef-&gt;rec;
+    <span class="enscript-keyword">while</span> (rec)
+    {
+        DNSRecord *next = rec-&gt;recnext;
+        free(rec);
+        rec = next;
+    }
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">FreeDNSServiceOp</span>(DNSServiceOp *x)
+{
+    <span class="enscript-comment">// We don't use our DNSServiceRefValid macro here because if we're cleaning up after a socket() call failed
+</span>    <span class="enscript-comment">// then sockfd could legitimately contain a failing value (e.g. dnssd_InvalidSocket)
+</span>    <span class="enscript-keyword">if</span> ((x-&gt;sockfd ^ x-&gt;validator) != ValidatorBits)
+    {
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        x-&gt;next         = NULL;
+        x-&gt;primary      = NULL;
+        x-&gt;sockfd       = dnssd_InvalidSocket;
+        x-&gt;validator    = 0xDDDDDDDD;
+        x-&gt;op           = request_op_none;
+        x-&gt;max_index    = 0;
+        x-&gt;logcounter   = 0;
+        x-&gt;moreptr      = NULL;
+        x-&gt;ProcessReply = NULL;
+        x-&gt;AppCallback  = NULL;
+        x-&gt;AppContext   = NULL;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+        <span class="enscript-keyword">if</span> (x-&gt;disp_source) dispatch_release(x-&gt;disp_source);
+        x-&gt;disp_source  = NULL;
+        x-&gt;disp_queue   = NULL;
+#<span class="enscript-reference">endif</span>
+        <span class="enscript-comment">// DNSRecords may have been added to subordinate sdRef e.g., DNSServiceRegister/DNSServiceAddRecord
+</span>        <span class="enscript-comment">// or on the main sdRef e.g., DNSServiceCreateConnection/DNSServiceRegisterRecord.
+</span>        <span class="enscript-comment">// DNSRecords may have been freed if the application called DNSRemoveRecord.
+</span>        FreeDNSRecords(x);
+        <span class="enscript-keyword">if</span> (x-&gt;kacontext)
+        {
+            free(x-&gt;kacontext);
+            x-&gt;kacontext = NULL;
+        }
+        free(x);
+    }
+}
+
+<span class="enscript-comment">// Return a connected service ref (deallocate with DNSServiceRefDeallocate)
+</span><span class="enscript-type">static</span> DNSServiceErrorType <span class="enscript-function-name">ConnectToServer</span>(DNSServiceRef *ref, DNSServiceFlags flags, uint32_t op, ProcessReplyFn ProcessReply, <span class="enscript-type">void</span> *AppCallback, <span class="enscript-type">void</span> *AppContext)
+{
+    #<span class="enscript-keyword">if</span> defined(_WIN32)
+    <span class="enscript-type">int</span> NumTries = 0;
+    #endif <span class="enscript-comment">// _WIN32
+</span>
+    dnssd_sockaddr_t saddr;
+    DNSServiceOp *sdr;
+
+    <span class="enscript-keyword">if</span> (!ref) 
+    { 
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSService operation with NULL DNSServiceRef&quot;</span>); 
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam; 
+    }
+
+    <span class="enscript-keyword">if</span> (flags &amp; kDNSServiceFlagsShareConnection)
+    {
+        <span class="enscript-keyword">if</span> (!*ref)
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub kDNSServiceFlagsShareConnection used with NULL DNSServiceRef&quot;</span>);
+            <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+        }
+        <span class="enscript-keyword">if</span> (!DNSServiceRefValid(*ref) || ((*ref)-&gt;op != connection_request &amp;&amp; (*ref)-&gt;op != connection_delegate_request) || (*ref)-&gt;primary)
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub kDNSServiceFlagsShareConnection used with invalid DNSServiceRef %p %08X %08X op %d&quot;</span>,
+                   (*ref), (*ref)-&gt;sockfd, (*ref)-&gt;validator, (*ref)-&gt;op);
+            *ref = NULL;
+            <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+        }
+    }
+
+    #<span class="enscript-keyword">if</span> defined(_WIN32)
+    <span class="enscript-keyword">if</span> (!g_initWinsock)
+    {
+        WSADATA wsaData;
+        g_initWinsock = 1;
+        <span class="enscript-keyword">if</span> (WSAStartup(MAKEWORD(2,2), &amp;wsaData) != 0) { *ref = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_ServiceNotRunning; }
+    }
+    <span class="enscript-comment">// &lt;rdar://problem/4096913&gt; If the system service is disabled, we only want to try to connect once
+</span>    <span class="enscript-keyword">if</span> (IsSystemServiceDisabled())
+        NumTries = DNSSD_CLIENT_MAXTRIES;
+    #endif
+
+    sdr = malloc(<span class="enscript-keyword">sizeof</span>(DNSServiceOp));
+    <span class="enscript-keyword">if</span> (!sdr) 
+    { 
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: malloc failed&quot;</span>); 
+        *ref = NULL; 
+        <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; 
+    }
+    sdr-&gt;next          = NULL;
+    sdr-&gt;primary       = NULL;
+    sdr-&gt;sockfd        = dnssd_InvalidSocket;
+    sdr-&gt;validator     = sdr-&gt;sockfd ^ ValidatorBits;
+    sdr-&gt;op            = op;
+    sdr-&gt;max_index     = 0;
+    sdr-&gt;logcounter    = 0;
+    sdr-&gt;moreptr       = NULL;
+    sdr-&gt;uid.u32[0]    = 0;
+    sdr-&gt;uid.u32[1]    = 0;
+    sdr-&gt;ProcessReply  = ProcessReply;
+    sdr-&gt;AppCallback   = AppCallback;
+    sdr-&gt;AppContext    = AppContext;
+    sdr-&gt;rec           = NULL;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+    sdr-&gt;disp_source   = NULL;
+    sdr-&gt;disp_queue    = NULL;
+#<span class="enscript-reference">endif</span>
+    sdr-&gt;kacontext     = NULL;
+
+    <span class="enscript-keyword">if</span> (flags &amp; kDNSServiceFlagsShareConnection)
+    {
+        DNSServiceOp **p = &amp;(*ref)-&gt;next;       <span class="enscript-comment">// Append ourselves to end of primary's list
+</span>        <span class="enscript-keyword">while</span> (*p) 
+            p = &amp;(*p)-&gt;next;
+        *p = sdr;
+        <span class="enscript-comment">// Preincrement counter before we use it -- it helps with debugging if we know the all-zeroes ID should never appear
+</span>        <span class="enscript-keyword">if</span> (++(*ref)-&gt;uid.u32[0] == 0) 
+            ++(*ref)-&gt;uid.u32[1];               <span class="enscript-comment">// In parent DNSServiceOp increment UID counter
+</span>        sdr-&gt;primary    = *ref;                 <span class="enscript-comment">// Set our primary pointer
+</span>        sdr-&gt;sockfd     = (*ref)-&gt;sockfd;       <span class="enscript-comment">// Inherit primary's socket
+</span>        sdr-&gt;validator  = (*ref)-&gt;validator;
+        sdr-&gt;uid        = (*ref)-&gt;uid;
+        <span class="enscript-comment">//printf(&quot;ConnectToServer sharing socket %d\n&quot;, sdr-&gt;sockfd);
+</span>    }
+    <span class="enscript-keyword">else</span>
+    {
+        #ifdef SO_NOSIGPIPE
+        <span class="enscript-type">const</span> <span class="enscript-type">unsigned</span> <span class="enscript-type">long</span> optval = 1;
+        #endif
+        #ifndef USE_TCP_LOOPBACK
+        <span class="enscript-type">char</span>* uds_serverpath = getenv(MDNS_UDS_SERVERPATH_ENVVAR);
+        <span class="enscript-keyword">if</span> (uds_serverpath == NULL)
+            uds_serverpath = MDNS_UDS_SERVERPATH;
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (strlen(uds_serverpath) &gt;= MAX_CTLPATH)
+        {
+            uds_serverpath = MDNS_UDS_SERVERPATH;
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: using default path since env len is invalid&quot;</span>);
+        }
+        #endif
+        *ref = NULL;
+        sdr-&gt;sockfd    = socket(AF_DNSSD, SOCK_STREAM, 0);
+        sdr-&gt;validator = sdr-&gt;sockfd ^ ValidatorBits;
+        <span class="enscript-keyword">if</span> (!dnssd_SocketValid(sdr-&gt;sockfd))
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: socket failed %d %s&quot;</span>, dnssd_errno, dnssd_strerror(dnssd_errno));
+            FreeDNSServiceOp(sdr);
+            <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+        }
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN32</span>)
+        <span class="enscript-type">int</span> fcntl_flags = fcntl(sdr-&gt;sockfd, F_GETFD);
+        <span class="enscript-keyword">if</span> (fcntl_flags != -1)
+        {
+            fcntl_flags |= FD_CLOEXEC;
+            <span class="enscript-type">int</span> ret = fcntl(sdr-&gt;sockfd, F_SETFD, fcntl_flags);
+            <span class="enscript-keyword">if</span> (ret == -1)
+                syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: Failed to set FD_CLOEXEC on socket %d %s&quot;</span>,
+                       dnssd_errno, dnssd_strerror(dnssd_errno));
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: Failed to get the file descriptor flags of socket %d %s&quot;</span>,
+                   dnssd_errno, dnssd_strerror(dnssd_errno));
+        }
+#<span class="enscript-reference">endif</span> // !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN32</span>)
+        #ifdef SO_NOSIGPIPE
+        <span class="enscript-comment">// Some environments (e.g. OS X) support turning off SIGPIPE for a socket
+</span>        <span class="enscript-keyword">if</span> (setsockopt(sdr-&gt;sockfd, SOL_SOCKET, SO_NOSIGPIPE, &amp;optval, <span class="enscript-keyword">sizeof</span>(optval)) &lt; 0)
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: SO_NOSIGPIPE failed %d %s&quot;</span>, dnssd_errno, dnssd_strerror(dnssd_errno));
+        #endif
+        #<span class="enscript-keyword">if</span> defined(USE_TCP_LOOPBACK)
+        saddr.sin_family      = AF_INET;
+        saddr.sin_addr.s_addr = inet_addr(MDNS_TCP_SERVERADDR);
+        saddr.sin_port        = htons(MDNS_TCP_SERVERPORT);
+        #<span class="enscript-keyword">else</span>
+        saddr.sun_family      = AF_LOCAL;
+        SetUDSPath(&amp;saddr, uds_serverpath);
+        #<span class="enscript-keyword">if</span> !defined(__ppc__) &amp;&amp; defined(SO_DEFUNCTOK)
+        {
+            <span class="enscript-type">int</span> defunct = 1;
+            <span class="enscript-keyword">if</span> (setsockopt(sdr-&gt;sockfd, SOL_SOCKET, SO_DEFUNCTOK, &amp;defunct, <span class="enscript-keyword">sizeof</span>(defunct)) &lt; 0)
+                syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: SO_DEFUNCTOK failed %d %s&quot;</span>, dnssd_errno, dnssd_strerror(dnssd_errno));
+        }
+        #endif
+        #endif
+
+        #<span class="enscript-keyword">if</span> defined(_WIN32)
+        <span class="enscript-keyword">while</span> (1)
+        {
+            <span class="enscript-type">int</span> err = connect(sdr-&gt;sockfd, (<span class="enscript-type">struct</span> sockaddr *) &amp;saddr, <span class="enscript-keyword">sizeof</span>(saddr));
+            <span class="enscript-keyword">if</span> (!err)
+                <span class="enscript-keyword">break</span>; <span class="enscript-comment">// If we succeeded, return sdr
+</span>
+            <span class="enscript-comment">// If we failed, then it may be because the daemon is still launching.
+</span>            <span class="enscript-comment">// This can happen for processes that launch early in the boot process, while the
+</span>            <span class="enscript-comment">// daemon is still coming up. Rather than fail here, we wait 1 sec and try again.
+</span>            <span class="enscript-comment">// If, after DNSSD_CLIENT_MAXTRIES, we still can't connect to the daemon,
+</span>            <span class="enscript-comment">// then we give up and return a failure code.
+</span>            <span class="enscript-keyword">if</span> (++NumTries &lt; DNSSD_CLIENT_MAXTRIES)
+            {
+                syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: connect()-&gt; No of tries: %d&quot;</span>, NumTries);
+                sleep(1); <span class="enscript-comment">// Sleep a bit, then try again
+</span>            }
+            <span class="enscript-keyword">else</span>
+            {
+                #<span class="enscript-keyword">if</span> !defined(USE_TCP_LOOPBACK)
+                syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: connect() failed path:%s Socket:%d Err:%d Errno:%d %s&quot;</span>,
+                       uds_serverpath, sdr-&gt;sockfd, err, dnssd_errno, dnssd_strerror(dnssd_errno));
+                #endif
+                dnssd_close(sdr-&gt;sockfd);
+                FreeDNSServiceOp(sdr);
+                <span class="enscript-keyword">return</span> kDNSServiceErr_ServiceNotRunning;
+            }
+        }
+        #<span class="enscript-keyword">else</span>
+        <span class="enscript-type">int</span> err = connect(sdr-&gt;sockfd, (<span class="enscript-type">struct</span> sockaddr *) &amp;saddr, <span class="enscript-keyword">sizeof</span>(saddr));
+        <span class="enscript-keyword">if</span> (err)
+        {
+            #<span class="enscript-keyword">if</span> !defined(USE_TCP_LOOPBACK)
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectToServer: connect() failed path:%s Socket:%d Err:%d Errno:%d %s&quot;</span>,
+                   uds_serverpath, sdr-&gt;sockfd, err, dnssd_errno, dnssd_strerror(dnssd_errno));
+            #endif
+            dnssd_close(sdr-&gt;sockfd);
+            FreeDNSServiceOp(sdr);
+            <span class="enscript-keyword">return</span> kDNSServiceErr_ServiceNotRunning;
+        }
+        #endif
+    }
+
+    *ref = sdr;
+    <span class="enscript-keyword">return</span> kDNSServiceErr_NoError;
+}
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">deliver_request_bailout</span>(MSG) \
+    do { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request: %s failed %d (%s)&quot;</span>, (MSG), dnssd_errno, dnssd_strerror(dnssd_errno)); goto cleanup; } while(0)
+
+<span class="enscript-type">static</span> DNSServiceErrorType <span class="enscript-function-name">deliver_request</span>(ipc_msg_hdr *hdr, DNSServiceOp *sdr)
+{
+    uint32_t datalen;
+    dnssd_sock_t listenfd = dnssd_InvalidSocket, errsd = dnssd_InvalidSocket;
+    DNSServiceErrorType err = kDNSServiceErr_Unknown;   <span class="enscript-comment">// Default for the &quot;goto cleanup&quot; cases
+</span>    <span class="enscript-type">int</span> MakeSeparateReturnSocket;
+    <span class="enscript-type">int</span> ioresult;
+    #<span class="enscript-keyword">if</span> defined(USE_TCP_LOOPBACK) || defined(USE_NAMED_ERROR_RETURN_SOCKET)
+    <span class="enscript-type">char</span> *data;
+    #endif
+
+    <span class="enscript-keyword">if</span> (!hdr)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request: !hdr&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+    }
+    
+    datalen = hdr-&gt;datalen;    <span class="enscript-comment">// We take a copy here because we're going to convert hdr-&gt;datalen to network byte order
+</span>    #<span class="enscript-keyword">if</span> defined(USE_TCP_LOOPBACK) || defined(USE_NAMED_ERROR_RETURN_SOCKET)
+    data = (<span class="enscript-type">char</span> *)hdr + <span class="enscript-keyword">sizeof</span>(ipc_msg_hdr);
+    #endif
+
+    <span class="enscript-comment">// Note: need to check hdr-&gt;op, not sdr-&gt;op.
+</span>    <span class="enscript-comment">// hdr-&gt;op contains the code for the specific operation we're currently doing, whereas sdr-&gt;op
+</span>    <span class="enscript-comment">// contains the original parent DNSServiceOp (e.g. for an add_record_request, hdr-&gt;op will be
+</span>    <span class="enscript-comment">// add_record_request but the parent sdr-&gt;op will be connection_request or reg_service_request)
+</span>    MakeSeparateReturnSocket = (sdr-&gt;primary ||
+        hdr-&gt;op == reg_record_request || hdr-&gt;op == add_record_request || hdr-&gt;op == update_record_request || hdr-&gt;op == remove_record_request);
+
+    <span class="enscript-keyword">if</span> (!DNSServiceRefValid(sdr))
+    {
+        <span class="enscript-keyword">if</span> (hdr)
+            free(hdr);
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request: invalid DNSServiceRef %p %08X %08X&quot;</span>, sdr, sdr-&gt;sockfd, sdr-&gt;validator);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    <span class="enscript-keyword">if</span> (MakeSeparateReturnSocket)
+    {
+        #<span class="enscript-keyword">if</span> defined(USE_TCP_LOOPBACK)
+        {
+            <span class="enscript-type">union</span> { uint16_t s; u_char b[2]; } port;
+            dnssd_sockaddr_t caddr;
+            dnssd_socklen_t len = (dnssd_socklen_t) <span class="enscript-keyword">sizeof</span>(caddr);
+            listenfd = socket(AF_DNSSD, SOCK_STREAM, 0);
+            <span class="enscript-keyword">if</span> (!dnssd_SocketValid(listenfd)) deliver_request_bailout(<span class="enscript-string">&quot;TCP socket&quot;</span>);
+
+            caddr.sin_family      = AF_INET;
+            caddr.sin_port        = 0;
+            caddr.sin_addr.s_addr = inet_addr(MDNS_TCP_SERVERADDR);
+            <span class="enscript-keyword">if</span> (bind(listenfd, (<span class="enscript-type">struct</span> sockaddr*) &amp;caddr, <span class="enscript-keyword">sizeof</span>(caddr)) &lt; 0) deliver_request_bailout(<span class="enscript-string">&quot;TCP bind&quot;</span>);
+            <span class="enscript-keyword">if</span> (getsockname(listenfd, (<span class="enscript-type">struct</span> sockaddr*) &amp;caddr, &amp;len)   &lt; 0) deliver_request_bailout(<span class="enscript-string">&quot;TCP getsockname&quot;</span>);
+            <span class="enscript-keyword">if</span> (listen(listenfd, 1)                                      &lt; 0) deliver_request_bailout(<span class="enscript-string">&quot;TCP listen&quot;</span>);
+            port.s = caddr.sin_port;
+            data[0] = port.b[0];  <span class="enscript-comment">// don't switch the byte order, as the
+</span>            data[1] = port.b[1];  <span class="enscript-comment">// daemon expects it in network byte order
+</span>        }
+        #elif defined(USE_NAMED_ERROR_RETURN_SOCKET)
+        {
+            mode_t mask;
+            <span class="enscript-type">int</span> bindresult;
+            dnssd_sockaddr_t caddr;
+            listenfd = socket(AF_DNSSD, SOCK_STREAM, 0);
+            <span class="enscript-keyword">if</span> (!dnssd_SocketValid(listenfd)) deliver_request_bailout(<span class="enscript-string">&quot;USE_NAMED_ERROR_RETURN_SOCKET socket&quot;</span>);
+
+            caddr.sun_family = AF_LOCAL;
+            <span class="enscript-comment">// According to Stevens (section 3.2), there is no portable way to
+</span>            <span class="enscript-comment">// determine whether sa_len is defined on a particular platform.
+</span>            #ifndef NOT_HAVE_SA_LEN
+            caddr.sun_len = <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> sockaddr_un);
+            #endif
+            SetUDSPath(&amp;caddr, data);
+            mask = umask(0);
+            bindresult = bind(listenfd, (<span class="enscript-type">struct</span> sockaddr *)&amp;caddr, <span class="enscript-keyword">sizeof</span>(caddr));
+            umask(mask);
+            <span class="enscript-keyword">if</span> (bindresult          &lt; 0) deliver_request_bailout(<span class="enscript-string">&quot;USE_NAMED_ERROR_RETURN_SOCKET bind&quot;</span>);
+            <span class="enscript-keyword">if</span> (listen(listenfd, 1) &lt; 0) deliver_request_bailout(<span class="enscript-string">&quot;USE_NAMED_ERROR_RETURN_SOCKET listen&quot;</span>);
+        }
+        #<span class="enscript-keyword">else</span>
+        {
+            dnssd_sock_t sp[2];
+            <span class="enscript-keyword">if</span> (socketpair(AF_DNSSD, SOCK_STREAM, 0, sp) &lt; 0) deliver_request_bailout(<span class="enscript-string">&quot;socketpair&quot;</span>);
+            <span class="enscript-keyword">else</span>
+            {
+                errsd    = sp[0];   <span class="enscript-comment">// We'll read our four-byte error code from sp[0]
+</span>                listenfd = sp[1];   <span class="enscript-comment">// We'll send sp[1] to the daemon
+</span>                #<span class="enscript-keyword">if</span> !defined(__ppc__) &amp;&amp; defined(SO_DEFUNCTOK)
+                {
+                    <span class="enscript-type">int</span> defunct = 1;
+                    <span class="enscript-keyword">if</span> (setsockopt(errsd, SOL_SOCKET, SO_DEFUNCTOK, &amp;defunct, <span class="enscript-keyword">sizeof</span>(defunct)) &lt; 0)
+                        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request: SO_DEFUNCTOK failed %d %s&quot;</span>, dnssd_errno, dnssd_strerror(dnssd_errno));
+                }
+                #endif
+            }
+        }
+        #endif
+    }
+
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_TCP_LOOPBACK</span>) &amp;&amp; !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_NAMED_ERROR_RETURN_SOCKET</span>)
+    <span class="enscript-comment">// If we're going to make a separate error return socket, and pass it to the daemon
+</span>    <span class="enscript-comment">// using sendmsg, then we'll hold back one data byte to go with it.
+</span>    <span class="enscript-comment">// On some versions of Unix (including Leopard) sending a control message without
+</span>    <span class="enscript-comment">// any associated data does not work reliably -- e.g. one particular issue we ran
+</span>    <span class="enscript-comment">// into is that if the receiving program is in a kqueue loop waiting to be notified
+</span>    <span class="enscript-comment">// of the received message, it doesn't get woken up when the control message arrives.
+</span>    <span class="enscript-keyword">if</span> (MakeSeparateReturnSocket || sdr-&gt;op == send_bpf) 
+        datalen--;     <span class="enscript-comment">// Okay to use sdr-&gt;op when checking for op == send_bpf
+</span>#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-comment">// At this point, our listening socket is set up and waiting, if necessary, for the daemon to connect back to
+</span>    ConvertHeaderBytes(hdr);
+    <span class="enscript-comment">//syslog(LOG_WARNING, &quot;dnssd_clientstub deliver_request writing %lu bytes&quot;, (unsigned long)(datalen + sizeof(ipc_msg_hdr)));
+</span>    <span class="enscript-comment">//if (MakeSeparateReturnSocket) syslog(LOG_WARNING, &quot;dnssd_clientstub deliver_request name is %s&quot;, data);
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TEST_SENDING_ONE_BYTE_AT_A_TIME</span>
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> i;
+    <span class="enscript-keyword">for</span> (i=0; i&lt;datalen + <span class="enscript-keyword">sizeof</span>(ipc_msg_hdr); i++)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request writing %d&quot;</span>, i);
+        ioresult = write_all(sdr-&gt;sockfd, ((<span class="enscript-type">char</span> *)hdr)+i, 1);
+        <span class="enscript-keyword">if</span> (ioresult &lt; write_all_success)
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request write_all (byte %u) failed&quot;</span>, i);
+            err = (ioresult == write_all_defunct) ? kDNSServiceErr_DefunctConnection : kDNSServiceErr_ServiceNotRunning;
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">cleanup</span>;
+        }
+        usleep(10000);
+    }
+#<span class="enscript-reference">else</span>
+    ioresult = write_all(sdr-&gt;sockfd, (<span class="enscript-type">char</span> *)hdr, datalen + <span class="enscript-keyword">sizeof</span>(ipc_msg_hdr));
+    <span class="enscript-keyword">if</span> (ioresult &lt; write_all_success)
+    {
+        <span class="enscript-comment">// write_all already prints an error message if there is an error writing to
+</span>        <span class="enscript-comment">// the socket except for DEFUNCT. Logging here is unnecessary and also wrong
+</span>        <span class="enscript-comment">// in the case of DEFUNCT sockets
+</span>        syslog(LOG_INFO, <span class="enscript-string">&quot;dnssd_clientstub deliver_request ERROR: write_all(%d, %lu bytes) failed&quot;</span>,
+               sdr-&gt;sockfd, (<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)(datalen + <span class="enscript-keyword">sizeof</span>(ipc_msg_hdr)));
+        err = (ioresult == write_all_defunct) ? kDNSServiceErr_DefunctConnection : kDNSServiceErr_ServiceNotRunning;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">cleanup</span>;
+    }
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (!MakeSeparateReturnSocket) 
+        errsd = sdr-&gt;sockfd;
+    <span class="enscript-keyword">if</span> (MakeSeparateReturnSocket || sdr-&gt;op == send_bpf)    <span class="enscript-comment">// Okay to use sdr-&gt;op when checking for op == send_bpf
+</span>    {
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_TCP_LOOPBACK</span>) || <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_NAMED_ERROR_RETURN_SOCKET</span>)
+        <span class="enscript-comment">// At this point we may wait in accept for a few milliseconds waiting for the daemon to connect back to us,
+</span>        <span class="enscript-comment">// but that's okay -- the daemon should not take more than a few milliseconds to respond.
+</span>        <span class="enscript-comment">// set_waitlimit() ensures we do not block indefinitely just in case something is wrong
+</span>        dnssd_sockaddr_t daddr;
+        dnssd_socklen_t len = <span class="enscript-keyword">sizeof</span>(daddr);
+        <span class="enscript-keyword">if</span> ((err = set_waitlimit(listenfd, DNSSD_CLIENT_TIMEOUT)) != kDNSServiceErr_NoError) 
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">cleanup</span>;
+        errsd = accept(listenfd, (<span class="enscript-type">struct</span> sockaddr *)&amp;daddr, &amp;len);
+        <span class="enscript-keyword">if</span> (!dnssd_SocketValid(errsd)) 
+            deliver_request_bailout(<span class="enscript-string">&quot;accept&quot;</span>);
+#<span class="enscript-reference">else</span>
+
+        <span class="enscript-type">struct</span> iovec vec = { ((<span class="enscript-type">char</span> *)hdr) + <span class="enscript-keyword">sizeof</span>(ipc_msg_hdr) + datalen, 1 }; <span class="enscript-comment">// Send the last byte along with the SCM_RIGHTS
+</span>        <span class="enscript-type">struct</span> msghdr msg;
+        <span class="enscript-type">struct</span> cmsghdr *cmsg;
+        <span class="enscript-type">char</span> cbuf[CMSG_SPACE(4 * <span class="enscript-keyword">sizeof</span>(dnssd_sock_t))];
+
+        msg.msg_name       = 0;
+        msg.msg_namelen    = 0;
+        msg.msg_iov        = &amp;vec;
+        msg.msg_iovlen     = 1;
+        msg.msg_flags      = 0;
+        <span class="enscript-keyword">if</span> (MakeSeparateReturnSocket || sdr-&gt;op == send_bpf)    <span class="enscript-comment">// Okay to use sdr-&gt;op when checking for op == send_bpf
+</span>        {
+            <span class="enscript-keyword">if</span> (sdr-&gt;op == send_bpf)
+            {
+                <span class="enscript-type">int</span> i;
+                <span class="enscript-type">char</span> p[12];     <span class="enscript-comment">// Room for &quot;/dev/bpf999&quot; with terminating null
+</span>                <span class="enscript-keyword">for</span> (i=0; i&lt;100; i++)
+                {
+                    snprintf(p, <span class="enscript-keyword">sizeof</span>(p), <span class="enscript-string">&quot;/dev/bpf%d&quot;</span>, i);
+                    listenfd = open(p, O_RDWR, 0);
+                    <span class="enscript-comment">//if (dnssd_SocketValid(listenfd)) syslog(LOG_WARNING, &quot;dnssd_clientstub deliver_request Sending fd %d for %s&quot;, listenfd, p);
+</span>                    <span class="enscript-keyword">if</span> (!dnssd_SocketValid(listenfd) &amp;&amp; dnssd_errno != EBUSY)
+                        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request Error opening %s %d (%s)&quot;</span>, p, dnssd_errno, dnssd_strerror(dnssd_errno));
+                    <span class="enscript-keyword">if</span> (dnssd_SocketValid(listenfd) || dnssd_errno != EBUSY) <span class="enscript-keyword">break</span>;
+                }
+            }
+            msg.msg_control    = cbuf;
+            msg.msg_controllen = CMSG_LEN(<span class="enscript-keyword">sizeof</span>(dnssd_sock_t));
+
+            cmsg = CMSG_FIRSTHDR(&amp;msg);
+            cmsg-&gt;cmsg_len     = CMSG_LEN(<span class="enscript-keyword">sizeof</span>(dnssd_sock_t));
+            cmsg-&gt;cmsg_level   = SOL_SOCKET;
+            cmsg-&gt;cmsg_type    = SCM_RIGHTS;
+            *((dnssd_sock_t *)CMSG_DATA(cmsg)) = listenfd;
+        }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TEST_KQUEUE_CONTROL_MESSAGE_BUG</span>
+        sleep(1);
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">DEBUG_64BIT_SCM_RIGHTS</span>
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request sendmsg read sd=%d write sd=%d %ld %ld %ld/%ld/%ld/%ld&quot;</span>,
+               errsd, listenfd, <span class="enscript-keyword">sizeof</span>(dnssd_sock_t), <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">void</span>*),
+               <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> cmsghdr) + <span class="enscript-keyword">sizeof</span>(dnssd_sock_t),
+               CMSG_LEN(<span class="enscript-keyword">sizeof</span>(dnssd_sock_t)), (<span class="enscript-type">long</span>)CMSG_SPACE(<span class="enscript-keyword">sizeof</span>(dnssd_sock_t)),
+               (<span class="enscript-type">long</span>)((<span class="enscript-type">char</span>*)CMSG_DATA(cmsg) + 4 - cbuf));
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DEBUG_64BIT_SCM_RIGHTS</span>
+
+        <span class="enscript-keyword">if</span> (sendmsg(sdr-&gt;sockfd, &amp;msg, 0) &lt; 0)
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request ERROR: sendmsg failed read sd=%d write sd=%d errno %d (%s)&quot;</span>,
+                   errsd, listenfd, dnssd_errno, dnssd_strerror(dnssd_errno));
+            err = kDNSServiceErr_Incompatible;
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">cleanup</span>;
+        }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">DEBUG_64BIT_SCM_RIGHTS</span>
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub deliver_request sendmsg read sd=%d write sd=%d okay&quot;</span>, errsd, listenfd);
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DEBUG_64BIT_SCM_RIGHTS</span>
+
+#<span class="enscript-reference">endif</span>
+        <span class="enscript-comment">// Close our end of the socketpair *before* calling read_all() to get the four-byte error code.
+</span>        <span class="enscript-comment">// Otherwise, if the daemon closes our socket (or crashes), we will have to wait for a timeout
+</span>        <span class="enscript-comment">// in read_all() because the socket is not closed (we still have an open reference to it)
+</span>        <span class="enscript-comment">// Note: listenfd is overwritten in the case of send_bpf above and that will be closed here
+</span>        <span class="enscript-comment">// for send_bpf operation.
+</span>        dnssd_close(listenfd);
+        listenfd = dnssd_InvalidSocket; <span class="enscript-comment">// Make sure we don't close it a second time in the cleanup handling below
+</span>    }
+
+    <span class="enscript-comment">// At this point we may wait in read_all for a few milliseconds waiting for the daemon to send us the error code,
+</span>    <span class="enscript-comment">// but that's okay -- the daemon should not take more than a few milliseconds to respond.
+</span>    <span class="enscript-comment">// set_waitlimit() ensures we do not block indefinitely just in case something is wrong
+</span>    <span class="enscript-keyword">if</span> (sdr-&gt;op == send_bpf)    <span class="enscript-comment">// Okay to use sdr-&gt;op when checking for op == send_bpf
+</span>        err = kDNSServiceErr_NoError;
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((err = set_waitlimit(errsd, DNSSD_CLIENT_TIMEOUT)) == kDNSServiceErr_NoError)
+    {
+        ioresult = read_all(errsd, (<span class="enscript-type">char</span>*)&amp;err, (<span class="enscript-type">int</span>)<span class="enscript-keyword">sizeof</span>(err));
+        <span class="enscript-keyword">if</span> (ioresult &lt; read_all_success)
+            err = (ioresult == read_all_defunct) ? kDNSServiceErr_DefunctConnection : kDNSServiceErr_ServiceNotRunning; <span class="enscript-comment">// On failure read_all will have written a message to syslog for us
+</span>        <span class="enscript-keyword">else</span>
+            err = ntohl(err);
+    }
+    <span class="enscript-comment">//syslog(LOG_WARNING, &quot;dnssd_clientstub deliver_request: retrieved error code %d&quot;, err);
+</span>
+<span class="enscript-reference">cleanup</span>:
+    <span class="enscript-keyword">if</span> (MakeSeparateReturnSocket)
+    {
+        <span class="enscript-keyword">if</span> (dnssd_SocketValid(listenfd)) dnssd_close(listenfd);
+        <span class="enscript-keyword">if</span> (dnssd_SocketValid(errsd)) dnssd_close(errsd);
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_NAMED_ERROR_RETURN_SOCKET</span>)
+        <span class="enscript-comment">// syslog(LOG_WARNING, &quot;dnssd_clientstub deliver_request: removing UDS: %s&quot;, data);
+</span>        <span class="enscript-keyword">if</span> (unlink(data) != 0)
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub WARNING: unlink(\&quot;%s\&quot;) failed errno %d (%s)&quot;</span>, data, dnssd_errno, dnssd_strerror(dnssd_errno));
+        <span class="enscript-comment">// else syslog(LOG_WARNING, &quot;dnssd_clientstub deliver_request: removed UDS: %s&quot;, data);
+</span>#<span class="enscript-reference">endif</span>
+    }
+
+    free(hdr);
+    <span class="enscript-keyword">return</span> err;
+}
+
+dnssd_sock_t DNSSD_API <span class="enscript-function-name">DNSServiceRefSockFD</span>(DNSServiceRef sdRef)
+{
+    <span class="enscript-keyword">if</span> (!sdRef) { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRefSockFD called with NULL DNSServiceRef&quot;</span>); <span class="enscript-keyword">return</span> dnssd_InvalidSocket; }
+
+    <span class="enscript-keyword">if</span> (!DNSServiceRefValid(sdRef))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRefSockFD called with invalid DNSServiceRef %p %08X %08X&quot;</span>,
+               sdRef, sdRef-&gt;sockfd, sdRef-&gt;validator);
+        <span class="enscript-keyword">return</span> dnssd_InvalidSocket;
+    }
+
+    <span class="enscript-keyword">if</span> (sdRef-&gt;primary)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRefSockFD undefined for kDNSServiceFlagsShareConnection subordinate DNSServiceRef %p&quot;</span>, sdRef);
+        <span class="enscript-keyword">return</span> dnssd_InvalidSocket;
+    }
+
+    <span class="enscript-keyword">return</span> sdRef-&gt;sockfd;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">CallbackWithError</span>(DNSServiceRef sdRef, DNSServiceErrorType error)
+{
+    DNSServiceOp *sdr = sdRef;
+    DNSServiceOp *sdrNext;
+    DNSRecord *rec;
+    DNSRecord *recnext;
+    <span class="enscript-type">int</span> morebytes;
+
+    <span class="enscript-keyword">while</span> (sdr)
+    {
+        <span class="enscript-comment">// We can't touch the sdr after the callback as it can be deallocated in the callback
+</span>        sdrNext = sdr-&gt;next;
+        morebytes = 1;
+        sdr-&gt;moreptr = &amp;morebytes;
+        <span class="enscript-keyword">switch</span> (sdr-&gt;op)
+        {
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">resolve_request</span>:
+            <span class="enscript-keyword">if</span> (sdr-&gt;AppCallback) ((DNSServiceResolveReply)    sdr-&gt;AppCallback)(sdr, 0, 0, error, NULL, 0, 0, 0, NULL,    sdr-&gt;AppContext);
+            <span class="enscript-keyword">break</span>;
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">query_request</span>:
+            <span class="enscript-keyword">if</span> (sdr-&gt;AppCallback) ((DNSServiceQueryRecordReply)sdr-&gt;AppCallback)(sdr, 0, 0, error, NULL, 0, 0, 0, NULL, 0, sdr-&gt;AppContext);
+            <span class="enscript-keyword">break</span>;
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">addrinfo_request</span>:
+            <span class="enscript-keyword">if</span> (sdr-&gt;AppCallback) ((DNSServiceGetAddrInfoReply)sdr-&gt;AppCallback)(sdr, 0, 0, error, NULL, NULL, 0,          sdr-&gt;AppContext);
+            <span class="enscript-keyword">break</span>;
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">browse_request</span>:
+            <span class="enscript-keyword">if</span> (sdr-&gt;AppCallback) ((DNSServiceBrowseReply)     sdr-&gt;AppCallback)(sdr, 0, 0, error, NULL, 0, NULL,          sdr-&gt;AppContext);
+            <span class="enscript-keyword">break</span>;
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">reg_service_request</span>:
+            <span class="enscript-keyword">if</span> (sdr-&gt;AppCallback) ((DNSServiceRegisterReply)   sdr-&gt;AppCallback)(sdr, 0,    error, NULL, 0, NULL,          sdr-&gt;AppContext);
+            <span class="enscript-keyword">break</span>;
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">enumeration_request</span>:
+            <span class="enscript-keyword">if</span> (sdr-&gt;AppCallback) ((DNSServiceDomainEnumReply) sdr-&gt;AppCallback)(sdr, 0, 0, error, NULL,                   sdr-&gt;AppContext);
+            <span class="enscript-keyword">break</span>;
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">connection_request</span>:
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">connection_delegate_request</span>:
+            <span class="enscript-comment">// This means Register Record, walk the list of DNSRecords to do the callback
+</span>            rec = sdr-&gt;rec;
+            <span class="enscript-keyword">while</span> (rec)
+            {
+                recnext = rec-&gt;recnext;
+                <span class="enscript-keyword">if</span> (rec-&gt;AppCallback) ((DNSServiceRegisterRecordReply)rec-&gt;AppCallback)(sdr, 0, 0, error, rec-&gt;AppContext);
+                <span class="enscript-comment">// The Callback can call DNSServiceRefDeallocate which in turn frees sdr and all the records.
+</span>                <span class="enscript-comment">// Detect that and return early
+</span>                <span class="enscript-keyword">if</span> (!morebytes) { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub:Record: CallbackwithError morebytes zero&quot;</span>); <span class="enscript-keyword">return</span>; }
+                rec = recnext;
+            }
+            <span class="enscript-keyword">break</span>;
+        <span class="enscript-keyword">case</span> <span class="enscript-reference">port_mapping_request</span>:
+            <span class="enscript-keyword">if</span> (sdr-&gt;AppCallback) ((DNSServiceNATPortMappingReply)sdr-&gt;AppCallback)(sdr, 0, 0, error, 0, 0, 0, 0, 0, sdr-&gt;AppContext);
+            <span class="enscript-keyword">break</span>;
+        <span class="enscript-reference">default</span>:
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub CallbackWithError called with bad op %d&quot;</span>, sdr-&gt;op);
+        }
+        <span class="enscript-comment">// If DNSServiceRefDeallocate was called in the callback, morebytes will be zero. As the sdRef
+</span>        <span class="enscript-comment">// (and its subordinates) have been freed, we should not proceed further. Note that when we
+</span>        <span class="enscript-comment">// call the callback with a subordinate sdRef the application can call DNSServiceRefDeallocate
+</span>        <span class="enscript-comment">// on the main sdRef and DNSServiceRefDeallocate handles this case by walking all the sdRefs and
+</span>        <span class="enscript-comment">// clears the moreptr so that we can terminate here.
+</span>        <span class="enscript-comment">//
+</span>        <span class="enscript-comment">// If DNSServiceRefDeallocate was not called in the callback, then set moreptr to NULL so that
+</span>        <span class="enscript-comment">// we don't access the stack variable after we return from this function.
+</span>        <span class="enscript-keyword">if</span> (!morebytes) { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub:sdRef: CallbackwithError morebytes zero sdr %p&quot;</span>, sdr); <span class="enscript-keyword">return</span>; }
+        <span class="enscript-keyword">else</span> {sdr-&gt;moreptr = NULL;}
+        sdr = sdrNext;
+    }
+}
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+
+<span class="enscript-comment">// Handle reply from server, calling application client callback. If there is no reply
+</span><span class="enscript-comment">// from the daemon on the socket contained in sdRef, the call will block.
+</span>DNSServiceErrorType DNSSD_API <span class="enscript-function-name">DNSServiceProcessResult</span>(DNSServiceRef sdRef)
+{
+    <span class="enscript-type">int</span> morebytes = 0;
+    <span class="enscript-type">int</span> ioresult;
+    DNSServiceErrorType error;
+
+    <span class="enscript-keyword">if</span> (!sdRef) { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceProcessResult called with NULL DNSServiceRef&quot;</span>); <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam; }
+
+    <span class="enscript-keyword">if</span> (!DNSServiceRefValid(sdRef))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceProcessResult called with invalid DNSServiceRef %p %08X %08X&quot;</span>, sdRef, sdRef-&gt;sockfd, sdRef-&gt;validator);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    <span class="enscript-keyword">if</span> (sdRef-&gt;primary)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceProcessResult undefined for kDNSServiceFlagsShareConnection subordinate DNSServiceRef %p&quot;</span>, sdRef);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    <span class="enscript-keyword">if</span> (!sdRef-&gt;ProcessReply)
+    {
+        <span class="enscript-type">static</span> <span class="enscript-type">int</span> num_logs = 0;
+        <span class="enscript-keyword">if</span> (num_logs &lt; 10) syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceProcessResult called with DNSServiceRef with no ProcessReply function&quot;</span>);
+        <span class="enscript-keyword">if</span> (num_logs &lt; 1000) num_logs++;<span class="enscript-keyword">else</span> sleep(1);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    <span class="enscript-keyword">do</span>
+    {
+        CallbackHeader cbh;
+        <span class="enscript-type">char</span> *data;
+
+        <span class="enscript-comment">// return NoError on EWOULDBLOCK. This will handle the case
+</span>        <span class="enscript-comment">// where a non-blocking socket is told there is data, but it was a false positive.
+</span>        <span class="enscript-comment">// On error, read_all will write a message to syslog for us, so don't need to duplicate that here
+</span>        <span class="enscript-comment">// Note: If we want to properly support using non-blocking sockets in the future
+</span>        ioresult = read_all(sdRef-&gt;sockfd, (<span class="enscript-type">void</span> *)&amp;cbh.ipc_hdr, <span class="enscript-keyword">sizeof</span>(cbh.ipc_hdr));
+        <span class="enscript-keyword">if</span> (ioresult == read_all_fail || ioresult == read_all_defunct)
+        {
+            error = (ioresult == read_all_defunct) ? kDNSServiceErr_DefunctConnection : kDNSServiceErr_ServiceNotRunning;
+            
+            <span class="enscript-comment">// Set the ProcessReply to NULL before callback as the sdRef can get deallocated
+</span>            <span class="enscript-comment">// in the callback.
+</span>            sdRef-&gt;ProcessReply = NULL;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+            <span class="enscript-comment">// Call the callbacks with an error if using the dispatch API, as DNSServiceProcessResult
+</span>            <span class="enscript-comment">// is not called by the application and hence need to communicate the error. Cancel the
+</span>            <span class="enscript-comment">// source so that we don't get any more events
+</span>            <span class="enscript-comment">// Note: read_all fails if we could not read from the daemon which can happen if the
+</span>            <span class="enscript-comment">// daemon dies or the file descriptor is disconnected (defunct).
+</span>            <span class="enscript-keyword">if</span> (sdRef-&gt;disp_source)
+            {
+                dispatch_source_cancel(sdRef-&gt;disp_source);
+                dispatch_release(sdRef-&gt;disp_source);
+                sdRef-&gt;disp_source = NULL;
+                CallbackWithError(sdRef, error);
+            }
+#<span class="enscript-reference">endif</span>
+            <span class="enscript-comment">// Don't touch sdRef anymore as it might have been deallocated
+</span>            <span class="enscript-keyword">return</span> error;
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (ioresult == read_all_wouldblock)
+        {
+            <span class="enscript-keyword">if</span> (morebytes &amp;&amp; sdRef-&gt;logcounter &lt; 100)
+            {
+                sdRef-&gt;logcounter++;
+                syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceProcessResult error: select indicated data was waiting but read_all returned EWOULDBLOCK&quot;</span>);
+            }
+            <span class="enscript-keyword">return</span> kDNSServiceErr_NoError;
+        }
+
+        ConvertHeaderBytes(&amp;cbh.ipc_hdr);
+        <span class="enscript-keyword">if</span> (cbh.ipc_hdr.version != VERSION)
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceProcessResult daemon version %d does not match client version %d&quot;</span>, cbh.ipc_hdr.version, VERSION);
+            sdRef-&gt;ProcessReply = NULL;
+            <span class="enscript-keyword">return</span> kDNSServiceErr_Incompatible;
+        }
+
+        data = malloc(cbh.ipc_hdr.datalen);
+        <span class="enscript-keyword">if</span> (!data) <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+        ioresult = read_all(sdRef-&gt;sockfd, data, cbh.ipc_hdr.datalen);
+        <span class="enscript-keyword">if</span> (ioresult &lt; read_all_success) <span class="enscript-comment">// On error, read_all will write a message to syslog for us
+</span>        {
+            error = (ioresult == read_all_defunct) ? kDNSServiceErr_DefunctConnection : kDNSServiceErr_ServiceNotRunning;
+            
+            <span class="enscript-comment">// Set the ProcessReply to NULL before callback as the sdRef can get deallocated
+</span>            <span class="enscript-comment">// in the callback.
+</span>            sdRef-&gt;ProcessReply = NULL;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+            <span class="enscript-comment">// Call the callbacks with an error if using the dispatch API, as DNSServiceProcessResult
+</span>            <span class="enscript-comment">// is not called by the application and hence need to communicate the error. Cancel the
+</span>            <span class="enscript-comment">// source so that we don't get any more events
+</span>            <span class="enscript-keyword">if</span> (sdRef-&gt;disp_source)
+            {
+                dispatch_source_cancel(sdRef-&gt;disp_source);
+                dispatch_release(sdRef-&gt;disp_source);
+                sdRef-&gt;disp_source = NULL;
+                CallbackWithError(sdRef, error);
+            }
+#<span class="enscript-reference">endif</span>
+            <span class="enscript-comment">// Don't touch sdRef anymore as it might have been deallocated
+</span>            free(data);
+            <span class="enscript-keyword">return</span> error;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-type">const</span> <span class="enscript-type">char</span> *ptr = data;
+            cbh.cb_flags     = get_flags     (&amp;ptr, data + cbh.ipc_hdr.datalen);
+            cbh.cb_interface = get_uint32    (&amp;ptr, data + cbh.ipc_hdr.datalen);
+            cbh.cb_err       = get_error_code(&amp;ptr, data + cbh.ipc_hdr.datalen);
+
+            <span class="enscript-comment">// CAUTION: We have to handle the case where the client calls DNSServiceRefDeallocate from within the callback function.
+</span>            <span class="enscript-comment">// To do this we set moreptr to point to morebytes. If the client does call DNSServiceRefDeallocate(),
+</span>            <span class="enscript-comment">// then that routine will clear morebytes for us, and cause us to exit our loop.
+</span>            morebytes = more_bytes(sdRef-&gt;sockfd);
+            <span class="enscript-keyword">if</span> (morebytes)
+            {
+                cbh.cb_flags |= kDNSServiceFlagsMoreComing;
+                sdRef-&gt;moreptr = &amp;morebytes;
+            }
+            <span class="enscript-keyword">if</span> (ptr) sdRef-&gt;ProcessReply(sdRef, &amp;cbh, ptr, data + cbh.ipc_hdr.datalen);
+            <span class="enscript-comment">// Careful code here:
+</span>            <span class="enscript-comment">// If morebytes is non-zero, that means we set sdRef-&gt;moreptr above, and the operation was not
+</span>            <span class="enscript-comment">// cancelled out from under us, so now we need to clear sdRef-&gt;moreptr so we don't leave a stray
+</span>            <span class="enscript-comment">// dangling pointer pointing to a long-gone stack variable.
+</span>            <span class="enscript-comment">// If morebytes is zero, then one of two thing happened:
+</span>            <span class="enscript-comment">// (a) morebytes was 0 above, so we didn't set sdRef-&gt;moreptr, so we don't need to clear it
+</span>            <span class="enscript-comment">// (b) morebytes was 1 above, and we set sdRef-&gt;moreptr, but the operation was cancelled (with DNSServiceRefDeallocate()),
+</span>            <span class="enscript-comment">//     so we MUST NOT try to dereference our stale sdRef pointer.
+</span>            <span class="enscript-keyword">if</span> (morebytes) sdRef-&gt;moreptr = NULL;
+        }
+        free(data);
+    } <span class="enscript-keyword">while</span> (morebytes);
+
+    <span class="enscript-keyword">return</span> kDNSServiceErr_NoError;
+}
+
+<span class="enscript-type">void</span> DNSSD_API <span class="enscript-function-name">DNSServiceRefDeallocate</span>(DNSServiceRef sdRef)
+{
+    <span class="enscript-keyword">if</span> (!sdRef) { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRefDeallocate called with NULL DNSServiceRef&quot;</span>); <span class="enscript-keyword">return</span>; }
+
+    <span class="enscript-keyword">if</span> (!DNSServiceRefValid(sdRef))     <span class="enscript-comment">// Also verifies dnssd_SocketValid(sdRef-&gt;sockfd) for us too
+</span>    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRefDeallocate called with invalid DNSServiceRef %p %08X %08X&quot;</span>, sdRef, sdRef-&gt;sockfd, sdRef-&gt;validator);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// If we're in the middle of a DNSServiceProcessResult() invocation for this DNSServiceRef, clear its morebytes flag to break it out of its while loop
+</span>    <span class="enscript-keyword">if</span> (sdRef-&gt;moreptr) *(sdRef-&gt;moreptr) = 0;
+
+    <span class="enscript-keyword">if</span> (sdRef-&gt;primary)     <span class="enscript-comment">// If this is a subordinate DNSServiceOp, just send a 'stop' command
+</span>    {
+        DNSServiceOp **p = &amp;sdRef-&gt;primary-&gt;next;
+        <span class="enscript-keyword">while</span> (*p &amp;&amp; *p != sdRef) p = &amp;(*p)-&gt;next;
+        <span class="enscript-keyword">if</span> (*p)
+        {
+            <span class="enscript-type">char</span> *ptr;
+            size_t len = 0;
+            ipc_msg_hdr *hdr = create_hdr(cancel_request, &amp;len, &amp;ptr, 0, sdRef);
+            <span class="enscript-keyword">if</span> (hdr)
+            {
+                ConvertHeaderBytes(hdr);
+                write_all(sdRef-&gt;sockfd, (<span class="enscript-type">char</span> *)hdr, len);
+                free(hdr);
+            }
+            *p = sdRef-&gt;next;
+            FreeDNSServiceOp(sdRef);
+        }
+    }
+    <span class="enscript-keyword">else</span>                    <span class="enscript-comment">// else, make sure to terminate all subordinates as well
+</span>    {
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+        <span class="enscript-comment">// The cancel handler will close the fd if a dispatch source has been set
+</span>        <span class="enscript-keyword">if</span> (sdRef-&gt;disp_source)
+        {
+            <span class="enscript-comment">// By setting the ProcessReply to NULL, we make sure that we never call
+</span>            <span class="enscript-comment">// the application callbacks ever, after returning from this function. We
+</span>            <span class="enscript-comment">// assume that DNSServiceRefDeallocate is called from the serial queue
+</span>            <span class="enscript-comment">// that was passed to DNSServiceSetDispatchQueue. Hence, dispatch_source_cancel
+</span>            <span class="enscript-comment">// should cancel all the blocks on the queue and hence there should be no more
+</span>            <span class="enscript-comment">// callbacks when we return from this function. Setting ProcessReply to NULL
+</span>            <span class="enscript-comment">// provides extra protection.
+</span>            sdRef-&gt;ProcessReply = NULL;
+            shutdown(sdRef-&gt;sockfd, SHUT_WR);
+            dispatch_source_cancel(sdRef-&gt;disp_source);
+            dispatch_release(sdRef-&gt;disp_source);
+            sdRef-&gt;disp_source = NULL;
+        }
+        <span class="enscript-comment">// if disp_queue is set, it means it used the DNSServiceSetDispatchQueue API. In that case,
+</span>        <span class="enscript-comment">// when the source was cancelled, the fd was closed in the handler. Currently the source
+</span>        <span class="enscript-comment">// is cancelled only when the mDNSResponder daemon dies
+</span>        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!sdRef-&gt;disp_queue) dnssd_close(sdRef-&gt;sockfd);
+#<span class="enscript-reference">else</span>
+        dnssd_close(sdRef-&gt;sockfd);
+#<span class="enscript-reference">endif</span>
+        <span class="enscript-comment">// Free DNSRecords added in DNSRegisterRecord if they have not
+</span>        <span class="enscript-comment">// been freed in DNSRemoveRecord
+</span>        <span class="enscript-keyword">while</span> (sdRef)
+        {
+            DNSServiceOp *p = sdRef;
+            sdRef = sdRef-&gt;next;
+            <span class="enscript-comment">// When there is an error reading from the daemon e.g., bad fd, CallbackWithError
+</span>            <span class="enscript-comment">// is called which sets moreptr. It might set the moreptr on a subordinate sdRef
+</span>            <span class="enscript-comment">// but the application might call DNSServiceRefDeallocate with the main sdRef from
+</span>            <span class="enscript-comment">// the callback. Hence, when we loop through the subordinate sdRefs, we need
+</span>            <span class="enscript-comment">// to clear the moreptr so that CallbackWithError can terminate itself instead of
+</span>            <span class="enscript-comment">// walking through the freed sdRefs.
+</span>            <span class="enscript-keyword">if</span> (p-&gt;moreptr) *(p-&gt;moreptr) = 0;
+            FreeDNSServiceOp(p);
+        }
+    }
+}
+
+DNSServiceErrorType DNSSD_API <span class="enscript-function-name">DNSServiceGetProperty</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *property, <span class="enscript-type">void</span> *result, uint32_t *size)
+{
+    DNSServiceErrorType err;
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    DNSServiceOp *tmp;
+    uint32_t actualsize;
+    <span class="enscript-type">int</span> ioresult;
+
+    <span class="enscript-keyword">if</span> (!property || !result || !size)
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    len = strlen(property) + 1;
+    err = ConnectToServer(&amp;tmp, 0, getproperty_request, NULL, NULL, NULL);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;
+
+    hdr = create_hdr(getproperty_request, &amp;len, &amp;ptr, 0, tmp);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_string(property, &amp;ptr);
+    err = deliver_request(hdr, tmp);        <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> err; }
+
+    ioresult = read_all(tmp-&gt;sockfd, (<span class="enscript-type">char</span>*)&amp;actualsize, (<span class="enscript-type">int</span>)<span class="enscript-keyword">sizeof</span>(actualsize));
+    <span class="enscript-keyword">if</span> (ioresult &lt; read_all_success)
+    { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> (ioresult == read_all_defunct) ? kDNSServiceErr_DefunctConnection : kDNSServiceErr_ServiceNotRunning; }
+
+    actualsize = ntohl(actualsize);
+    ioresult = read_all(tmp-&gt;sockfd, (<span class="enscript-type">char</span>*)result, actualsize &lt; *size ? actualsize : *size);
+    <span class="enscript-keyword">if</span> (ioresult &lt; read_all_success)
+    { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> (ioresult == read_all_defunct) ? kDNSServiceErr_DefunctConnection : kDNSServiceErr_ServiceNotRunning; }
+    DNSServiceRefDeallocate(tmp);
+
+    <span class="enscript-comment">// Swap version result back to local process byte order
+</span>    <span class="enscript-keyword">if</span> (!strcmp(property, kDNSServiceProperty_DaemonVersion) &amp;&amp; *size &gt;= 4)
+        *(uint32_t*)result = ntohl(*(uint32_t*)result);
+
+    *size = actualsize;
+    <span class="enscript-keyword">return</span> kDNSServiceErr_NoError;
+}
+
+DNSServiceErrorType DNSSD_API <span class="enscript-function-name">DNSServiceGetPID</span>(<span class="enscript-type">const</span> uint16_t srcport, int32_t *pid)
+{
+    <span class="enscript-type">char</span> *ptr;
+    ipc_msg_hdr *hdr;
+    DNSServiceOp *tmp = NULL;
+    size_t len = <span class="enscript-keyword">sizeof</span>(int32_t);
+    <span class="enscript-type">int</span> ioresult;
+
+    DNSServiceErrorType err = ConnectToServer(&amp;tmp, 0, getpid_request, NULL, NULL, NULL);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;
+
+    hdr = create_hdr(getpid_request, &amp;len, &amp;ptr, 0, tmp);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_uint16(srcport, &amp;ptr);
+    err = deliver_request(hdr, tmp);        <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> err; }
+
+    ioresult = read_all(tmp-&gt;sockfd, (<span class="enscript-type">char</span>*)pid, <span class="enscript-keyword">sizeof</span>(int32_t));
+    <span class="enscript-keyword">if</span> (ioresult &lt; read_all_success)
+    { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> (ioresult == read_all_defunct) ? kDNSServiceErr_DefunctConnection : kDNSServiceErr_ServiceNotRunning; }
+
+    DNSServiceRefDeallocate(tmp);
+    <span class="enscript-keyword">return</span> kDNSServiceErr_NoError;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">handle_resolve_response</span>(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *data, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *end)
+{
+    <span class="enscript-type">char</span> fullname[kDNSServiceMaxDomainName];
+    <span class="enscript-type">char</span> target[kDNSServiceMaxDomainName];
+    uint16_t txtlen;
+    <span class="enscript-type">union</span> { uint16_t s; u_char b[2]; } port;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> *txtrecord;
+
+    get_string(&amp;data, end, fullname, kDNSServiceMaxDomainName);
+    get_string(&amp;data, end, target,   kDNSServiceMaxDomainName);
+    <span class="enscript-keyword">if</span> (!data || data + 2 &gt; end) <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+
+    port.b[0] = *data++;
+    port.b[1] = *data++;
+    txtlen = get_uint16(&amp;data, end);
+    txtrecord = (<span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> *)get_rdata(&amp;data, end, txtlen);
+
+    <span class="enscript-keyword">if</span> (!data) <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+    ((DNSServiceResolveReply)sdr-&gt;AppCallback)(sdr, cbh-&gt;cb_flags, cbh-&gt;cb_interface, cbh-&gt;cb_err, fullname, target, port.s, txtlen, txtrecord, sdr-&gt;AppContext);
+    <span class="enscript-keyword">return</span>;
+    <span class="enscript-comment">// MUST NOT touch sdr after invoking AppCallback -- client is allowed to dispose it from within callback function
+</span><span class="enscript-reference">fail</span>:
+    syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub handle_resolve_response: error reading result from daemon&quot;</span>);
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TARGET_OS_IPHONE</span>
+
+<span class="enscript-type">static</span> int32_t libSystemVersion = 0;
+
+<span class="enscript-comment">// Return true if the iOS application linked against a version of libsystem where P2P
+</span><span class="enscript-comment">// interfaces were included by default when using kDNSServiceInterfaceIndexAny.
+</span><span class="enscript-comment">// Using 160.0.0 == 0xa00000 as the version threshold.
+</span><span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">includeP2PWithIndexAny</span>()
+{
+    <span class="enscript-keyword">if</span> (libSystemVersion == 0)
+        libSystemVersion = NSVersionOfLinkTimeLibrary(<span class="enscript-string">&quot;System&quot;</span>);
+
+    <span class="enscript-keyword">if</span> (libSystemVersion &lt; 0xa00000)
+        <span class="enscript-keyword">return</span> 1;
+    <span class="enscript-keyword">else</span>
+        <span class="enscript-keyword">return</span> 0;
+}
+
+#<span class="enscript-reference">else</span>   // <span class="enscript-variable-name">TARGET_OS_IPHONE</span>
+
+<span class="enscript-comment">// always return false for non iOS platforms
+</span><span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">includeP2PWithIndexAny</span>()
+{
+    <span class="enscript-keyword">return</span> 0;
+}
+
+#<span class="enscript-reference">endif</span>  // <span class="enscript-variable-name">TARGET_OS_IPHONE</span>
+
+DNSServiceErrorType DNSSD_API DNSServiceResolve
+(
+    DNSServiceRef                 *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                    *name,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                    *regtype,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                    *domain,
+    DNSServiceResolveReply callBack,
+    <span class="enscript-type">void</span>                          *context
+)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    DNSServiceErrorType err;
+
+    <span class="enscript-keyword">if</span> (!sdRef || !name || !regtype || !domain || !callBack) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    <span class="enscript-comment">// Need a real InterfaceID for WakeOnResolve
+</span>    <span class="enscript-keyword">if</span> ((flags &amp; kDNSServiceFlagsWakeOnResolve) != 0 &amp;&amp;
+        ((interfaceIndex == kDNSServiceInterfaceIndexAny) ||
+         (interfaceIndex == kDNSServiceInterfaceIndexLocalOnly) ||
+         (interfaceIndex == kDNSServiceInterfaceIndexUnicast) ||
+         (interfaceIndex == kDNSServiceInterfaceIndexP2P) ||
+         (interfaceIndex == kDNSServiceInterfaceIndexBLE)))
+    {
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+
+    <span class="enscript-keyword">if</span> ((interfaceIndex == kDNSServiceInterfaceIndexAny) &amp;&amp; includeP2PWithIndexAny())
+        flags |= kDNSServiceFlagsIncludeP2P;
+
+    err = ConnectToServer(sdRef, flags, resolve_request, handle_resolve_response, callBack, context);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>
+    <span class="enscript-comment">// Calculate total message length
+</span>    len = <span class="enscript-keyword">sizeof</span>(flags);
+    len += <span class="enscript-keyword">sizeof</span>(interfaceIndex);
+    len += strlen(name) + 1;
+    len += strlen(regtype) + 1;
+    len += strlen(domain) + 1;
+
+    hdr = create_hdr(resolve_request, &amp;len, &amp;ptr, (*sdRef)-&gt;primary ? 1 : 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+    put_string(name, &amp;ptr);
+    put_string(regtype, &amp;ptr);
+    put_string(domain, &amp;ptr);
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; }
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">handle_query_response</span>(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *data, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end)
+{
+    uint32_t ttl;
+    <span class="enscript-type">char</span> name[kDNSServiceMaxDomainName];
+    uint16_t rrtype, rrclass, rdlen;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *rdata;
+
+    get_string(&amp;data, end, name, kDNSServiceMaxDomainName);
+    rrtype  = get_uint16(&amp;data, end);
+    rrclass = get_uint16(&amp;data, end);
+    rdlen   = get_uint16(&amp;data, end);
+    rdata   = get_rdata(&amp;data, end, rdlen);
+    ttl     = get_uint32(&amp;data, end);
+
+    <span class="enscript-keyword">if</span> (!data) syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub handle_query_response: error reading result from daemon&quot;</span>);
+    <span class="enscript-keyword">else</span> ((DNSServiceQueryRecordReply)sdr-&gt;AppCallback)(sdr, cbh-&gt;cb_flags, cbh-&gt;cb_interface, cbh-&gt;cb_err, name, rrtype, rrclass, rdlen, rdata, ttl, sdr-&gt;AppContext);
+    <span class="enscript-comment">// MUST NOT touch sdr after invoking AppCallback -- client is allowed to dispose it from within callback function
+</span>}
+
+DNSServiceErrorType DNSSD_API DNSServiceQueryRecord
+(
+    DNSServiceRef              *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                 *name,
+    uint16_t rrtype,
+    uint16_t rrclass,
+    DNSServiceQueryRecordReply callBack,
+    <span class="enscript-type">void</span>                       *context
+)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    DNSServiceErrorType err;
+
+    <span class="enscript-comment">// NULL name handled below.
+</span>    <span class="enscript-keyword">if</span> (!sdRef || !callBack) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    <span class="enscript-keyword">if</span> ((interfaceIndex == kDNSServiceInterfaceIndexAny) &amp;&amp; includeP2PWithIndexAny())
+        flags |= kDNSServiceFlagsIncludeP2P;
+
+    err = ConnectToServer(sdRef, flags, query_request, handle_query_response, callBack, context);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>
+    <span class="enscript-keyword">if</span> (!name) name = <span class="enscript-string">&quot;\0&quot;</span>;
+
+    <span class="enscript-comment">// Calculate total message length
+</span>    len = <span class="enscript-keyword">sizeof</span>(flags);
+    len += <span class="enscript-keyword">sizeof</span>(uint32_t);  <span class="enscript-comment">// interfaceIndex
+</span>    len += strlen(name) + 1;
+    len += 2 * <span class="enscript-keyword">sizeof</span>(uint16_t);  <span class="enscript-comment">// rrtype, rrclass
+</span>
+    hdr = create_hdr(query_request, &amp;len, &amp;ptr, (*sdRef)-&gt;primary ? 1 : 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+    put_string(name, &amp;ptr);
+    put_uint16(rrtype, &amp;ptr);
+    put_uint16(rrclass, &amp;ptr);
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; }
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">handle_addrinfo_response</span>(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *data, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end)
+{
+    <span class="enscript-type">char</span> hostname[kDNSServiceMaxDomainName];
+    uint16_t rrtype, rrclass, rdlen;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *rdata;
+    uint32_t ttl;
+
+    get_string(&amp;data, end, hostname, kDNSServiceMaxDomainName);
+    rrtype  = get_uint16(&amp;data, end);
+    rrclass = get_uint16(&amp;data, end);
+    rdlen   = get_uint16(&amp;data, end);
+    rdata   = get_rdata (&amp;data, end, rdlen);
+    ttl     = get_uint32(&amp;data, end);
+    (<span class="enscript-type">void</span>)rrclass; <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-comment">// We only generate client callbacks for A and AAAA results (including NXDOMAIN results for
+</span>    <span class="enscript-comment">// those types, if the client has requested those with the kDNSServiceFlagsReturnIntermediates).
+</span>    <span class="enscript-comment">// Other result types, specifically CNAME referrals, are not communicated to the client, because
+</span>    <span class="enscript-comment">// the DNSServiceGetAddrInfoReply interface doesn't have any meaningful way to communiate CNAME referrals.
+</span>    <span class="enscript-keyword">if</span> (!data) syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub handle_addrinfo_response: error reading result from daemon&quot;</span>);
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (rrtype == kDNSServiceType_A || rrtype == kDNSServiceType_AAAA)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in sa4;
+        <span class="enscript-type">struct</span> sockaddr_in6 sa6;
+        <span class="enscript-type">const</span> <span class="enscript-type">struct</span> sockaddr *<span class="enscript-type">const</span> sa = (rrtype == kDNSServiceType_A) ? (<span class="enscript-type">struct</span> sockaddr*)&amp;sa4 : (<span class="enscript-type">struct</span> sockaddr*)&amp;sa6;
+        <span class="enscript-keyword">if</span> (rrtype == kDNSServiceType_A)
+        {
+            memset(&amp;sa4, 0, <span class="enscript-keyword">sizeof</span>(sa4));
+            #ifndef NOT_HAVE_SA_LEN
+            sa4.sin_len = <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> sockaddr_in);
+            #endif
+            sa4.sin_family = AF_INET;
+            <span class="enscript-comment">//  sin_port   = 0;
+</span>            <span class="enscript-keyword">if</span> (!cbh-&gt;cb_err) memcpy(&amp;sa4.sin_addr, rdata, rdlen);
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            memset(&amp;sa6, 0, <span class="enscript-keyword">sizeof</span>(sa6));
+            #ifndef NOT_HAVE_SA_LEN
+            sa6.sin6_len = <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> sockaddr_in6);
+            #endif
+            sa6.sin6_family     = AF_INET6;
+            <span class="enscript-comment">//  sin6_port     = 0;
+</span>            <span class="enscript-comment">//  sin6_flowinfo = 0;
+</span>            <span class="enscript-comment">//  sin6_scope_id = 0;
+</span>            <span class="enscript-keyword">if</span> (!cbh-&gt;cb_err)
+            {
+                memcpy(&amp;sa6.sin6_addr, rdata, rdlen);
+                <span class="enscript-keyword">if</span> (IN6_IS_ADDR_LINKLOCAL(&amp;sa6.sin6_addr)) sa6.sin6_scope_id = cbh-&gt;cb_interface;
+            }
+        }
+        <span class="enscript-comment">// Validation results are always delivered separately from the actual results of the
+</span>        <span class="enscript-comment">// DNSServiceGetAddrInfo. Set the &quot;addr&quot; to NULL as per the documentation.
+</span>        <span class="enscript-comment">//
+</span>        <span class="enscript-comment">// Note: If we deliver validation results along with the &quot;addr&quot; in the future, we need
+</span>        <span class="enscript-comment">// a way to differentiate the negative response from validation-only response as both
+</span>        <span class="enscript-comment">// has zero address.
+</span>        <span class="enscript-keyword">if</span> (!(cbh-&gt;cb_flags &amp; kDNSServiceFlagsValidate))
+            ((DNSServiceGetAddrInfoReply)sdr-&gt;AppCallback)(sdr, cbh-&gt;cb_flags, cbh-&gt;cb_interface, cbh-&gt;cb_err, hostname, sa, ttl, sdr-&gt;AppContext);
+        <span class="enscript-keyword">else</span>
+            ((DNSServiceGetAddrInfoReply)sdr-&gt;AppCallback)(sdr, cbh-&gt;cb_flags, cbh-&gt;cb_interface, cbh-&gt;cb_err, hostname, NULL, 0, sdr-&gt;AppContext);
+        <span class="enscript-comment">// MUST NOT touch sdr after invoking AppCallback -- client is allowed to dispose it from within callback function
+</span>    }
+}
+
+DNSServiceErrorType DNSSD_API DNSServiceGetAddrInfo
+(
+    DNSServiceRef                    *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    uint32_t protocol,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                       *hostname,
+    DNSServiceGetAddrInfoReply callBack,
+    <span class="enscript-type">void</span>                             *context          <span class="enscript-comment">/* may be NULL */</span>
+)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    DNSServiceErrorType err;
+
+    <span class="enscript-keyword">if</span> (!sdRef || !hostname || !callBack) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    err = ConnectToServer(sdRef, flags, addrinfo_request, handle_addrinfo_response, callBack, context);
+    <span class="enscript-keyword">if</span> (err)
+    {
+         <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>    }
+
+    <span class="enscript-comment">// Calculate total message length
+</span>    len = <span class="enscript-keyword">sizeof</span>(flags);
+    len += <span class="enscript-keyword">sizeof</span>(uint32_t);      <span class="enscript-comment">// interfaceIndex
+</span>    len += <span class="enscript-keyword">sizeof</span>(uint32_t);      <span class="enscript-comment">// protocol
+</span>    len += strlen(hostname) + 1;
+
+    hdr = create_hdr(addrinfo_request, &amp;len, &amp;ptr, (*sdRef)-&gt;primary ? 1 : 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+    put_uint32(protocol, &amp;ptr);
+    put_string(hostname, &amp;ptr);
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; }
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">handle_browse_response</span>(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *data, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end)
+{
+    <span class="enscript-type">char</span> replyName[256], replyType[kDNSServiceMaxDomainName], replyDomain[kDNSServiceMaxDomainName];
+    get_string(&amp;data, end, replyName, 256);
+    get_string(&amp;data, end, replyType, kDNSServiceMaxDomainName);
+    get_string(&amp;data, end, replyDomain, kDNSServiceMaxDomainName);
+    <span class="enscript-keyword">if</span> (!data) syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub handle_browse_response: error reading result from daemon&quot;</span>);
+    <span class="enscript-keyword">else</span> ((DNSServiceBrowseReply)sdr-&gt;AppCallback)(sdr, cbh-&gt;cb_flags, cbh-&gt;cb_interface, cbh-&gt;cb_err, replyName, replyType, replyDomain, sdr-&gt;AppContext);
+    <span class="enscript-comment">// MUST NOT touch sdr after invoking AppCallback -- client is allowed to dispose it from within callback function
+</span>}
+
+DNSServiceErrorType DNSSD_API DNSServiceBrowse
+(
+    DNSServiceRef         *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>            *regtype,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>            *domain,
+    DNSServiceBrowseReply callBack,
+    <span class="enscript-type">void</span>                  *context
+)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    DNSServiceErrorType err;
+
+    <span class="enscript-comment">// NULL domain handled below
+</span>    <span class="enscript-keyword">if</span> (!sdRef || !regtype || !callBack) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    <span class="enscript-keyword">if</span> ((interfaceIndex == kDNSServiceInterfaceIndexAny) &amp;&amp; includeP2PWithIndexAny())
+        flags |= kDNSServiceFlagsIncludeP2P;
+
+    err = ConnectToServer(sdRef, flags, browse_request, handle_browse_response, callBack, context);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>
+    <span class="enscript-keyword">if</span> (!domain) domain = <span class="enscript-string">&quot;&quot;</span>;
+    len = <span class="enscript-keyword">sizeof</span>(flags);
+    len += <span class="enscript-keyword">sizeof</span>(interfaceIndex);
+    len += strlen(regtype) + 1;
+    len += strlen(domain) + 1;
+
+    hdr = create_hdr(browse_request, &amp;len, &amp;ptr, (*sdRef)-&gt;primary ? 1 : 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+    put_string(regtype, &amp;ptr);
+    put_string(domain, &amp;ptr);
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; }
+    <span class="enscript-keyword">return</span> err;
+}
+
+DNSServiceErrorType DNSSD_API <span class="enscript-function-name">DNSServiceSetDefaultDomainForUser</span>(DNSServiceFlags flags, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *domain)
+{
+    DNSServiceErrorType err;
+    DNSServiceOp *tmp;
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+
+    <span class="enscript-keyword">if</span> (!domain) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    len = <span class="enscript-keyword">sizeof</span>(flags) + strlen(domain) + 1;
+
+    err = ConnectToServer(&amp;tmp, 0, setdomain_request, NULL, NULL, NULL);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;
+
+    hdr = create_hdr(setdomain_request, &amp;len, &amp;ptr, 0, tmp);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_flags(flags, &amp;ptr);
+    put_string(domain, &amp;ptr);
+    err = deliver_request(hdr, tmp);        <span class="enscript-comment">// Will free hdr for us
+</span>    DNSServiceRefDeallocate(tmp);
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">handle_regservice_response</span>(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *data, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end)
+{
+    <span class="enscript-type">char</span> name[256], regtype[kDNSServiceMaxDomainName], domain[kDNSServiceMaxDomainName];
+    get_string(&amp;data, end, name, 256);
+    get_string(&amp;data, end, regtype, kDNSServiceMaxDomainName);
+    get_string(&amp;data, end, domain,  kDNSServiceMaxDomainName);
+    <span class="enscript-keyword">if</span> (!data) syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub handle_regservice_response: error reading result from daemon&quot;</span>);
+    <span class="enscript-keyword">else</span> ((DNSServiceRegisterReply)sdr-&gt;AppCallback)(sdr, cbh-&gt;cb_flags, cbh-&gt;cb_err, name, regtype, domain, sdr-&gt;AppContext);
+    <span class="enscript-comment">// MUST NOT touch sdr after invoking AppCallback -- client is allowed to dispose it from within callback function
+</span>}
+
+DNSServiceErrorType DNSSD_API DNSServiceRegister
+(
+    DNSServiceRef                       *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *name,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *regtype,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *domain,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *host,
+    uint16_t PortInNetworkByteOrder,
+    uint16_t txtLen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>                          *txtRecord,
+    DNSServiceRegisterReply callBack,
+    <span class="enscript-type">void</span>                                *context
+)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    DNSServiceErrorType err;
+    <span class="enscript-type">union</span> { uint16_t s; u_char b[2]; } port = { PortInNetworkByteOrder };
+
+    <span class="enscript-keyword">if</span> (!sdRef || !regtype) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    <span class="enscript-keyword">if</span> (!name) name = <span class="enscript-string">&quot;&quot;</span>;
+    <span class="enscript-keyword">if</span> (!domain) domain = <span class="enscript-string">&quot;&quot;</span>;
+    <span class="enscript-keyword">if</span> (!host) host = <span class="enscript-string">&quot;&quot;</span>;
+    <span class="enscript-keyword">if</span> (!txtRecord) txtRecord = (<span class="enscript-type">void</span>*)<span class="enscript-string">&quot;&quot;</span>;
+
+    <span class="enscript-comment">// No callback must have auto-rename
+</span>    <span class="enscript-keyword">if</span> (!callBack &amp;&amp; (flags &amp; kDNSServiceFlagsNoAutoRename)) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    <span class="enscript-keyword">if</span> ((interfaceIndex == kDNSServiceInterfaceIndexAny) &amp;&amp; includeP2PWithIndexAny())
+        flags |= kDNSServiceFlagsIncludeP2P;
+
+    err = ConnectToServer(sdRef, flags, reg_service_request, callBack ? handle_regservice_response : NULL, callBack, context);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>
+    len = <span class="enscript-keyword">sizeof</span>(DNSServiceFlags);
+    len += <span class="enscript-keyword">sizeof</span>(uint32_t);  <span class="enscript-comment">// interfaceIndex
+</span>    len += strlen(name) + strlen(regtype) + strlen(domain) + strlen(host) + 4;
+    len += 2 * <span class="enscript-keyword">sizeof</span>(uint16_t);  <span class="enscript-comment">// port, txtLen
+</span>    len += txtLen;
+
+    hdr = create_hdr(reg_service_request, &amp;len, &amp;ptr, (*sdRef)-&gt;primary ? 1 : 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+    <span class="enscript-keyword">if</span> (!callBack) hdr-&gt;ipc_flags |= IPC_FLAGS_NOREPLY;
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+    put_string(name, &amp;ptr);
+    put_string(regtype, &amp;ptr);
+    put_string(domain, &amp;ptr);
+    put_string(host, &amp;ptr);
+    *ptr++ = port.b[0];
+    *ptr++ = port.b[1];
+    put_uint16(txtLen, &amp;ptr);
+    put_rdata(txtLen, txtRecord, &amp;ptr);
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; }
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">handle_enumeration_response</span>(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *data, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end)
+{
+    <span class="enscript-type">char</span> domain[kDNSServiceMaxDomainName];
+    get_string(&amp;data, end, domain, kDNSServiceMaxDomainName);
+    <span class="enscript-keyword">if</span> (!data) syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub handle_enumeration_response: error reading result from daemon&quot;</span>);
+    <span class="enscript-keyword">else</span> ((DNSServiceDomainEnumReply)sdr-&gt;AppCallback)(sdr, cbh-&gt;cb_flags, cbh-&gt;cb_interface, cbh-&gt;cb_err, domain, sdr-&gt;AppContext);
+    <span class="enscript-comment">// MUST NOT touch sdr after invoking AppCallback -- client is allowed to dispose it from within callback function
+</span>}
+
+DNSServiceErrorType DNSSD_API DNSServiceEnumerateDomains
+(
+    DNSServiceRef             *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    DNSServiceDomainEnumReply callBack,
+    <span class="enscript-type">void</span>                      *context
+)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    DNSServiceErrorType err;
+    <span class="enscript-type">int</span> f1;
+    <span class="enscript-type">int</span> f2;
+
+    <span class="enscript-keyword">if</span> (!sdRef || !callBack) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    f1 = (flags &amp; kDNSServiceFlagsBrowseDomains) != 0;
+    f2 = (flags &amp; kDNSServiceFlagsRegistrationDomains) != 0;
+    <span class="enscript-keyword">if</span> (f1 + f2 != 1) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    err = ConnectToServer(sdRef, flags, enumeration_request, handle_enumeration_response, callBack, context);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>
+    len = <span class="enscript-keyword">sizeof</span>(DNSServiceFlags);
+    len += <span class="enscript-keyword">sizeof</span>(uint32_t);
+
+    hdr = create_hdr(enumeration_request, &amp;len, &amp;ptr, (*sdRef)-&gt;primary ? 1 : 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; }
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">ConnectionResponse</span>(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> data, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end)
+{
+    (<span class="enscript-type">void</span>)data; <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-comment">//printf(&quot;ConnectionResponse got %d\n&quot;, cbh-&gt;ipc_hdr.op);
+</span>    <span class="enscript-keyword">if</span> (cbh-&gt;ipc_hdr.op != reg_record_reply_op)
+    {
+        <span class="enscript-comment">// When using kDNSServiceFlagsShareConnection, need to search the list of associated DNSServiceOps
+</span>        <span class="enscript-comment">// to find the one this response is intended for, and then call through to its ProcessReply handler.
+</span>        <span class="enscript-comment">// We start with our first subordinate DNSServiceRef -- don't want to accidentally match the parent DNSServiceRef.
+</span>        DNSServiceOp *op = sdr-&gt;next;
+        <span class="enscript-keyword">while</span> (op &amp;&amp; (op-&gt;uid.u32[0] != cbh-&gt;ipc_hdr.client_context.u32[0] || op-&gt;uid.u32[1] != cbh-&gt;ipc_hdr.client_context.u32[1]))
+            op = op-&gt;next;
+        <span class="enscript-comment">// Note: We may sometimes not find a matching DNSServiceOp, in the case where the client has
+</span>        <span class="enscript-comment">// cancelled the subordinate DNSServiceOp, but there are still messages in the pipeline from the daemon
+</span>        <span class="enscript-keyword">if</span> (op &amp;&amp; op-&gt;ProcessReply) op-&gt;ProcessReply(op, cbh, data, end);
+        <span class="enscript-comment">// WARNING: Don't touch op or sdr after this -- client may have called DNSServiceRefDeallocate
+</span>        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        DNSRecordRef rec;
+        <span class="enscript-keyword">for</span> (rec = sdr-&gt;rec; rec; rec = rec-&gt;recnext)
+        {
+            <span class="enscript-keyword">if</span> (rec-&gt;uid.u32[0] == cbh-&gt;ipc_hdr.client_context.u32[0] &amp;&amp; rec-&gt;uid.u32[1] == cbh-&gt;ipc_hdr.client_context.u32[1])
+                <span class="enscript-keyword">break</span>;
+        }
+        <span class="enscript-comment">// The record might have been freed already and hence not an
+</span>        <span class="enscript-comment">// error if the record is not found.
+</span>        <span class="enscript-keyword">if</span> (!rec)
+        {
+            syslog(LOG_INFO, <span class="enscript-string">&quot;dnssd_clientstub ConnectionResponse: Record not found&quot;</span>);
+            <span class="enscript-keyword">return</span>;
+        }
+        <span class="enscript-keyword">if</span> (rec-&gt;sdr != sdr)
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectionResponse: Record sdr mismatch: rec %p sdr %p&quot;</span>, rec-&gt;sdr, sdr);
+            <span class="enscript-keyword">return</span>;
+        }
+
+        <span class="enscript-keyword">if</span> (sdr-&gt;op == connection_request || sdr-&gt;op == connection_delegate_request)
+        {
+            rec-&gt;AppCallback(rec-&gt;sdr, rec, cbh-&gt;cb_flags, cbh-&gt;cb_err, rec-&gt;AppContext);
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub ConnectionResponse: sdr-&gt;op != connection_request&quot;</span>);
+            rec-&gt;AppCallback(rec-&gt;sdr, rec, 0, kDNSServiceErr_Unknown, rec-&gt;AppContext);
+        }
+        <span class="enscript-comment">// MUST NOT touch sdr after invoking AppCallback -- client is allowed to dispose it from within callback function
+</span>    }
+}
+
+DNSServiceErrorType DNSSD_API <span class="enscript-function-name">DNSServiceCreateConnection</span>(DNSServiceRef *sdRef)
+{
+    DNSServiceErrorType err;
+    <span class="enscript-type">char</span> *ptr;
+    size_t len = 0;
+    ipc_msg_hdr *hdr;
+
+    <span class="enscript-keyword">if</span> (!sdRef) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    err = ConnectToServer(sdRef, 0, connection_request, ConnectionResponse, NULL, NULL);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>
+    hdr = create_hdr(connection_request, &amp;len, &amp;ptr, 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; }
+    <span class="enscript-keyword">return</span> err;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span> &amp;&amp; !<span class="enscript-variable-name">TARGET_OS_SIMULATOR</span>
+DNSServiceErrorType DNSSD_API <span class="enscript-function-name">DNSServiceCreateDelegateConnection</span>(DNSServiceRef *sdRef, int32_t pid, uuid_t uuid)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len = 0;
+    ipc_msg_hdr *hdr;
+
+    <span class="enscript-keyword">if</span> (!sdRef) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    DNSServiceErrorType err = ConnectToServer(sdRef, 0, connection_delegate_request, ConnectionResponse, NULL, NULL);
+    <span class="enscript-keyword">if</span> (err)
+    {
+         <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>    }
+
+    <span class="enscript-comment">// Only one of the two options can be set. If pid is zero, uuid is used. 
+</span>    <span class="enscript-comment">// If both are specified only pid will be used. We send across the pid
+</span>    <span class="enscript-comment">// so that the daemon knows what to read from the socket.
+</span>
+    len += <span class="enscript-keyword">sizeof</span>(int32_t);
+
+    hdr = create_hdr(connection_delegate_request, &amp;len, &amp;ptr, 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr)
+    {
+        DNSServiceRefDeallocate(*sdRef);
+        *sdRef = NULL;
+        <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+    }
+
+    <span class="enscript-keyword">if</span> (pid &amp;&amp; setsockopt((*sdRef)-&gt;sockfd, SOL_SOCKET, SO_DELEGATED, &amp;pid, <span class="enscript-keyword">sizeof</span>(pid)) == -1)
+    { 
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceCreateDelegateConnection: Could not setsockopt() for PID[%d], no entitlements or process(pid) invalid errno:%d (%s)&quot;</span>, pid, errno, strerror(errno)); 
+        <span class="enscript-comment">// Free the hdr in case we return before calling deliver_request() 
+</span>        <span class="enscript-keyword">if</span> (hdr)
+            free(hdr);
+        DNSServiceRefDeallocate(*sdRef);
+        *sdRef = NULL;
+        <span class="enscript-keyword">return</span> kDNSServiceErr_NoAuth;
+    }
+
+    <span class="enscript-keyword">if</span> (!pid &amp;&amp; setsockopt((*sdRef)-&gt;sockfd, SOL_SOCKET, SO_DELEGATED_UUID, uuid, <span class="enscript-keyword">sizeof</span>(uuid_t)) == -1)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceCreateDelegateConnection: Could not setsockopt() for UUID, no entitlements or process(uuid) invalid errno:%d (%s) &quot;</span>, errno, strerror(errno));
+        <span class="enscript-comment">// Free the hdr in case we return before calling deliver_request()
+</span>        <span class="enscript-keyword">if</span> (hdr)
+            free(hdr);
+        DNSServiceRefDeallocate(*sdRef);
+        *sdRef = NULL;
+        <span class="enscript-keyword">return</span> kDNSServiceErr_NoAuth;
+    }
+
+    put_uint32(pid, &amp;ptr);
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err)
+    {
+        DNSServiceRefDeallocate(*sdRef);
+        *sdRef = NULL;
+    }
+    <span class="enscript-keyword">return</span> err;
+}
+#<span class="enscript-reference">elif</span> <span class="enscript-variable-name">TARGET_OS_SIMULATOR</span> // <span class="enscript-variable-name">This</span> <span class="enscript-variable-name">hack</span> <span class="enscript-variable-name">is</span> <span class="enscript-variable-name">for</span> <span class="enscript-variable-name">Simulator</span> <span class="enscript-variable-name">platform</span> <span class="enscript-variable-name">only</span>
+DNSServiceErrorType DNSSD_API <span class="enscript-function-name">DNSServiceCreateDelegateConnection</span>(DNSServiceRef *sdRef, int32_t pid, uuid_t uuid)
+{
+    (<span class="enscript-type">void</span>) pid;
+    (<span class="enscript-type">void</span>) uuid;
+    <span class="enscript-keyword">return</span> DNSServiceCreateConnection(sdRef);
+}
+#<span class="enscript-reference">endif</span>
+
+DNSServiceErrorType DNSSD_API DNSServiceRegisterRecord
+(
+    DNSServiceRef sdRef,
+    DNSRecordRef                  *RecordRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                    *fullname,
+    uint16_t rrtype,
+    uint16_t rrclass,
+    uint16_t rdlen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>                    *rdata,
+    uint32_t ttl,
+    DNSServiceRegisterRecordReply callBack,
+    <span class="enscript-type">void</span>                          *context
+)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr = NULL;
+    DNSRecordRef rref = NULL;
+    DNSRecord **p;
+    <span class="enscript-comment">// Verify that only one of the following flags is set.
+</span>    <span class="enscript-type">int</span> f1 = (flags &amp; kDNSServiceFlagsShared) != 0;
+    <span class="enscript-type">int</span> f2 = (flags &amp; kDNSServiceFlagsUnique) != 0;
+    <span class="enscript-type">int</span> f3 = (flags &amp; kDNSServiceFlagsKnownUnique) != 0;
+    <span class="enscript-keyword">if</span> (f1 + f2 + f3 != 1) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    <span class="enscript-keyword">if</span> ((interfaceIndex == kDNSServiceInterfaceIndexAny) &amp;&amp; includeP2PWithIndexAny())
+        flags |= kDNSServiceFlagsIncludeP2P;
+
+    <span class="enscript-keyword">if</span> (!sdRef || !RecordRef || !fullname || (!rdata &amp;&amp; rdlen) || !callBack)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRegisterRecord called with NULL parameter&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+
+    <span class="enscript-keyword">if</span> (!DNSServiceRefValid(sdRef))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRegisterRecord called with invalid DNSServiceRef %p %08X %08X&quot;</span>, sdRef, sdRef-&gt;sockfd, sdRef-&gt;validator);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    <span class="enscript-keyword">if</span> (sdRef-&gt;op != connection_request &amp;&amp; sdRef-&gt;op != connection_delegate_request)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRegisterRecord called with non-DNSServiceCreateConnection DNSServiceRef %p %d&quot;</span>, sdRef, sdRef-&gt;op);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    *RecordRef = NULL;
+
+    len = <span class="enscript-keyword">sizeof</span>(DNSServiceFlags);
+    len += 2 * <span class="enscript-keyword">sizeof</span>(uint32_t);  <span class="enscript-comment">// interfaceIndex, ttl
+</span>    len += 3 * <span class="enscript-keyword">sizeof</span>(uint16_t);  <span class="enscript-comment">// rrtype, rrclass, rdlen
+</span>    len += strlen(fullname) + 1;
+    len += rdlen;
+
+    <span class="enscript-comment">// Bump up the uid. Normally for shared operations (kDNSServiceFlagsShareConnection), this
+</span>    <span class="enscript-comment">// is done in ConnectToServer. For DNSServiceRegisterRecord, ConnectToServer has already
+</span>    <span class="enscript-comment">// been called. As multiple DNSServiceRegisterRecords can be multiplexed over a single
+</span>    <span class="enscript-comment">// connection, we need a way to demultiplex the response so that the callback corresponding
+</span>    <span class="enscript-comment">// to the right DNSServiceRegisterRecord instance can be called. Use the same mechanism that
+</span>    <span class="enscript-comment">// is used by kDNSServiceFlagsShareConnection. create_hdr copies the uid value to ipc
+</span>    <span class="enscript-comment">// hdr-&gt;client_context which will be returned in the ipc response.
+</span>    <span class="enscript-keyword">if</span> (++sdRef-&gt;uid.u32[0] == 0)
+        ++sdRef-&gt;uid.u32[1];
+    hdr = create_hdr(reg_record_request, &amp;len, &amp;ptr, 1, sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+    put_string(fullname, &amp;ptr);
+    put_uint16(rrtype, &amp;ptr);
+    put_uint16(rrclass, &amp;ptr);
+    put_uint16(rdlen, &amp;ptr);
+    put_rdata(rdlen, rdata, &amp;ptr);
+    put_uint32(ttl, &amp;ptr);
+
+    rref = malloc(<span class="enscript-keyword">sizeof</span>(DNSRecord));
+    <span class="enscript-keyword">if</span> (!rref) { free(hdr); <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+    rref-&gt;AppContext = context;
+    rref-&gt;AppCallback = callBack;
+    rref-&gt;record_index = sdRef-&gt;max_index++;
+    rref-&gt;sdr = sdRef;
+    rref-&gt;recnext = NULL;
+    *RecordRef = rref;
+    <span class="enscript-comment">// Remember the uid that we are sending across so that we can match
+</span>    <span class="enscript-comment">// when the response comes back.
+</span>    rref-&gt;uid = sdRef-&gt;uid;
+    hdr-&gt;reg_index = rref-&gt;record_index;
+
+    p = &amp;(sdRef)-&gt;rec;
+    <span class="enscript-keyword">while</span> (*p) p = &amp;(*p)-&gt;recnext;
+    *p = rref;
+
+    <span class="enscript-keyword">return</span> deliver_request(hdr, sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>}
+
+<span class="enscript-comment">// sdRef returned by DNSServiceRegister()
+</span>DNSServiceErrorType DNSSD_API DNSServiceAddRecord
+(
+    DNSServiceRef sdRef,
+    DNSRecordRef    *RecordRef,
+    DNSServiceFlags flags,
+    uint16_t rrtype,
+    uint16_t rdlen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>      *rdata,
+    uint32_t ttl
+)
+{
+    ipc_msg_hdr *hdr;
+    size_t len = 0;
+    <span class="enscript-type">char</span> *ptr;
+    DNSRecordRef rref;
+    DNSRecord **p;
+
+    <span class="enscript-keyword">if</span> (!sdRef || !RecordRef || (!rdata &amp;&amp; rdlen))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceAddRecord called with NULL parameter&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+    <span class="enscript-keyword">if</span> (sdRef-&gt;op != reg_service_request)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceAddRecord called with non-DNSServiceRegister DNSServiceRef %p %d&quot;</span>, sdRef, sdRef-&gt;op);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    <span class="enscript-keyword">if</span> (!DNSServiceRefValid(sdRef))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceAddRecord called with invalid DNSServiceRef %p %08X %08X&quot;</span>, sdRef, sdRef-&gt;sockfd, sdRef-&gt;validator);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    *RecordRef = NULL;
+
+    len += 2 * <span class="enscript-keyword">sizeof</span>(uint16_t);  <span class="enscript-comment">// rrtype, rdlen
+</span>    len += rdlen;
+    len += <span class="enscript-keyword">sizeof</span>(uint32_t);
+    len += <span class="enscript-keyword">sizeof</span>(DNSServiceFlags);
+
+    hdr = create_hdr(add_record_request, &amp;len, &amp;ptr, 1, sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+    put_flags(flags, &amp;ptr);
+    put_uint16(rrtype, &amp;ptr);
+    put_uint16(rdlen, &amp;ptr);
+    put_rdata(rdlen, rdata, &amp;ptr);
+    put_uint32(ttl, &amp;ptr);
+
+    rref = malloc(<span class="enscript-keyword">sizeof</span>(DNSRecord));
+    <span class="enscript-keyword">if</span> (!rref) { free(hdr); <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+    rref-&gt;AppContext = NULL;
+    rref-&gt;AppCallback = NULL;
+    rref-&gt;record_index = sdRef-&gt;max_index++;
+    rref-&gt;sdr = sdRef;
+    rref-&gt;recnext = NULL;
+    *RecordRef = rref;
+    hdr-&gt;reg_index = rref-&gt;record_index;
+
+    p = &amp;(sdRef)-&gt;rec;
+    <span class="enscript-keyword">while</span> (*p) p = &amp;(*p)-&gt;recnext;
+    *p = rref;
+
+    <span class="enscript-keyword">return</span> deliver_request(hdr, sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>}
+
+<span class="enscript-comment">// DNSRecordRef returned by DNSServiceRegisterRecord or DNSServiceAddRecord
+</span>DNSServiceErrorType DNSSD_API DNSServiceUpdateRecord
+(
+    DNSServiceRef sdRef,
+    DNSRecordRef RecordRef,
+    DNSServiceFlags flags,
+    uint16_t rdlen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>      *rdata,
+    uint32_t ttl
+)
+{
+    ipc_msg_hdr *hdr;
+    size_t len = 0;
+    <span class="enscript-type">char</span> *ptr;
+
+    <span class="enscript-keyword">if</span> (!sdRef || (!rdata &amp;&amp; rdlen))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceUpdateRecord called with NULL parameter&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+
+    <span class="enscript-keyword">if</span> (!DNSServiceRefValid(sdRef))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceUpdateRecord called with invalid DNSServiceRef %p %08X %08X&quot;</span>, sdRef, sdRef-&gt;sockfd, sdRef-&gt;validator);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    <span class="enscript-comment">// Note: RecordRef is allowed to be NULL
+</span>
+    len += <span class="enscript-keyword">sizeof</span>(uint16_t);
+    len += rdlen;
+    len += <span class="enscript-keyword">sizeof</span>(uint32_t);
+    len += <span class="enscript-keyword">sizeof</span>(DNSServiceFlags);
+
+    hdr = create_hdr(update_record_request, &amp;len, &amp;ptr, 1, sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+    hdr-&gt;reg_index = RecordRef ? RecordRef-&gt;record_index : TXT_RECORD_INDEX;
+    put_flags(flags, &amp;ptr);
+    put_uint16(rdlen, &amp;ptr);
+    put_rdata(rdlen, rdata, &amp;ptr);
+    put_uint32(ttl, &amp;ptr);
+    <span class="enscript-keyword">return</span> deliver_request(hdr, sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>}
+
+DNSServiceErrorType DNSSD_API DNSServiceRemoveRecord
+(
+    DNSServiceRef sdRef,
+    DNSRecordRef RecordRef,
+    DNSServiceFlags flags
+)
+{
+    ipc_msg_hdr *hdr;
+    size_t len = 0;
+    <span class="enscript-type">char</span> *ptr;
+    DNSServiceErrorType err;
+
+    <span class="enscript-keyword">if</span> (!sdRef)            { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRemoveRecord called with NULL DNSServiceRef&quot;</span>); <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam; }
+    <span class="enscript-keyword">if</span> (!RecordRef)        { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRemoveRecord called with NULL DNSRecordRef&quot;</span>);  <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam; }
+    <span class="enscript-keyword">if</span> (!sdRef-&gt;max_index) { syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRemoveRecord called with bad DNSServiceRef&quot;</span>);  <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference; }
+
+    <span class="enscript-keyword">if</span> (!DNSServiceRefValid(sdRef))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceRemoveRecord called with invalid DNSServiceRef %p %08X %08X&quot;</span>, sdRef, sdRef-&gt;sockfd, sdRef-&gt;validator);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadReference;
+    }
+
+    len += <span class="enscript-keyword">sizeof</span>(flags);
+    hdr = create_hdr(remove_record_request, &amp;len, &amp;ptr, 1, sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+    hdr-&gt;reg_index = RecordRef-&gt;record_index;
+    put_flags(flags, &amp;ptr);
+    err = deliver_request(hdr, sdRef);      <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (!err)
+    {
+        <span class="enscript-comment">// This RecordRef could have been allocated in DNSServiceRegisterRecord or DNSServiceAddRecord.
+</span>        <span class="enscript-comment">// If so, delink from the list before freeing
+</span>        DNSRecord **p = &amp;sdRef-&gt;rec;
+        <span class="enscript-keyword">while</span> (*p &amp;&amp; *p != RecordRef) p = &amp;(*p)-&gt;recnext;
+        <span class="enscript-keyword">if</span> (*p) *p = RecordRef-&gt;recnext;
+        free(RecordRef);
+    }
+    <span class="enscript-keyword">return</span> err;
+}
+
+DNSServiceErrorType DNSSD_API DNSServiceReconfirmRecord
+(
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>      *fullname,
+    uint16_t rrtype,
+    uint16_t rrclass,
+    uint16_t rdlen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>      *rdata
+)
+{
+    DNSServiceErrorType err;
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    DNSServiceOp *tmp = NULL;
+
+    <span class="enscript-keyword">if</span> (!fullname || (!rdata &amp;&amp; rdlen)) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+    err = ConnectToServer(&amp;tmp, flags, reconfirm_record_request, NULL, NULL, NULL);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;
+
+    len = <span class="enscript-keyword">sizeof</span>(DNSServiceFlags);
+    len += <span class="enscript-keyword">sizeof</span>(uint32_t);
+    len += strlen(fullname) + 1;
+    len += 3 * <span class="enscript-keyword">sizeof</span>(uint16_t);
+    len += rdlen;
+    hdr = create_hdr(reconfirm_record_request, &amp;len, &amp;ptr, 0, tmp);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(tmp); <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+    put_string(fullname, &amp;ptr);
+    put_uint16(rrtype, &amp;ptr);
+    put_uint16(rrclass, &amp;ptr);
+    put_uint16(rdlen, &amp;ptr);
+    put_rdata(rdlen, rdata, &amp;ptr);
+
+    err = deliver_request(hdr, tmp);        <span class="enscript-comment">// Will free hdr for us
+</span>    DNSServiceRefDeallocate(tmp);
+    <span class="enscript-keyword">return</span> err;
+}
+
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">handle_port_mapping_response</span>(DNSServiceOp *<span class="enscript-type">const</span> sdr, <span class="enscript-type">const</span> CallbackHeader *<span class="enscript-type">const</span> cbh, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *data, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end)
+{
+    <span class="enscript-type">union</span> { uint32_t l; u_char b[4]; } addr;
+    uint8_t protocol;
+    <span class="enscript-type">union</span> { uint16_t s; u_char b[2]; } internalPort;
+    <span class="enscript-type">union</span> { uint16_t s; u_char b[2]; } externalPort;
+    uint32_t ttl;
+
+    <span class="enscript-keyword">if</span> (!data || data + 13 &gt; end) <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+
+    addr.b[0] = *data++;
+    addr.b[1] = *data++;
+    addr.b[2] = *data++;
+    addr.b[3] = *data++;
+    protocol          = *data++;
+    internalPort.b[0] = *data++;
+    internalPort.b[1] = *data++;
+    externalPort.b[0] = *data++;
+    externalPort.b[1] = *data++;
+    ttl               = get_uint32(&amp;data, end);
+    <span class="enscript-keyword">if</span> (!data) <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+
+    ((DNSServiceNATPortMappingReply)sdr-&gt;AppCallback)(sdr, cbh-&gt;cb_flags, cbh-&gt;cb_interface, cbh-&gt;cb_err, addr.l, protocol, internalPort.s, externalPort.s, ttl, sdr-&gt;AppContext);
+    <span class="enscript-keyword">return</span>;
+    <span class="enscript-comment">// MUST NOT touch sdr after invoking AppCallback -- client is allowed to dispose it from within callback function
+</span>
+    fail :
+    syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub handle_port_mapping_response: error reading result from daemon&quot;</span>);
+}
+
+DNSServiceErrorType DNSSD_API DNSServiceNATPortMappingCreate
+(
+    DNSServiceRef                       *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    uint32_t protocol,                                <span class="enscript-comment">/* TCP and/or UDP */</span>
+    uint16_t internalPortInNetworkByteOrder,
+    uint16_t externalPortInNetworkByteOrder,
+    uint32_t ttl,                                     <span class="enscript-comment">/* time to live in seconds */</span>
+    DNSServiceNATPortMappingReply callBack,
+    <span class="enscript-type">void</span>                                *context      <span class="enscript-comment">/* may be NULL */</span>
+)
+{
+    <span class="enscript-type">char</span> *ptr;
+    size_t len;
+    ipc_msg_hdr *hdr;
+    <span class="enscript-type">union</span> { uint16_t s; u_char b[2]; } internalPort = { internalPortInNetworkByteOrder };
+    <span class="enscript-type">union</span> { uint16_t s; u_char b[2]; } externalPort = { externalPortInNetworkByteOrder };
+
+    DNSServiceErrorType err = ConnectToServer(sdRef, flags, port_mapping_request, handle_port_mapping_response, callBack, context);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">return</span> err;    <span class="enscript-comment">// On error ConnectToServer leaves *sdRef set to NULL
+</span>
+    len = <span class="enscript-keyword">sizeof</span>(flags);
+    len += <span class="enscript-keyword">sizeof</span>(interfaceIndex);
+    len += <span class="enscript-keyword">sizeof</span>(protocol);
+    len += <span class="enscript-keyword">sizeof</span>(internalPort);
+    len += <span class="enscript-keyword">sizeof</span>(externalPort);
+    len += <span class="enscript-keyword">sizeof</span>(ttl);
+
+    hdr = create_hdr(port_mapping_request, &amp;len, &amp;ptr, (*sdRef)-&gt;primary ? 1 : 0, *sdRef);
+    <span class="enscript-keyword">if</span> (!hdr) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory; }
+
+    put_flags(flags, &amp;ptr);
+    put_uint32(interfaceIndex, &amp;ptr);
+    put_uint32(protocol, &amp;ptr);
+    *ptr++ = internalPort.b[0];
+    *ptr++ = internalPort.b[1];
+    *ptr++ = externalPort.b[0];
+    *ptr++ = externalPort.b[1];
+    put_uint32(ttl, &amp;ptr);
+
+    err = deliver_request(hdr, *sdRef);     <span class="enscript-comment">// Will free hdr for us
+</span>    <span class="enscript-keyword">if</span> (err) { DNSServiceRefDeallocate(*sdRef); *sdRef = NULL; }
+    <span class="enscript-keyword">return</span> err;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+DNSServiceErrorType DNSSD_API DNSServiceSetDispatchQueue
+(
+    DNSServiceRef service,
+    dispatch_queue_t queue
+)
+{
+    <span class="enscript-type">int</span> dnssd_fd  = DNSServiceRefSockFD(service);
+    <span class="enscript-keyword">if</span> (dnssd_fd == dnssd_InvalidSocket) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    <span class="enscript-keyword">if</span> (!queue)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub: DNSServiceSetDispatchQueue dispatch queue NULL&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+    <span class="enscript-keyword">if</span> (service-&gt;disp_queue)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSetDispatchQueue dispatch queue set already&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+    <span class="enscript-keyword">if</span> (service-&gt;disp_source)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSetDispatchQueue dispatch source set already&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+    service-&gt;disp_source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, dnssd_fd, 0, queue);
+    <span class="enscript-keyword">if</span> (!service-&gt;disp_source)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSetDispatchQueue dispatch_source_create failed&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+    }
+    service-&gt;disp_queue = queue;
+    dispatch_source_set_event_handler(service-&gt;disp_source, ^{DNSServiceProcessResult(service);});
+    dispatch_source_set_cancel_handler(service-&gt;disp_source, ^{dnssd_close(dnssd_fd);});
+    dispatch_resume(service-&gt;disp_source);
+    <span class="enscript-keyword">return</span> kDNSServiceErr_NoError;
+}
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">_DNS_SD_LIBDISPATCH</span>
+
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN32</span>)
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> DNSSD_API <span class="enscript-function-name">SleepKeepaliveCallback</span>(DNSServiceRef sdRef, DNSRecordRef rec, <span class="enscript-type">const</span> DNSServiceFlags flags,
+                                             DNSServiceErrorType errorCode, <span class="enscript-type">void</span> *context)
+{
+    SleepKAContext *ka = (SleepKAContext *)context;
+    (<span class="enscript-type">void</span>)rec;      <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)flags;    <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-keyword">if</span> (sdRef-&gt;kacontext != context)
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub SleepKeepaliveCallback context mismatch&quot;</span>);
+
+    <span class="enscript-keyword">if</span> (ka-&gt;AppCallback)
+        ((DNSServiceSleepKeepaliveReply)ka-&gt;AppCallback)(sdRef, errorCode, ka-&gt;AppContext);
+}
+
+DNSServiceErrorType DNSSD_API DNSServiceSleepKeepalive
+(
+    DNSServiceRef                       *sdRef,
+    DNSServiceFlags flags,
+    <span class="enscript-type">int</span> fd,
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> timeout,
+    DNSServiceSleepKeepaliveReply callBack,
+    <span class="enscript-type">void</span>                                *context
+)
+{
+    <span class="enscript-type">char</span> source_str[INET6_ADDRSTRLEN];
+    <span class="enscript-type">char</span> target_str[INET6_ADDRSTRLEN];
+    <span class="enscript-type">struct</span> sockaddr_storage lss;
+    <span class="enscript-type">struct</span> sockaddr_storage rss;
+    socklen_t len1, len2;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> len, proxyreclen;
+    <span class="enscript-type">char</span> buf[256];
+    DNSServiceErrorType err;
+    DNSRecordRef record = NULL;
+    <span class="enscript-type">char</span> name[10];
+    <span class="enscript-type">char</span> recname[128];
+    SleepKAContext *ka;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> i, unique;
+
+
+    (<span class="enscript-type">void</span>) flags; <span class="enscript-comment">//unused
+</span>    <span class="enscript-keyword">if</span> (!timeout) <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+
+
+    len1 = <span class="enscript-keyword">sizeof</span>(lss);
+    <span class="enscript-keyword">if</span> (getsockname(fd, (<span class="enscript-type">struct</span> sockaddr *)&amp;lss, &amp;len1) &lt; 0)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive: getsockname %d\n&quot;</span>, errno);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+
+    len2 = <span class="enscript-keyword">sizeof</span>(rss);
+    <span class="enscript-keyword">if</span> (getpeername(fd, (<span class="enscript-type">struct</span> sockaddr *)&amp;rss, &amp;len2) &lt; 0)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive: getpeername %d\n&quot;</span>, errno);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_BadParam;
+    }
+
+    <span class="enscript-keyword">if</span> (len1 != len2)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive local/remote info not same&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+    }
+
+    unique = 0;
+    <span class="enscript-keyword">if</span> (lss.ss_family == AF_INET)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in *sl = (<span class="enscript-type">struct</span> sockaddr_in *)&amp;lss;
+        <span class="enscript-type">struct</span> sockaddr_in *sr = (<span class="enscript-type">struct</span> sockaddr_in *)&amp;rss;
+        <span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> *ptr = (<span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> *)&amp;sl-&gt;sin_addr;
+
+        <span class="enscript-keyword">if</span> (!inet_ntop(AF_INET, (<span class="enscript-type">const</span> <span class="enscript-type">void</span> *)&amp;sr-&gt;sin_addr, target_str, <span class="enscript-keyword">sizeof</span> (target_str)))
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive remote info failed %d&quot;</span>, errno);
+            <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+        }
+        <span class="enscript-keyword">if</span> (!inet_ntop(AF_INET, (<span class="enscript-type">const</span> <span class="enscript-type">void</span> *)&amp;sl-&gt;sin_addr, source_str, <span class="enscript-keyword">sizeof</span> (source_str)))
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive local info failed %d&quot;</span>, errno);
+            <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+        }
+        <span class="enscript-comment">// Sum of all bytes in the local address and port should result in a unique
+</span>        <span class="enscript-comment">// number in the local network
+</span>        <span class="enscript-keyword">for</span> (i = 0; i &lt; <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> in_addr); i++)
+            unique += ptr[i];
+        unique += sl-&gt;sin_port;
+        len = snprintf(buf+1, <span class="enscript-keyword">sizeof</span>(buf) - 1, <span class="enscript-string">&quot;t=%u h=%s d=%s l=%u r=%u&quot;</span>, timeout, source_str, target_str, ntohs(sl-&gt;sin_port), ntohs(sr-&gt;sin_port));
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-type">struct</span> sockaddr_in6 *sl6 = (<span class="enscript-type">struct</span> sockaddr_in6 *)&amp;lss;
+        <span class="enscript-type">struct</span> sockaddr_in6 *sr6 = (<span class="enscript-type">struct</span> sockaddr_in6 *)&amp;rss;
+        <span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> *ptr = (<span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> *)&amp;sl6-&gt;sin6_addr;
+
+        <span class="enscript-keyword">if</span> (!inet_ntop(AF_INET6, (<span class="enscript-type">const</span> <span class="enscript-type">void</span> *)&amp;sr6-&gt;sin6_addr, target_str, <span class="enscript-keyword">sizeof</span> (target_str)))
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive remote6 info failed %d&quot;</span>, errno);
+            <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+        }
+        <span class="enscript-keyword">if</span> (!inet_ntop(AF_INET6, (<span class="enscript-type">const</span> <span class="enscript-type">void</span> *)&amp;sl6-&gt;sin6_addr, source_str, <span class="enscript-keyword">sizeof</span> (source_str)))
+        {
+            syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive local6 info failed %d&quot;</span>, errno);
+            <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+        }
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> in6_addr); i++)
+            unique += ptr[i];
+        unique += sl6-&gt;sin6_port;
+        len = snprintf(buf+1, <span class="enscript-keyword">sizeof</span>(buf) - 1, <span class="enscript-string">&quot;t=%u H=%s D=%s l=%u r=%u&quot;</span>, timeout, source_str, target_str, ntohs(sl6-&gt;sin6_port), ntohs(sr6-&gt;sin6_port));
+    }
+
+    <span class="enscript-keyword">if</span> (len &gt;= (<span class="enscript-keyword">sizeof</span>(buf) - 1))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive could not fit local/remote info&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+    }
+    <span class="enscript-comment">// Include the NULL byte also in the first byte. The total length of the record includes the
+</span>    <span class="enscript-comment">// first byte also.
+</span>    buf[0] = len + 1;
+    proxyreclen = len + 2;
+
+    len = snprintf(name, <span class="enscript-keyword">sizeof</span>(name), <span class="enscript-string">&quot;%u&quot;</span>, unique);
+    <span class="enscript-keyword">if</span> (len &gt;= <span class="enscript-keyword">sizeof</span>(name))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive could not fit unique&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+    }
+
+    len = snprintf(recname, <span class="enscript-keyword">sizeof</span>(recname), <span class="enscript-string">&quot;%s.%s&quot;</span>, name, <span class="enscript-string">&quot;_keepalive._dns-sd._udp.local&quot;</span>);
+    <span class="enscript-keyword">if</span> (len &gt;= <span class="enscript-keyword">sizeof</span>(recname))
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive could not fit name&quot;</span>);
+        <span class="enscript-keyword">return</span> kDNSServiceErr_Unknown;
+    }
+
+    ka = malloc(<span class="enscript-keyword">sizeof</span>(SleepKAContext));
+    <span class="enscript-keyword">if</span> (!ka) <span class="enscript-keyword">return</span> kDNSServiceErr_NoMemory;
+    ka-&gt;AppCallback = callBack;
+    ka-&gt;AppContext = context;
+
+    err = DNSServiceCreateConnection(sdRef);
+    <span class="enscript-keyword">if</span> (err)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive cannot create connection&quot;</span>);
+        free(ka);
+        <span class="enscript-keyword">return</span> err;
+    }
+
+    <span class="enscript-comment">// we don't care about the &quot;record&quot;. When sdRef gets deallocated later, it will be freed too
+</span>    err = DNSServiceRegisterRecord(*sdRef, &amp;record, kDNSServiceFlagsUnique, 0, recname,
+                                   kDNSServiceType_NULL,  kDNSServiceClass_IN, proxyreclen, buf,  kDNSServiceInterfaceIndexAny, SleepKeepaliveCallback, ka);
+    <span class="enscript-keyword">if</span> (err)
+    {
+        syslog(LOG_WARNING, <span class="enscript-string">&quot;dnssd_clientstub DNSServiceSleepKeepalive cannot create connection&quot;</span>);
+        free(ka);
+        <span class="enscript-keyword">return</span> err;
+    }
+    (*sdRef)-&gt;kacontext = ka;
+    <span class="enscript-keyword">return</span> kDNSServiceErr_NoError;
+}
+#<span class="enscript-reference">endif</span>
+</pre>
+<hr />
+</body></html>

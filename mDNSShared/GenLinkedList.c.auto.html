@@ -1,0 +1,339 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>GenLinkedList.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">GenLinkedList.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="GenLinkedList.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2003-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;GenLinkedList.h&quot;</span>
+
+
+<span class="enscript-comment">// Return the link pointer contained within element e at offset o.
+</span>#<span class="enscript-reference">define</span>     <span class="enscript-function-name">GETLINK</span>( e, o)          ( *(void**)((char*) (e) + (o)) )
+
+<span class="enscript-comment">// Assign the link pointer l to element e at offset o.
+</span>#<span class="enscript-reference">define</span>     <span class="enscript-function-name">ASSIGNLINK</span>( e, l, o)    ( *((void**)((char*) (e) + (o))) = (l))
+
+
+<span class="enscript-comment">//		GenLinkedList		/////////////////////////////////////////////////////////////
+</span>
+<span class="enscript-type">void</span>        <span class="enscript-function-name">InitLinkedList</span>( GenLinkedList *pList, size_t linkOffset)
+<span class="enscript-comment">/* Initialize the block of memory pointed to by pList as a linked list. */</span>
+{
+    pList-&gt;Head = NULL;
+    pList-&gt;Tail = NULL;
+    pList-&gt;LinkOffset = linkOffset;
+}
+
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">AddToTail</span>( GenLinkedList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Add a linked list element to the tail of the list. */</span>
+{
+    <span class="enscript-keyword">if</span> ( pList-&gt;Tail) {
+        ASSIGNLINK( pList-&gt;Tail, elem, pList-&gt;LinkOffset);
+    } <span class="enscript-keyword">else</span>
+        pList-&gt;Head = elem;
+    ASSIGNLINK( elem, NULL, pList-&gt;LinkOffset);
+
+    pList-&gt;Tail = elem;
+}
+
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">AddToHead</span>( GenLinkedList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Add a linked list element to the head of the list. */</span>
+{
+    ASSIGNLINK( elem, pList-&gt;Head, pList-&gt;LinkOffset);
+    <span class="enscript-keyword">if</span> ( pList-&gt;Tail == NULL)
+        pList-&gt;Tail = elem;
+
+    pList-&gt;Head = elem;
+}
+
+
+<span class="enscript-type">int</span>     <span class="enscript-function-name">RemoveFromList</span>( GenLinkedList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Remove a linked list element from the list. Return 0 if it was not found. */</span>
+<span class="enscript-comment">/* If the element is removed, its link will be set to NULL. */</span>
+{
+    <span class="enscript-type">void</span>    *iElem, *lastElem;
+
+    <span class="enscript-keyword">for</span> ( iElem = pList-&gt;Head, lastElem = NULL; iElem; iElem = GETLINK( iElem, pList-&gt;LinkOffset)) {
+        <span class="enscript-keyword">if</span> ( iElem == elem) {
+            <span class="enscript-keyword">if</span> ( lastElem) {        <span class="enscript-comment">// somewhere past the head
+</span>                ASSIGNLINK( lastElem, GETLINK( elem, pList-&gt;LinkOffset), pList-&gt;LinkOffset);
+            } <span class="enscript-keyword">else</span> {                <span class="enscript-comment">// at the head
+</span>                pList-&gt;Head = GETLINK( elem, pList-&gt;LinkOffset);
+            }
+            <span class="enscript-keyword">if</span> ( pList-&gt;Tail == elem)
+                pList-&gt;Tail = lastElem ? lastElem : NULL;
+            ASSIGNLINK( elem, NULL, pList-&gt;LinkOffset);         <span class="enscript-comment">// maybe catch a stale reference bug.
+</span>            <span class="enscript-keyword">return</span> 1;
+        }
+        lastElem = iElem;
+    }
+
+    <span class="enscript-keyword">return</span> 0;
+}
+
+
+<span class="enscript-type">int</span>         <span class="enscript-function-name">ReplaceElem</span>( GenLinkedList *pList, <span class="enscript-type">void</span> *elemInList, <span class="enscript-type">void</span> *newElem)
+<span class="enscript-comment">/* Replace an element in the list with a new element, in the same position. */</span>
+{
+    <span class="enscript-type">void</span>    *iElem, *lastElem;
+
+    <span class="enscript-keyword">if</span> ( elemInList == NULL || newElem == NULL)
+        <span class="enscript-keyword">return</span> 0;
+
+    <span class="enscript-keyword">for</span> ( iElem = pList-&gt;Head, lastElem = NULL; iElem; iElem = GETLINK( iElem, pList-&gt;LinkOffset))
+    {
+        <span class="enscript-keyword">if</span> ( iElem == elemInList)
+        {
+            ASSIGNLINK( newElem, GETLINK( elemInList, pList-&gt;LinkOffset), pList-&gt;LinkOffset);
+            <span class="enscript-keyword">if</span> ( lastElem)      <span class="enscript-comment">// somewhere past the head
+</span>            {
+                ASSIGNLINK( lastElem, newElem, pList-&gt;LinkOffset);
+            }
+            <span class="enscript-keyword">else</span>                <span class="enscript-comment">// at the head
+</span>            {
+                pList-&gt;Head = newElem;
+            }
+            <span class="enscript-keyword">if</span> ( pList-&gt;Tail == elemInList)
+                pList-&gt;Tail = newElem;
+            <span class="enscript-keyword">return</span> 1;
+        }
+        lastElem = iElem;
+    }
+
+    <span class="enscript-keyword">return</span> 0;
+}
+
+
+<span class="enscript-comment">//		GenDoubleLinkedList		/////////////////////////////////////////////////////////
+</span>
+<span class="enscript-type">void</span>        <span class="enscript-function-name">InitDoubleLinkedList</span>( GenDoubleLinkedList *pList, size_t fwdLinkOffset,
+                                  size_t backLinkOffset)
+<span class="enscript-comment">/* Initialize the block of memory pointed to by pList as a double linked list. */</span>
+{
+    pList-&gt;Head = NULL;
+    pList-&gt;Tail = NULL;
+    pList-&gt;FwdLinkOffset = fwdLinkOffset;
+    pList-&gt;BackLinkOffset = backLinkOffset;
+}
+
+
+<span class="enscript-type">void</span>            <span class="enscript-function-name">DLLAddToHead</span>( GenDoubleLinkedList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Add a linked list element to the head of the list. */</span>
+{
+    <span class="enscript-type">void</span>        *pNext;
+
+    pNext = pList-&gt;Head;
+
+    <span class="enscript-comment">// fix up the forward links
+</span>    ASSIGNLINK( elem, pList-&gt;Head, pList-&gt;FwdLinkOffset);
+    pList-&gt;Head = elem;
+
+    <span class="enscript-comment">// fix up the backward links
+</span>    <span class="enscript-keyword">if</span> ( pNext) {
+        ASSIGNLINK( pNext, elem, pList-&gt;BackLinkOffset);
+    } <span class="enscript-keyword">else</span>
+        pList-&gt;Tail = elem;
+    ASSIGNLINK( elem, NULL, pList-&gt;BackLinkOffset);
+}
+
+
+<span class="enscript-type">void</span>            <span class="enscript-function-name">DLLRemoveFromList</span>( GenDoubleLinkedList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Remove a linked list element from the list. */</span>
+<span class="enscript-comment">/* When the element is removed, its link will be set to NULL. */</span>
+{
+    <span class="enscript-type">void</span>        *pNext, *pPrev;
+
+    pNext = GETLINK( elem, pList-&gt;FwdLinkOffset);
+    pPrev = GETLINK( elem, pList-&gt;BackLinkOffset);
+
+    <span class="enscript-comment">// fix up the forward links
+</span>    <span class="enscript-keyword">if</span> ( pPrev)
+        ASSIGNLINK( pPrev, pNext, pList-&gt;FwdLinkOffset);
+    <span class="enscript-keyword">else</span>
+        pList-&gt;Head = pNext;
+
+    <span class="enscript-comment">// fix up the backward links
+</span>    <span class="enscript-keyword">if</span> ( pNext)
+        ASSIGNLINK( pNext, pPrev, pList-&gt;BackLinkOffset);
+    <span class="enscript-keyword">else</span>
+        pList-&gt;Tail = pPrev;
+
+    ASSIGNLINK( elem, NULL, pList-&gt;FwdLinkOffset);
+    ASSIGNLINK( elem, NULL, pList-&gt;BackLinkOffset);
+}
+
+
+<span class="enscript-comment">//		GenLinkedOffsetList		/////////////////////////////////////////////////////
+</span>
+<span class="enscript-comment">// Extract the Next offset from element
+</span>#<span class="enscript-reference">define</span>     <span class="enscript-function-name">GETOFFSET</span>( e, o)    ( *(size_t*)((char*) (e) + (o)) )
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>     <span class="enscript-function-name">AssignOffsetLink</span>( <span class="enscript-type">void</span> *elem, <span class="enscript-type">void</span> *link, size_t linkOffset);
+
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">AssignOffsetLink</span>( <span class="enscript-type">void</span> *elem, <span class="enscript-type">void</span> *link, size_t linkOffset)
+<span class="enscript-comment">// Assign link to elem as an offset from elem. Assign 0 to elem if link is NULL.
+</span>{
+    GETOFFSET( elem, linkOffset) = link ? (size_t) link - (size_t) elem : 0;
+}
+
+
+<span class="enscript-type">void</span>        *<span class="enscript-function-name">GetHeadPtr</span>( GenLinkedOffsetList *pList)
+<span class="enscript-comment">/* Return a pointer to the head element of a list, or NULL if none. */</span>
+{
+    <span class="enscript-keyword">return</span> pList-&gt;Head ? ( (<span class="enscript-type">char</span>*) (pList) + pList-&gt;Head) : NULL;
+}
+
+
+<span class="enscript-type">void</span>        *<span class="enscript-function-name">GetTailPtr</span>( GenLinkedOffsetList *pList)
+<span class="enscript-comment">/* Return a pointer to the tail element of a list, or NULL if none. */</span>
+{
+    <span class="enscript-keyword">return</span> pList-&gt;Tail ? ( (<span class="enscript-type">char</span>*) (pList) + pList-&gt;Tail) : NULL;
+}
+
+
+<span class="enscript-type">void</span>        *<span class="enscript-function-name">GetOffsetLink</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Return the link pointer contained within element e for pList, or NULL if it is 0. */</span>
+{
+    size_t nextOffset;
+
+    nextOffset = GETOFFSET( elem, pList-&gt;LinkOffset);
+
+    <span class="enscript-keyword">return</span> nextOffset ? (<span class="enscript-type">char</span>*) elem + nextOffset : NULL;
+}
+
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">InitLinkedOffsetList</span>( GenLinkedOffsetList *pList, size_t linkOffset)
+<span class="enscript-comment">/* Initialize the block of memory pointed to by pList as a linked list. */</span>
+{
+    pList-&gt;Head = 0;
+    pList-&gt;Tail = 0;
+    pList-&gt;LinkOffset = linkOffset;
+}
+
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">OffsetAddToTail</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Add a linked list element to the tail of the list. */</span>
+{
+    <span class="enscript-keyword">if</span> ( pList-&gt;Tail) {
+        AssignOffsetLink( GetTailPtr( pList), elem, pList-&gt;LinkOffset);
+    } <span class="enscript-keyword">else</span>
+        pList-&gt;Head = (size_t) elem - (size_t) pList;
+    AssignOffsetLink( elem, NULL, pList-&gt;LinkOffset);
+
+    pList-&gt;Tail = (size_t) elem - (size_t) pList;
+}
+
+
+<span class="enscript-type">void</span>        <span class="enscript-function-name">OffsetAddToHead</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Add a linked list element to the head of the list. */</span>
+{
+    AssignOffsetLink( elem, GetHeadPtr( pList), pList-&gt;LinkOffset);
+    <span class="enscript-keyword">if</span> ( pList-&gt;Tail == 0)
+        pList-&gt;Tail = (size_t) elem - (size_t) pList;
+
+    pList-&gt;Head = (size_t) elem - (size_t) pList;
+}
+
+
+<span class="enscript-type">int</span>     <span class="enscript-function-name">OffsetRemoveFromList</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elem)
+<span class="enscript-comment">/* Remove a linked list element from the list. Return 0 if it was not found. */</span>
+<span class="enscript-comment">/* If the element is removed, its link will be set to NULL. */</span>
+{
+    <span class="enscript-type">void</span>    *iElem, *lastElem;
+
+    <span class="enscript-keyword">if</span> (elem == NULL) {
+        <span class="enscript-keyword">return</span> 0;
+    }
+    <span class="enscript-keyword">for</span> ( iElem = GetHeadPtr( pList), lastElem = NULL; iElem;
+          iElem = GetOffsetLink( pList, iElem))
+    {
+        <span class="enscript-keyword">if</span> ( iElem == elem) {
+            <span class="enscript-keyword">if</span> ( lastElem) {        <span class="enscript-comment">// somewhere past the head
+</span>                AssignOffsetLink( lastElem, GetOffsetLink( pList, elem), pList-&gt;LinkOffset);
+            } <span class="enscript-keyword">else</span> {                <span class="enscript-comment">// at the head
+</span>                iElem = GetOffsetLink( pList, elem);
+                pList-&gt;Head = iElem ? (size_t) iElem - (size_t) pList : 0;
+            }
+            <span class="enscript-keyword">if</span> ( GetTailPtr( pList) == elem)
+                pList-&gt;Tail = lastElem ? (size_t) lastElem - (size_t) pList : 0;
+            AssignOffsetLink( elem, NULL, pList-&gt;LinkOffset);   <span class="enscript-comment">// maybe catch a stale reference bug.
+</span>            <span class="enscript-keyword">return</span> 1;
+        }
+        lastElem = iElem;
+    }
+
+    <span class="enscript-keyword">return</span> 0;
+}
+
+
+<span class="enscript-type">int</span>         <span class="enscript-function-name">OffsetReplaceElem</span>( GenLinkedOffsetList *pList, <span class="enscript-type">void</span> *elemInList, <span class="enscript-type">void</span> *newElem)
+<span class="enscript-comment">/* Replace an element in the list with a new element, in the same position. */</span>
+{
+    <span class="enscript-type">void</span>    *iElem, *lastElem;
+
+    <span class="enscript-keyword">if</span> ( elemInList == NULL || newElem == NULL)
+        <span class="enscript-keyword">return</span> 0;
+
+    <span class="enscript-keyword">for</span> ( iElem = GetHeadPtr( pList), lastElem = NULL; iElem;
+          iElem = GetOffsetLink( pList, iElem))
+    {
+        <span class="enscript-keyword">if</span> ( iElem == elemInList)
+        {
+            AssignOffsetLink( newElem, GetOffsetLink( pList, elemInList), pList-&gt;LinkOffset);
+            <span class="enscript-keyword">if</span> ( lastElem)      <span class="enscript-comment">// somewhere past the head
+</span>            {
+                AssignOffsetLink( lastElem, newElem, pList-&gt;LinkOffset);
+            }
+            <span class="enscript-keyword">else</span>                <span class="enscript-comment">// at the head
+</span>            {
+                pList-&gt;Head = (size_t) newElem - (size_t) pList;
+            }
+            <span class="enscript-keyword">if</span> ( GetTailPtr( pList) == elemInList)
+                pList-&gt;Tail = (size_t) newElem - (size_t) pList;
+            <span class="enscript-keyword">return</span> 1;
+        }
+        lastElem = iElem;
+    }
+
+    <span class="enscript-keyword">return</span> 0;
+}
+
+
+</pre>
+<hr />
+</body></html>

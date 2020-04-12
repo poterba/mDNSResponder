@@ -1,0 +1,87 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>CryptoAlg.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">CryptoAlg.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="CryptoAlg.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2011-2012 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__CRYPTO_ALG_H</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__CRYPTO_ALG_H</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span>
+{
+    CRYPTO_ALG,
+    DIGEST_ALG,
+    ENC_ALG,
+} AlgType;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    <span class="enscript-type">void</span> *context;
+    AlgType type;
+    mDNSu8 alg;
+} AlgContext;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    mStatus (*Create)(AlgContext *ctx);
+    mStatus (*Destroy)(AlgContext *ctx);
+    mDNSu32 (*Length)(AlgContext *ctx);
+    mStatus (*Add)(AlgContext *ctx, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *data, mDNSu32 len);
+    <span class="enscript-comment">// Verify the ctx using the key and compare it against signature/siglen
+</span>    mStatus (*Verify)(AlgContext *ctx, mDNSu8 *key, mDNSu32 keylen, mDNSu8 *signature, mDNSu32 siglen);
+    <span class="enscript-comment">// Encode the data and return the encoded data
+</span>    mDNSu8* (*Encode)(AlgContext *ctx);
+    <span class="enscript-comment">// Return the finalized data in data whose length is len (used by hash algorithms)
+</span>    mStatus (*Final)(AlgContext *ctx, <span class="enscript-type">void</span> *data, mDNSu32 len);
+} AlgFuncs;
+
+mDNSexport mStatus <span class="enscript-function-name">DigestAlgInit</span>(mDNSu8 digestType, AlgFuncs *func);
+mDNSexport mStatus <span class="enscript-function-name">CryptoAlgInit</span>(mDNSu8 algType, AlgFuncs *func);
+mDNSexport mStatus <span class="enscript-function-name">EncAlgInit</span>(mDNSu8 algType, AlgFuncs *func);
+
+
+<span class="enscript-type">extern</span> AlgContext *<span class="enscript-function-name">AlgCreate</span>(AlgType type, mDNSu8 alg);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">AlgDestroy</span>(AlgContext *ctx);
+<span class="enscript-type">extern</span> mDNSu32 <span class="enscript-function-name">AlgLength</span>(AlgContext *ctx);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">AlgAdd</span>(AlgContext *ctx, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *data, mDNSu32 len);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">AlgVerify</span>(AlgContext *ctx, mDNSu8 *key, mDNSu32 keylen, mDNSu8 *signature, mDNSu32 siglen);
+<span class="enscript-type">extern</span> mDNSu8* <span class="enscript-function-name">AlgEncode</span>(AlgContext *ctx);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">AlgFinal</span>(AlgContext *ctx, <span class="enscript-type">void</span> *data, mDNSu32 len);
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">__CRYPTO_ALG_H</span>
+</pre>
+<hr />
+</body></html>

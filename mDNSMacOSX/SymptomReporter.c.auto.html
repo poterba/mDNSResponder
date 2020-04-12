@@ -1,0 +1,202 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>SymptomReporter.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">SymptomReporter.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="SymptomReporter.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2015-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;SymptomReporter.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;dlfcn.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stddef.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdint.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;AvailabilityMacros.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;SymptomReporter/SymptomReporter.h&gt;</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">SYMPTOM_REPORTER_mDNSResponder_NUMERIC_ID</span>  101
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">SYMPTOM_REPORTER_mDNSResponder_TEXT_ID</span>     <span class="enscript-string">&quot;com.apple.mDNSResponder&quot;</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">SYMPTOM_DNS_NO_REPLIES</span>          0x00065001
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">SYMPTOM_DNS_RESUMED_RESPONDING</span>  0x00065002
+
+mDNSu32 NumUnreachableDNSServers;
+
+<span class="enscript-type">static</span> symptom_framework_t symptomReporter = mDNSNULL;
+<span class="enscript-type">static</span> <span class="enscript-function-name">symptom_framework_t</span> (*symptom_framework_init_f)(symptom_ident_t id, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *originator_string) = mDNSNULL;
+<span class="enscript-type">static</span> <span class="enscript-function-name">symptom_t</span> (*symptom_new_f)(symptom_framework_t framework, symptom_ident_t id) = mDNSNULL;
+<span class="enscript-type">static</span> <span class="enscript-function-name">int</span> (*symptom_set_additional_qualifier_f)(symptom_t symptom, uint32_t qualifier_type, size_t qualifier_len, <span class="enscript-type">void</span> *qualifier_data) = mDNSNULL;
+<span class="enscript-type">static</span> <span class="enscript-function-name">int</span> (*symptom_send_f)(symptom_t symptom) = mDNSNULL;
+
+mDNSlocal mStatus <span class="enscript-function-name">SymptomReporterInitCheck</span>(<span class="enscript-type">void</span>)
+{
+    mStatus err;
+    <span class="enscript-type">static</span> mDNSBool triedInit = mDNSfalse;
+    <span class="enscript-type">static</span> <span class="enscript-type">void</span> *symptomReporterLib = mDNSNULL;
+    <span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">char</span> path[] = <span class="enscript-string">&quot;/System/Library/PrivateFrameworks/SymptomReporter.framework/SymptomReporter&quot;</span>;
+
+    <span class="enscript-keyword">if</span> (!triedInit)
+    {
+        triedInit = mDNStrue;
+
+        symptomReporterLib = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
+        <span class="enscript-keyword">if</span> (!symptomReporterLib)
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+        symptom_framework_init_f = dlsym(symptomReporterLib, <span class="enscript-string">&quot;symptom_framework_init&quot;</span>);
+        <span class="enscript-keyword">if</span> (!symptom_framework_init_f)
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+        symptom_new_f = dlsym(symptomReporterLib, <span class="enscript-string">&quot;symptom_new&quot;</span>);
+        <span class="enscript-keyword">if</span> (!symptom_new_f)
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+        symptom_set_additional_qualifier_f = dlsym(symptomReporterLib, <span class="enscript-string">&quot;symptom_set_additional_qualifier&quot;</span>);
+        <span class="enscript-keyword">if</span> (!symptom_set_additional_qualifier_f)
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+        symptom_send_f = dlsym(symptomReporterLib, <span class="enscript-string">&quot;symptom_send&quot;</span>);
+        <span class="enscript-keyword">if</span> (!symptom_send_f)
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+        symptomReporter = symptom_framework_init_f(SYMPTOM_REPORTER_mDNSResponder_NUMERIC_ID, SYMPTOM_REPORTER_mDNSResponder_TEXT_ID);
+    }
+
+<span class="enscript-reference">exit</span>:
+    err = symptomReporter ? mStatus_NoError : mStatus_NotInitializedErr;
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">SymptomReporterReportDNSReachability</span>(<span class="enscript-type">const</span> mDNSAddr *addr, mDNSBool isReachable)
+{
+    mStatus err;
+    symptom_t symptom;
+    <span class="enscript-type">struct</span> sockaddr_storage sockAddr;
+    size_t sockAddrSize;
+
+    LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_INFO,
+        <span class="enscript-string">&quot;SymptomReporterReportDNSReachability: DNS server &quot;</span> PRI_IP_ADDR <span class="enscript-string">&quot; is &quot;</span> PUB_S <span class="enscript-string">&quot;reachable&quot;</span>, addr, isReachable ? <span class="enscript-string">&quot;&quot;</span> : <span class="enscript-string">&quot;un&quot;</span>);
+
+    <span class="enscript-keyword">if</span> (addr-&gt;type == mDNSAddrType_IPv4)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in *sin = (<span class="enscript-type">struct</span> sockaddr_in *)&amp;sockAddr;
+        sockAddrSize = <span class="enscript-keyword">sizeof</span>(*sin);
+        mDNSPlatformMemZero(sin, sockAddrSize);
+        sin-&gt;sin_len = sockAddrSize;
+        sin-&gt;sin_family = AF_INET;
+        sin-&gt;sin_addr.s_addr = addr-&gt;ip.v4.NotAnInteger;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (addr-&gt;type == mDNSAddrType_IPv6)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in6* sin6 = (<span class="enscript-type">struct</span> sockaddr_in6*)&amp;sockAddr;
+        sockAddrSize = <span class="enscript-keyword">sizeof</span>(*sin6);
+        mDNSPlatformMemZero(sin6, sockAddrSize);
+        sin6-&gt;sin6_len = sockAddrSize;
+        sin6-&gt;sin6_family = AF_INET6;
+        sin6-&gt;sin6_addr = *(<span class="enscript-type">struct</span> in6_addr *)&amp;addr-&gt;ip.v6;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_ERROR,
+            <span class="enscript-string">&quot;SymptomReporterReportDNSReachability: addr is not an IPv4 or IPv6 address!&quot;</span>);
+        err = mStatus_BadParamErr;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    symptom = symptom_new_f(symptomReporter, isReachable ? SYMPTOM_DNS_RESUMED_RESPONDING : SYMPTOM_DNS_NO_REPLIES);
+    symptom_set_additional_qualifier_f(symptom, 1, sockAddrSize, (<span class="enscript-type">void</span> *)&amp;sockAddr);
+    symptom_send_f(symptom);
+    err = mStatus_NoError;
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">SymptomReporterDNSServerReachable</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> mDNSAddr *addr)
+{
+    mStatus err;
+    DNSServer *s;
+    mDNSBool found = mDNSfalse;
+
+    err = SymptomReporterInitCheck();
+    <span class="enscript-keyword">if</span> (err != mStatus_NoError)
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+    <span class="enscript-keyword">for</span> (s = m-&gt;DNSServers; s; s = s-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (s-&gt;flags &amp; DNSServerFlag_Delete)
+            <span class="enscript-keyword">continue</span>;
+        <span class="enscript-keyword">if</span> ((s-&gt;flags &amp; DNSServerFlag_Unreachable) &amp;&amp; mDNSSameAddress(addr, &amp;s-&gt;addr))
+        {
+            s-&gt;flags &amp;= ~DNSServerFlag_Unreachable;
+            NumUnreachableDNSServers--;
+            found = mDNStrue;
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (!found)
+    {
+        err = mStatus_NoSuchNameErr;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    err = SymptomReporterReportDNSReachability(addr, mDNStrue);
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">SymptomReporterDNSServerUnreachable</span>(DNSServer *s)
+{
+    mStatus err;
+
+    err = SymptomReporterInitCheck();
+    <span class="enscript-keyword">if</span> (err != mStatus_NoError)
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+    <span class="enscript-keyword">if</span> ((s-&gt;flags &amp; DNSServerFlag_Delete) || (s-&gt;flags &amp; DNSServerFlag_Unreachable))
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+    s-&gt;flags |= DNSServerFlag_Unreachable;
+    NumUnreachableDNSServers++;
+
+    err = SymptomReporterReportDNSReachability(&amp;s-&gt;addr, mDNSfalse);
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">return</span> err;
+}
+</pre>
+<hr />
+</body></html>

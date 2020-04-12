@@ -1,0 +1,789 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dso.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dso.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dso.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* dso.c
+ *
+ * Copyright (c) 2018-2019 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Headers
+</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;signal.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdbool.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;assert.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netdb.h&gt;</span>           // For gethostbyname()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>      // For AF_INET, AF_INET6, etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/if.h&gt;</span>          // For IF_NAMESIZE
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>      // For INADDR_NONE
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/tcp.h&gt;</span>     // For SOL_TCP, TCP_NOTSENT_LOWAT
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>       // For inet_addr()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;fcntl.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dso.h&quot;</span>
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">STANDALONE</span>
+#<span class="enscript-reference">undef</span> <span class="enscript-variable-name">LogMsg</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">LogMsg</span>(fmt, ...) fprintf(stderr, fmt <span class="enscript-string">&quot;\n&quot;</span>, ##__VA_ARGS__)
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">mDNSRandom</span>(x) arc4random_uniform(x)
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">mDNSPlatformMemAllocateClear</span>(length) calloc(1, length)
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">STANDALONE</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Remaining work TODO
+</span>
+<span class="enscript-comment">// - Add keepalive/inactivity timeout support
+</span><span class="enscript-comment">// - Notice if it takes a long time to get a response when establishing a session, and treat that
+</span><span class="enscript-comment">//   as &quot;DSO not supported.&quot;
+</span><span class="enscript-comment">// - TLS support
+</span><span class="enscript-comment">// - Actually use Network Framework
+</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Globals
+</span>
+<span class="enscript-type">static</span> dso_state_t *dso_connections;
+<span class="enscript-type">static</span> dso_state_t *dso_connections_needing_cleanup; <span class="enscript-comment">// DSO connections that have been shut down but aren't yet freed.
+</span><span class="enscript-type">static</span> uint32_t dso_serial; <span class="enscript-comment">// Used to uniquely mark DSO objects, incremented once for each dso_state_t created.
+</span>
+dso_state_t *<span class="enscript-function-name">dso_find_by_serial</span>(uint32_t serial)
+{
+    dso_state_t *dsop;
+
+    <span class="enscript-keyword">for</span> (dsop = dso_connections; dsop; dsop = dsop-&gt;next) {
+        <span class="enscript-keyword">if</span> (dsop-&gt;serial == serial) {
+            <span class="enscript-keyword">return</span> dsop;
+        }
+    }
+    <span class="enscript-keyword">return</span> NULL;
+}
+
+<span class="enscript-comment">// This function is called either when an error has occurred requiring the a DSO connection be
+</span><span class="enscript-comment">// dropped, or else when a connection to a DSO endpoint has been cleanly closed and is ready to be
+</span><span class="enscript-comment">// dropped for that reason.
+</span>
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_drop</span>(dso_state_t *dso)
+{
+    dso_state_t *dsop;
+    
+    <span class="enscript-keyword">if</span> (dso_connections == dso) {
+        dso_connections = dso-&gt;next;
+    } <span class="enscript-keyword">else</span> {
+        <span class="enscript-keyword">for</span> (dsop = dso_connections; dsop != NULL &amp;&amp; dsop-&gt;next != dso; dsop = dsop-&gt;next) {
+            LogMsg(<span class="enscript-string">&quot;dsop = %p dsop-&gt;next = %p dso = %p&quot;</span>, dsop, dsop-&gt;next, dso);
+        }
+        <span class="enscript-keyword">if</span> (dsop) {
+            dsop-&gt;next = dso-&gt;next;
+        <span class="enscript-comment">// If we get to the end of the list without finding dso, it means that it's already
+</span>        <span class="enscript-comment">// been dropped.
+</span>        } <span class="enscript-keyword">else</span> {
+            <span class="enscript-keyword">return</span>;
+        }
+    }
+    dso-&gt;next = dso_connections_needing_cleanup;
+    dso_connections_needing_cleanup = dso;
+}
+
+int64_t <span class="enscript-function-name">dso_idle</span>(<span class="enscript-type">void</span> *context, int64_t now, int64_t next_timer_event)
+{
+    dso_state_t *dso, *dnext;
+    dso_activity_t *ap, *anext;
+    
+    <span class="enscript-keyword">for</span> (dso = dso_connections_needing_cleanup; dso; dso = dnext) {
+        dnext = dso-&gt;next;
+        <span class="enscript-comment">// Finalize and then free any activities.
+</span>        <span class="enscript-keyword">for</span> (ap = dso-&gt;activities; ap; ap = anext) {
+            anext = ap-&gt;next;
+            <span class="enscript-keyword">if</span> (ap-&gt;finalize) {
+                ap-&gt;finalize(ap);
+            }
+            free(ap);
+        }
+        <span class="enscript-keyword">if</span> (dso-&gt;transport != NULL &amp;&amp; dso-&gt;transport_finalize != NULL) {
+            dso-&gt;transport_finalize(dso-&gt;transport);
+            dso-&gt;transport = NULL;
+        }
+        <span class="enscript-keyword">if</span> (dso-&gt;cb) {
+            dso_disconnect_context_t disconnect_context;
+            memset(&amp;disconnect_context, 0, <span class="enscript-keyword">sizeof</span> disconnect_context);
+            dso-&gt;cb(dso-&gt;context, &amp;disconnect_context, dso, kDSOEventType_Disconnected);
+            dso-&gt;cb(dso-&gt;context, NULL, dso, kDSOEventType_Finalize);
+        } <span class="enscript-keyword">else</span> {
+            free(dso);
+        }
+    }
+    dso_connections_needing_cleanup = NULL;
+
+    <span class="enscript-comment">// Do keepalives.
+</span>    <span class="enscript-keyword">for</span> (dso = dso_connections; dso; dso = dso-&gt;next) {
+        <span class="enscript-keyword">if</span> (dso-&gt;inactivity_due == 0) {
+            <span class="enscript-keyword">if</span> (dso-&gt;inactivity_timeout != 0) {
+                dso-&gt;inactivity_due = now + dso-&gt;inactivity_timeout;
+                <span class="enscript-keyword">if</span> (next_timer_event - dso-&gt;keepalive_due &gt; 0) {
+                    next_timer_event = dso-&gt;keepalive_due;
+                }
+            }
+        } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (now - dso-&gt;inactivity_due &gt; 0 &amp;&amp; dso-&gt;cb != NULL) {
+            dso-&gt;cb(dso-&gt;context, 0, dso, kDSOEventType_Inactive);
+        }
+        <span class="enscript-keyword">if</span> (dso-&gt;keepalive_due != 0 &amp;&amp; dso-&gt;keepalive_due &lt; now &amp;&amp; dso-&gt;cb != NULL) {
+            dso_keepalive_context_t kc;
+            memset(&amp;kc, 0, <span class="enscript-keyword">sizeof</span> kc);
+            dso-&gt;cb(dso-&gt;context, &amp;kc, dso, kDSOEventType_Keepalive);
+            dso-&gt;keepalive_due = now + dso-&gt;keepalive_interval;
+            <span class="enscript-keyword">if</span> (next_timer_event - dso-&gt;keepalive_due &gt; 0) {
+                next_timer_event = dso-&gt;keepalive_due;
+            }
+        }
+    }
+    <span class="enscript-keyword">return</span> dso_transport_idle(context, now, next_timer_event);
+}
+
+<span class="enscript-comment">// Called when something happens that establishes a DSO session.
+</span><span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_session_established</span>(dso_state_t *dso)
+{
+    dso-&gt;has_session = true;
+    <span class="enscript-comment">// Set up inactivity timer and keepalive timer...
+</span>}
+
+<span class="enscript-comment">// Create a dso_state_t structure
+</span>dso_state_t *<span class="enscript-function-name">dso_create</span>(bool is_server, <span class="enscript-type">int</span> max_outstanding_queries, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *remote_name,
+                        dso_event_callback_t callback, <span class="enscript-type">void</span> *context, dso_transport_t *transport)
+{
+    dso_state_t *dso;
+    <span class="enscript-type">int</span> namelen = strlen(remote_name) + 1;
+    <span class="enscript-type">int</span> outsize = (<span class="enscript-keyword">sizeof</span> (dso_outstanding_query_state_t)) + max_outstanding_queries * <span class="enscript-keyword">sizeof</span> (dso_outstanding_query_t);
+
+    <span class="enscript-comment">// We allocate everything in a single hunk so that we can free it together as well.
+</span>    dso = (dso_state_t *) mDNSPlatformMemAllocateClear((<span class="enscript-keyword">sizeof</span> *dso) + outsize + namelen);
+    <span class="enscript-keyword">if</span> (dso == NULL) {
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    dso-&gt;outstanding_queries = (dso_outstanding_query_state_t *)(dso + 1);
+    dso-&gt;outstanding_queries-&gt;max_outstanding_queries = max_outstanding_queries;
+
+    dso-&gt;remote_name = ((<span class="enscript-type">char</span> *)dso-&gt;outstanding_queries) + outsize;
+    memcpy(dso-&gt;remote_name, remote_name, namelen);
+    dso-&gt;remote_name[namelen] = 0;
+
+    dso-&gt;cb = callback;
+    dso-&gt;context = context;
+    dso-&gt;transport = transport;
+    dso-&gt;is_server = is_server;
+    dso-&gt;serial = dso_serial++;
+
+    dso-&gt;next = dso_connections;
+    dso_connections = dso;
+<span class="enscript-reference">out</span>:
+    <span class="enscript-keyword">return</span> dso;
+}
+
+<span class="enscript-comment">// Start building a TLV in an outgoing dso message.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_start_tlv</span>(dso_message_t *state, <span class="enscript-type">int</span> opcode)
+{
+    <span class="enscript-comment">// Make sure there's room for the length and the TLV opcode.
+</span>    <span class="enscript-keyword">if</span> (state-&gt;cur + 4 &gt;= state-&gt;max) {
+        LogMsg(<span class="enscript-string">&quot;dso_start_tlv called when no space in output buffer!&quot;</span>);
+        assert(0);
+    }
+
+    <span class="enscript-comment">// We need to not yet have a TLV.
+</span>    <span class="enscript-keyword">if</span> (state-&gt;building_tlv) {
+        LogMsg(<span class="enscript-string">&quot;dso_start_tlv called while already building a TLV!&quot;</span>);
+        assert(0);
+    }
+    state-&gt;building_tlv = true;
+    state-&gt;tlv_len = 0;
+    
+    <span class="enscript-comment">// Set up the TLV header.
+</span>    state-&gt;buf[state-&gt;cur] = opcode &gt;&gt; 8;
+    state-&gt;buf[state-&gt;cur + 1] = opcode &amp; 255;
+    state-&gt;tlv_len_offset = state-&gt;cur + 2;
+    state-&gt;cur += 4;
+}
+
+<span class="enscript-comment">// Add some bytes to a TLV that's being built, but don't copy them--just remember the
+</span><span class="enscript-comment">// pointer to the buffer.   This is used so that when we have a message to forward, we
+</span><span class="enscript-comment">// don't copy it into the output buffer--we just use scatter/gather I/O.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_bytes_no_copy</span>(dso_message_t *state, <span class="enscript-type">const</span> uint8_t *bytes, size_t len)
+{
+    <span class="enscript-keyword">if</span> (!state-&gt;building_tlv) {
+        LogMsg(<span class="enscript-string">&quot;add_tlv_bytes called when not building a TLV!&quot;</span>);
+        assert(0);
+    }
+    <span class="enscript-keyword">if</span> (state-&gt;no_copy_bytes_len) {
+        LogMsg(<span class="enscript-string">&quot;add_tlv_bytesNoCopy called twice on the same DSO message.&quot;</span>);
+        assert(0);
+    }
+    state-&gt;no_copy_bytes_len = len;
+    state-&gt;no_copy_bytes = bytes;
+    state-&gt;no_copy_bytes_offset = state-&gt;cur;
+    state-&gt;tlv_len += len;
+}
+
+<span class="enscript-comment">// Add some bytes to a TLV that's being built.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_bytes</span>(dso_message_t *state, <span class="enscript-type">const</span> uint8_t *bytes, size_t len)
+{
+    <span class="enscript-keyword">if</span> (!state-&gt;building_tlv) {
+        LogMsg(<span class="enscript-string">&quot;add_tlv_bytes called when not building a TLV!&quot;</span>);
+        assert(0);
+    }
+    <span class="enscript-keyword">if</span> (state-&gt;cur + len &gt; state-&gt;max) {
+        LogMsg(<span class="enscript-string">&quot;add_tlv_bytes called with no room in output buffer.&quot;</span>);
+        assert(0);
+    }
+    memcpy(&amp;state-&gt;buf[state-&gt;cur], bytes, len);
+    state-&gt;cur += len;
+    state-&gt;tlv_len += len;
+}
+
+<span class="enscript-comment">// Add a single byte to a TLV that's being built.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_byte</span>(dso_message_t *state, uint8_t byte)
+{
+    <span class="enscript-keyword">if</span> (!state-&gt;building_tlv) {
+        LogMsg(<span class="enscript-string">&quot;dso_add_tlv_byte called when not building a TLV!&quot;</span>);
+        assert(0);
+    }
+    <span class="enscript-keyword">if</span> (state-&gt;cur + 1 &gt; state-&gt;max) {
+        LogMsg(<span class="enscript-string">&quot;dso_add_tlv_byte called with no room in output buffer.&quot;</span>);
+        assert(0);
+    }
+    state-&gt;buf[state-&gt;cur++] = byte;
+    state-&gt;tlv_len++;
+}
+
+<span class="enscript-comment">// Add an uint16_t to a TLV that's being built.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_u16</span>(dso_message_t *state, uint16_t u16)
+{
+    <span class="enscript-keyword">if</span> (!state-&gt;building_tlv) {
+        LogMsg(<span class="enscript-string">&quot;dso_add_tlv_u16 called when not building a TLV!&quot;</span>);
+        assert(0);
+    }
+    <span class="enscript-keyword">if</span> ((state-&gt;cur + <span class="enscript-keyword">sizeof</span> u16) &gt; state-&gt;max) {
+        LogMsg(<span class="enscript-string">&quot;dso_add_tlv_u16 called with no room in output buffer.&quot;</span>);
+        assert(0);
+    }
+    state-&gt;buf[state-&gt;cur++] = u16 &gt;&gt; 8;
+    state-&gt;buf[state-&gt;cur++] = u16 &amp; 255;
+    state-&gt;tlv_len += 2;
+}
+
+<span class="enscript-comment">// Add an uint32_t to a TLV that's being built.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_u32</span>(dso_message_t *state, uint32_t u32)
+{
+    <span class="enscript-keyword">if</span> (!state-&gt;building_tlv) {
+        LogMsg(<span class="enscript-string">&quot;dso_add_tlv_u32 called when not building a TLV!&quot;</span>);
+        assert(0);
+    }
+    <span class="enscript-keyword">if</span> ((state-&gt;cur + <span class="enscript-keyword">sizeof</span> u32) &gt; state-&gt;max) {
+        LogMsg(<span class="enscript-string">&quot;dso_add_tlv_u32 called with no room in output buffer.&quot;</span>);
+        assert(0);
+    }
+    state-&gt;buf[state-&gt;cur++] = u32 &gt;&gt; 24;
+    state-&gt;buf[state-&gt;cur++] = (u32 &gt;&gt; 16) &amp; 255;
+    state-&gt;buf[state-&gt;cur++] = (u32 &gt;&gt; 8) &amp; 255;
+    state-&gt;buf[state-&gt;cur++] = u32 &amp; 255;
+    state-&gt;tlv_len += 4;
+}
+
+<span class="enscript-comment">// Finish building a TLV.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_finish_tlv</span>(dso_message_t *state)
+{
+    <span class="enscript-keyword">if</span> (!state-&gt;building_tlv) {
+        LogMsg(<span class="enscript-string">&quot;dso_finish_tlv called when not building a TLV!&quot;</span>);
+        assert(0);
+    }
+
+    <span class="enscript-comment">// A TLV can't be longer than this.
+</span>    <span class="enscript-keyword">if</span> (state-&gt;tlv_len &gt; 65535) {
+        LogMsg(<span class="enscript-string">&quot;dso_finish_tlv was given more than 65535 bytes of TLV payload!&quot;</span>);
+        assert(0);
+    }
+    state-&gt;buf[state-&gt;tlv_len_offset] = state-&gt;tlv_len &gt;&gt; 8;
+    state-&gt;buf[state-&gt;tlv_len_offset + 1] = state-&gt;tlv_len &amp; 255;
+    state-&gt;tlv_len = 0;
+    state-&gt;building_tlv = false;
+}
+
+dso_activity_t *<span class="enscript-function-name">dso_find_activity</span>(dso_state_t *dso, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *name, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *activity_type, <span class="enscript-type">void</span> *context)
+{
+    dso_activity_t *activity;
+
+    <span class="enscript-comment">// If we haven't been given something to search for, don't search.
+</span>    <span class="enscript-keyword">if</span> (name == NULL &amp;&amp; context == NULL) {
+        <span class="enscript-keyword">return</span> NULL;
+    }
+        
+    <span class="enscript-comment">// An activity can be identified by name or context, but if name is present, that's what identifies it.
+</span>    <span class="enscript-keyword">for</span> (activity = dso-&gt;activities; activity; activity = activity-&gt;next) {
+        <span class="enscript-keyword">if</span> (activity-&gt;activity_type == activity_type &amp;&amp; ((activity-&gt;name == NULL || name == NULL|| !strcmp(activity-&gt;name, name)) &amp;&amp;
+                                                         (context == NULL &amp;&amp; context == activity-&gt;context))) {
+            <span class="enscript-keyword">return</span> activity;
+        }
+    }
+    <span class="enscript-keyword">return</span> NULL;
+}
+
+<span class="enscript-comment">// Make an activity structure to hang off the DSO.
+</span>dso_activity_t *<span class="enscript-function-name">dso_add_activity</span>(dso_state_t *dso, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *name, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *activity_type,
+                                 <span class="enscript-type">void</span> *context, <span class="enscript-type">void</span> (*finalize)(dso_activity_t *))
+{
+    size_t namelen = name ? strlen(name) + 1 : 0;
+    size_t len;
+    dso_activity_t *activity;
+    <span class="enscript-type">void</span> *ap;
+
+    <span class="enscript-comment">// Shouldn't add an activity that's already been added.
+</span>    activity = dso_find_activity(dso, name, activity_type, context);
+    <span class="enscript-keyword">if</span> (activity != NULL) {
+        LogMsg(<span class="enscript-string">&quot;dso_add_activity: activity %s%s%p added twice.&quot;</span>, name ? name : <span class="enscript-string">&quot;&quot;</span>, name ? <span class="enscript-string">&quot; &quot;</span> : <span class="enscript-string">&quot;&quot;</span>, context);
+        <span class="enscript-keyword">return</span> NULL;
+    }
+
+    len = namelen + <span class="enscript-keyword">sizeof</span> *activity;
+    ap = mDNSPlatformMemAllocateClear(len);
+    <span class="enscript-keyword">if</span> (ap == NULL) {
+        <span class="enscript-keyword">return</span> NULL;
+    }
+    activity = (dso_activity_t *)ap;
+    ap = (<span class="enscript-type">char</span> *)ap + <span class="enscript-keyword">sizeof</span> *activity;
+
+    <span class="enscript-comment">// Activities can be identified either by name or by context
+</span>    <span class="enscript-keyword">if</span> (namelen) {
+        activity-&gt;name = ap;
+        memcpy(activity-&gt;name, name, namelen);
+    } <span class="enscript-keyword">else</span> {
+        activity-&gt;name = NULL;
+    }
+    activity-&gt;context = context;
+
+    <span class="enscript-comment">// Activity type is expected to be a string constant; all activities of the same type must
+</span>    <span class="enscript-comment">// reference the same constant, not different constants with the same contents.
+</span>    activity-&gt;activity_type = activity_type;
+    activity-&gt;finalize = finalize;
+
+    <span class="enscript-comment">// Retain this activity on the list.
+</span>    activity-&gt;next = dso-&gt;activities;
+    dso-&gt;activities = activity;
+    <span class="enscript-keyword">return</span> activity;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_drop_activity</span>(dso_state_t *dso, dso_activity_t *activity)
+{
+    dso_activity_t **app = &amp;dso-&gt;activities;
+    bool matched = false;
+
+    <span class="enscript-comment">// Remove this activity from the list.
+</span>    <span class="enscript-keyword">while</span> (*app) {
+        <span class="enscript-keyword">if</span> (*app == activity) {
+            *app = activity-&gt;next;
+            matched = true;
+        } <span class="enscript-keyword">else</span> {
+            app = &amp;((*app)-&gt;next);
+        }
+    }
+
+    <span class="enscript-comment">// If an activity that's not on the DSO list is passed here, it's an internal consistency
+</span>    <span class="enscript-comment">// error that probably indicates something is corrupted.
+</span>    <span class="enscript-keyword">if</span> (!matched) {
+        LogMsg(<span class="enscript-string">&quot;dso_drop_activity: FATAL: activity that's not on the list has been dropped!&quot;</span>);
+        assert(0);
+    }
+
+    activity-&gt;finalize(activity);
+    free(activity);
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_ignore_response</span>(dso_state_t *dso, <span class="enscript-type">void</span> *context)
+{
+    dso_outstanding_query_state_t *midState = dso-&gt;outstanding_queries;
+    <span class="enscript-type">int</span> i;
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; midState-&gt;max_outstanding_queries; i++) {
+        <span class="enscript-comment">// The query is still be outstanding, and we want to know it when it comes back, but we forget the context,
+</span>        <span class="enscript-comment">// which presumably is a reference to something that's going away.
+</span>        <span class="enscript-keyword">if</span> (midState-&gt;queries[i].context == context) {
+            midState-&gt;queries[i].context = NULL;
+        }
+    }
+}
+
+bool <span class="enscript-function-name">dso_make_message</span>(dso_message_t *state, uint8_t *outbuf, size_t outbuf_size,
+                      dso_state_t *dso, bool unidirectional, <span class="enscript-type">void</span> *callback_state)
+{
+    DNSMessageHeader *msg_header;
+    dso_outstanding_query_state_t *midState = dso-&gt;outstanding_queries;
+
+    memset(state, 0, <span class="enscript-keyword">sizeof</span> *state);
+    state-&gt;buf = outbuf;
+    state-&gt;max = outbuf_size;
+
+    <span class="enscript-comment">// We need space for the TCP message length plus the DNS header.
+</span>    <span class="enscript-keyword">if</span> (state-&gt;max &lt; <span class="enscript-keyword">sizeof</span> *msg_header) {
+        LogMsg(<span class="enscript-string">&quot;dso_make_message: called without enough buffer space to store a DNS header!&quot;</span>);
+        assert(0);
+    }
+
+    <span class="enscript-comment">// This buffer should be 16-bit aligned.
+</span>    msg_header = (DNSMessageHeader *)state-&gt;buf;
+    
+    <span class="enscript-comment">// The DNS header for a DSO message is mostly zeroes
+</span>    memset(msg_header, 0, <span class="enscript-keyword">sizeof</span> *msg_header);
+    msg_header-&gt;flags.b[0] = kDNSFlag0_QR_Query | kDNSFlag0_OP_DSO;
+
+    <span class="enscript-comment">// Servers can't send DSO messages until there's a DSO session.
+</span>    <span class="enscript-keyword">if</span> (dso-&gt;is_server &amp;&amp; !dso-&gt;has_session) {
+        LogMsg(<span class="enscript-string">&quot;dso_make_message: FATAL: server attempting to make a DSO message with no session!&quot;</span>);
+        assert(0);
+    }
+
+    <span class="enscript-comment">// Response-requiring messages need to have a message ID.
+</span>    <span class="enscript-keyword">if</span> (!unidirectional) {
+        bool msg_id_ok = true;
+        uint16_t message_id;
+        <span class="enscript-type">int</span> looping = 0;
+        <span class="enscript-type">int</span> i, avail = -1;
+
+        <span class="enscript-comment">// If we don't have room for another outstanding message, the caller should try
+</span>        <span class="enscript-comment">// again later.
+</span>        <span class="enscript-keyword">if</span> (midState-&gt;outstanding_query_count == midState-&gt;max_outstanding_queries) {
+            <span class="enscript-keyword">return</span> false;
+        }
+        <span class="enscript-comment">// Generate a random message ID.   This doesn't really need to be cryptographically sound
+</span>        <span class="enscript-comment">// (right?) because we're encrypting the whole data stream in TLS.
+</span>        <span class="enscript-keyword">do</span> {
+            <span class="enscript-comment">// This would be a surprising fluke, but let's not get killed by it.
+</span>            <span class="enscript-keyword">if</span> (looping++ &gt; 1000) {
+                <span class="enscript-keyword">return</span> false;
+            }
+            message_id = mDNSRandom(65536);
+            msg_id_ok = true;
+            <span class="enscript-keyword">if</span> (message_id == 0) {
+                msg_id_ok = false;
+            } <span class="enscript-keyword">else</span> {
+                <span class="enscript-keyword">for</span> (i = 0; i &lt; midState-&gt;max_outstanding_queries; i++) {
+                    <span class="enscript-keyword">if</span> (midState-&gt;queries[i].id == 0 &amp;&amp; avail == -1) {
+                        avail = i;
+                    } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (midState-&gt;queries[i].id == message_id) {
+                        msg_id_ok = false;
+                    }
+                }
+            }
+        } <span class="enscript-keyword">while</span> (!msg_id_ok);
+        midState-&gt;queries[avail].id = message_id;
+        midState-&gt;queries[avail].context = callback_state;
+        midState-&gt;outstanding_query_count++;
+        msg_header-&gt;id.NotAnInteger = message_id;
+        state-&gt;outstanding_query_number = avail;
+    } <span class="enscript-keyword">else</span> {
+        <span class="enscript-comment">// Clients aren't allowed to send unidirectional messages until there's a session.
+</span>        <span class="enscript-keyword">if</span> (!dso-&gt;has_session) {
+            LogMsg(<span class="enscript-string">&quot;dso_make_message: FATAL: client making a DSO unidirectional message with no session!&quot;</span>);
+            assert(0);
+        }
+        state-&gt;outstanding_query_number = -1;
+    }
+
+    state-&gt;cur = <span class="enscript-keyword">sizeof</span> *msg_header;
+    <span class="enscript-keyword">return</span> true;
+}
+
+size_t <span class="enscript-function-name">dso_message_length</span>(dso_message_t *state)
+{
+    <span class="enscript-keyword">return</span> state-&gt;cur + state-&gt;no_copy_bytes_len;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_retry_delay</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header)
+{
+    dso_disconnect_context_t context;
+    <span class="enscript-keyword">if</span> (dso-&gt;cb) {
+        memset(&amp;context, 0, <span class="enscript-keyword">sizeof</span> context);
+        <span class="enscript-keyword">if</span> (dso-&gt;primary.length != 4) {
+            LogMsg(<span class="enscript-string">&quot;Invalid DSO Retry Delay length %d from %s&quot;</span>, dso-&gt;primary.length, dso-&gt;remote_name);
+            dso_send_formerr(dso, header);
+            <span class="enscript-keyword">return</span>;
+        }
+        memcpy(&amp;context, dso-&gt;primary.payload, dso-&gt;primary.length);
+        context.reconnect_delay = ntohl(context.reconnect_delay);
+        dso-&gt;cb(dso-&gt;context, &amp;context, dso, kDSOEventType_RetryDelay);
+    }
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_keepalive</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header)
+{
+    dso_keepalive_context_t context;
+    memset(&amp;context, 0, <span class="enscript-keyword">sizeof</span> context);
+    <span class="enscript-keyword">if</span> (dso-&gt;primary.length != 8) {
+        LogMsg(<span class="enscript-string">&quot;Invalid DSO Keepalive length %d from %s&quot;</span>, dso-&gt;primary.length, dso-&gt;remote_name);
+        dso_send_formerr(dso, header);
+        <span class="enscript-keyword">return</span>;
+    }
+    memcpy(&amp;context, dso-&gt;primary.payload, dso-&gt;primary.length);
+    context.inactivity_timeout = ntohl(context.inactivity_timeout);
+    context.keepalive_interval = ntohl(context.keepalive_interval);
+    <span class="enscript-keyword">if</span> (dso-&gt;is_server) {
+        <span class="enscript-keyword">if</span> (dso-&gt;cb) {
+            <span class="enscript-keyword">if</span> (dso-&gt;keepalive_interval &lt; context.keepalive_interval) {
+                context.keepalive_interval = dso-&gt;keepalive_interval;
+            }
+            <span class="enscript-keyword">if</span> (dso-&gt;inactivity_timeout &lt; context.inactivity_timeout) {
+                context.inactivity_timeout = dso-&gt;inactivity_timeout;
+            }
+            dso-&gt;cb(dso-&gt;context, &amp;context, dso, kDSOEventType_KeepaliveRcvd);
+        }
+    } <span class="enscript-keyword">else</span> {
+        <span class="enscript-keyword">if</span> (dso-&gt;keepalive_interval &gt; context.keepalive_interval) {
+            dso-&gt;keepalive_interval = context.keepalive_interval;
+        }
+        <span class="enscript-keyword">if</span> (dso-&gt;inactivity_timeout &gt; context.inactivity_timeout) {
+            dso-&gt;inactivity_timeout = context.inactivity_timeout;
+        }
+    }    
+}
+
+<span class="enscript-comment">// We received a DSO message; validate it, parse it and, if implemented, dispatch it.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_message_received</span>(dso_state_t *dso, <span class="enscript-type">const</span> uint8_t *message, size_t message_length)
+{
+    <span class="enscript-type">int</span> i;
+    size_t offset;
+    <span class="enscript-type">const</span> DNSMessageHeader *header = (<span class="enscript-type">const</span> DNSMessageHeader *)message;
+    <span class="enscript-type">int</span> response = (header-&gt;flags.b[0] &amp; kDNSFlag0_QR_Mask) == kDNSFlag0_QR_Response;
+    dso_query_receive_context_t qcontext;
+
+    <span class="enscript-keyword">if</span> (message_length &lt; 12) {
+        LogMsg(<span class="enscript-string">&quot;dso_message_received: response too short: %ld bytes&quot;</span>, (<span class="enscript-type">long</span>)message_length);
+        dso_drop(dso);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+
+    <span class="enscript-comment">// See if we have sent a message for which a response is expected.
+</span>    <span class="enscript-keyword">if</span> (response) {
+        bool expected = false;
+        
+        <span class="enscript-comment">// A zero ID on a response is not permitted.
+</span>        <span class="enscript-keyword">if</span> (header-&gt;id.NotAnInteger == 0) {
+            LogMsg(<span class="enscript-string">&quot;dso_message_received: response with id==0 received from %s&quot;</span>, dso-&gt;remote_name);
+            dso_drop(dso);
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+        }
+        <span class="enscript-comment">// It's possible for a DSO response to contain no TLVs, but if that's the case, the length
+</span>        <span class="enscript-comment">// should always be twelve.
+</span>        <span class="enscript-keyword">if</span> (message_length &lt; 16 &amp;&amp; message_length != 12) {
+            LogMsg(<span class="enscript-string">&quot;dso_message_received: response with bogus length==%ld received from %s&quot;</span>, (<span class="enscript-type">long</span>)message_length, dso-&gt;remote_name);
+            dso_drop(dso);
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+        }
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; dso-&gt;outstanding_queries-&gt;max_outstanding_queries; i++) {
+            <span class="enscript-keyword">if</span> (dso-&gt;outstanding_queries-&gt;queries[i].id == header-&gt;id.NotAnInteger) {
+                qcontext.query_context = dso-&gt;outstanding_queries-&gt;queries[i].context;
+                qcontext.rcode = header-&gt;flags.b[1] &amp; kDNSFlag1_RC_Mask;
+                
+                <span class="enscript-comment">// If we are a client, and we just got an acknowledgment, a session has been established.
+</span>                <span class="enscript-keyword">if</span> (!dso-&gt;is_server &amp;&amp; !dso-&gt;has_session &amp;&amp; (header-&gt;flags.b[1] &amp; kDNSFlag1_RC_Mask) == kDNSFlag1_RC_NoErr) {
+                    dso_session_established(dso);
+                }
+                dso-&gt;outstanding_queries-&gt;queries[i].id = 0;
+                dso-&gt;outstanding_queries-&gt;queries[i].context = 0;
+                dso-&gt;outstanding_queries-&gt;outstanding_query_count--;
+                <span class="enscript-keyword">if</span> (dso-&gt;outstanding_queries-&gt;outstanding_query_count &lt; 0) {
+                    LogMsg(<span class="enscript-string">&quot;dso_message_receive: programming error: outstanding_query_count went negative.&quot;</span>);
+                    assert(0);
+                }
+                <span class="enscript-comment">// If there were no TLVs, we don't need to parse them.
+</span>                expected = true;
+                <span class="enscript-keyword">if</span> (message_length == 12) {
+                    dso-&gt;primary.opcode = 0;
+                    dso-&gt;primary.length = 0;
+                    dso-&gt;num_additls = 0;
+                }
+                <span class="enscript-keyword">break</span>;
+            }
+        }
+
+        <span class="enscript-comment">// This is fatal because we've received a response to a message we didn't send, so
+</span>        <span class="enscript-comment">// it's not just that we don't understand what was sent.
+</span>        <span class="enscript-keyword">if</span> (!expected) {
+            LogMsg(<span class="enscript-string">&quot;dso_message_received: fatal: %s sent %ld byte message, QR=1&quot;</span>, dso-&gt;remote_name, (<span class="enscript-type">long</span>)message_length);
+            dso_drop(dso);
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+        }
+    }
+
+    <span class="enscript-comment">// Make sure that the DNS header is okay (QDCOUNT, ANCOUNT, NSCOUNT and ARCOUNT are all zero)
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; 4; i++) {
+        <span class="enscript-keyword">if</span> (message[4 + i * 2] != 0 || message[4 + i * 2 + 1] != 0) {
+            LogMsg(<span class="enscript-string">&quot;dso_message_received: fatal: %s sent %ld byte DSO message, %s is nonzero&quot;</span>,
+                   dso-&gt;remote_name, (<span class="enscript-type">long</span>)message_length,
+                   (i == 0 ? <span class="enscript-string">&quot;QDCOUNT&quot;</span> : (i == 1 ? <span class="enscript-string">&quot;ANCOUNT&quot;</span> : ( i == 2 ? <span class="enscript-string">&quot;NSCOUNT&quot;</span> : <span class="enscript-string">&quot;ARCOUNT&quot;</span>))));
+            dso_drop(dso);
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+        }
+    }
+
+    <span class="enscript-comment">// Check that there is space for there to be a primary TLV
+</span>    <span class="enscript-keyword">if</span> (message_length &lt; 16 &amp;&amp; message_length != 12) {
+        LogMsg(<span class="enscript-string">&quot;dso_message_received: fatal: %s sent short (%ld byte) DSO message&quot;</span>,
+               dso-&gt;remote_name, (<span class="enscript-type">long</span>)message_length);
+
+        <span class="enscript-comment">// Short messages are a fatal error. XXX check DSO document
+</span>        dso_drop(dso);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    
+    <span class="enscript-comment">// If we are a server, and we don't have a session, and this is a message, then we have now established a session.
+</span>    <span class="enscript-keyword">if</span> (!dso-&gt;has_session &amp;&amp; dso-&gt;is_server &amp;&amp; !response) {
+        dso_session_established(dso);
+    }
+
+    <span class="enscript-comment">// If a DSO session isn't yet established, make sure the message is a request (if is_server) or a
+</span>    <span class="enscript-comment">// response (if not).
+</span>    <span class="enscript-keyword">if</span> (!dso-&gt;has_session &amp;&amp; ((dso-&gt;is_server &amp;&amp; response) || (!dso-&gt;is_server &amp;&amp; !response))) {
+        LogMsg(<span class="enscript-string">&quot;dso_message_received: received a %s with no established session from %s&quot;</span>,
+               response ? <span class="enscript-string">&quot;response&quot;</span> : <span class="enscript-string">&quot;request&quot;</span>, dso-&gt;remote_name);
+        dso_drop(dso);
+    }
+
+    <span class="enscript-comment">// Get the primary TLV and count how many TLVs there are in total
+</span>    offset = 12;
+    <span class="enscript-keyword">while</span> (offset &lt; message_length) {
+        <span class="enscript-comment">// Get the TLV opcode
+</span>        <span class="enscript-type">int</span> opcode = (((<span class="enscript-type">unsigned</span>)message[offset]) &lt;&lt; 8) + message[offset + 1];
+        <span class="enscript-comment">// And the length
+</span>        size_t length = (((<span class="enscript-type">unsigned</span>)message[offset + 2]) &lt;&lt; 8) + message[offset + 3];
+
+        <span class="enscript-comment">// Is there room for the contents of this TLV?
+</span>        <span class="enscript-keyword">if</span> (length + offset &gt; message_length) {
+            LogMsg(<span class="enscript-string">&quot;dso_message_received: fatal: %s: TLV (%d %ld) extends past end (%ld)&quot;</span>,
+                   dso-&gt;remote_name, opcode, (<span class="enscript-type">long</span>)length, (<span class="enscript-type">long</span>)message_length);
+
+            <span class="enscript-comment">// Short messages are a fatal error. XXX check DSO document
+</span>            dso_drop(dso);
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+        }
+
+        <span class="enscript-comment">// Is this the primary TLV?
+</span>        <span class="enscript-keyword">if</span> (offset == 12) {
+            dso-&gt;primary.opcode = opcode;
+            dso-&gt;primary.length = length;
+            dso-&gt;primary.payload = &amp;message[offset + 4];
+            dso-&gt;num_additls = 0;
+        } <span class="enscript-keyword">else</span> {
+            <span class="enscript-keyword">if</span> (dso-&gt;num_additls &lt; MAX_ADDITLS) {
+                dso-&gt;additl[dso-&gt;num_additls].opcode = opcode;
+                dso-&gt;additl[dso-&gt;num_additls].length = length;
+                dso-&gt;additl[dso-&gt;num_additls].payload = &amp;message[offset + 4];
+                dso-&gt;num_additls++;
+            } <span class="enscript-keyword">else</span> {
+                <span class="enscript-comment">// XXX MAX_ADDITLS should be enough for all possible additional TLVs, so this
+</span>                <span class="enscript-comment">// XXX should never happen; if it does, maybe it's a fatal error.
+</span>                LogMsg(<span class="enscript-string">&quot;dso_message_received: %s: ignoring additional TLV (%d %ld) in excess of %d&quot;</span>,
+                       dso-&gt;remote_name, opcode, (<span class="enscript-type">long</span>)length, MAX_ADDITLS);
+            }
+        }
+        offset += 4 + length;
+    }
+
+    <span class="enscript-comment">// Call the callback with the message or response
+</span>    <span class="enscript-keyword">if</span> (dso-&gt;cb) {
+        <span class="enscript-keyword">if</span> (message_length != 12 &amp;&amp; dso-&gt;primary.opcode == kDSOType_Keepalive) {
+            dso_keepalive(dso, header);
+        } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (message_length != 12 &amp;&amp; dso-&gt;primary.opcode == kDSOType_RetryDelay) {
+            dso_retry_delay(dso, header);
+        } <span class="enscript-keyword">else</span> {
+            <span class="enscript-keyword">if</span> (response) {
+                dso-&gt;cb(dso-&gt;context, &amp;qcontext, dso, kDSOEventType_DSOResponse);
+            } <span class="enscript-keyword">else</span> {
+                dso-&gt;cb(dso-&gt;context, header, dso, kDSOEventType_DSOMessage);
+            }
+        }
+    }
+<span class="enscript-reference">out</span>:
+    ;
+}
+
+<span class="enscript-comment">// This code is currently assuming that we won't get a DNS message, but that's not true.   Fix.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dns_message_received</span>(dso_state_t *dso, <span class="enscript-type">const</span> uint8_t *message, size_t message_length)
+{
+    DNSMessageHeader *header;
+    <span class="enscript-type">int</span> opcode, response;
+
+    <span class="enscript-comment">// We can safely assume that the header is 16-bit aligned.
+</span>    header = (DNSMessageHeader *)message;
+    opcode = header-&gt;flags.b[0] &amp; kDNSFlag0_OP_Mask;
+    response = (header-&gt;flags.b[0] &amp; kDNSFlag0_QR_Mask) == kDNSFlag0_QR_Response;
+
+    <span class="enscript-comment">// Validate the length of the DNS message.
+</span>    <span class="enscript-keyword">if</span> (message_length &lt; 12) {
+        LogMsg(<span class="enscript-string">&quot;dns_message_received: fatal: %s sent short (%ld byte) message&quot;</span>,
+               dso-&gt;remote_name, (<span class="enscript-type">long</span>)message_length);
+
+        <span class="enscript-comment">// Short messages are a fatal error.
+</span>        dso_drop(dso);
+        <span class="enscript-keyword">return</span>;
+    }
+    
+    <span class="enscript-comment">// This is not correct for the general case.
+</span>    <span class="enscript-keyword">if</span> (opcode != kDNSFlag0_OP_DSO) {
+        LogMsg(<span class="enscript-string">&quot;dns_message_received: %s sent %ld byte %s, QTYPE=%d&quot;</span>,
+               dso-&gt;remote_name, (<span class="enscript-type">long</span>)message_length, (response ? <span class="enscript-string">&quot;response&quot;</span> : <span class="enscript-string">&quot;request&quot;</span>), opcode);
+        <span class="enscript-keyword">if</span> (dso-&gt;cb) {
+            dso-&gt;cb(dso-&gt;context, header, dso,
+                    response ? kDSOEventType_DNSMessage : kDSOEventType_DNSResponse);
+        }
+    } <span class="enscript-keyword">else</span> {
+        dso_message_received(dso, message, message_length);
+    }
+}
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

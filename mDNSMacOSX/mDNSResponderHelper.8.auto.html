@@ -1,0 +1,79 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>mDNSResponderHelper.8</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">mDNSResponderHelper.8&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="mDNSResponderHelper.8">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+.\&quot; -*- tab-width: 4 -*-
+.\&quot; 
+.\&quot; Copyright (c) 2007-2009 Apple Inc. All Rights Reserved.
+.\&quot; 
+.\&quot; Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+.\&quot; you may not use this file except in compliance with the License.
+.\&quot; You may obtain a copy of the License at
+.\&quot; 
+.\&quot;     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+.\&quot; 
+.\&quot; Unless required by applicable law or agreed to in writing, software
+.\&quot; distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+.\&quot; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+.\&quot; See the License for the specific language governing permissions and
+.\&quot; limitations under the License.
+.\&quot;
+.Dd August 2007             \&quot; Date
+.Dt mDNSResponderHelper 8   \&quot; Document Title
+.Os Darwin                  \&quot; Operating System
+.\&quot;
+.Sh NAME
+.Nm mDNSResponderHelper
+.Nd mDNS privilege separation helper  \&quot; Name Description for whatis database
+.\&quot; 
+.Sh SYNOPSIS
+.Nm
+.\&quot;
+.Sh DESCRIPTION
+.Nm
+is an executable invoked by
+.Nm launchd
+to provide privilege separation
+to the
+.Nm mDNSResponder
+daemon.
+.Pp
+.Nm
+has no user-specifiable command-line arguments, and users should not run
+.Nm
+manually.
+.Sh FILES
+.Pa /usr/sbin/mDNSResponderHelper \&quot; Pathname
+.\&quot;
+.Sh SEE ALSO
+.Xr mDNSResponder 8
+.\&quot;
+.Sh BUGS
+.Nm
+bugs are tracked in Apple Radar component &quot;mDNSResponder&quot;.
+.\&quot;
+.Sh HISTORY
+The
+.Nm
+first appeared in Mac OS X 10.5 (Leopard).
+</pre>
+<hr />
+</body></html>

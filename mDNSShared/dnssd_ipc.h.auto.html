@@ -1,0 +1,245 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnssd_ipc.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnssd_ipc.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnssd_ipc.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2003-2015 Apple Inc. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1.  Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ * 2.  Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ * 3.  Neither the name of Apple Inc. (&quot;Apple&quot;) nor the names of its
+ *     contributors may be used to endorse or promote products derived from this
+ *     software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS &quot;AS IS&quot; AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">DNSSD_IPC_H</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_IPC_H</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd.h&quot;</span>
+
+<span class="enscript-comment">//
+</span><span class="enscript-comment">// Common cross platform services
+</span><span class="enscript-comment">//
+</span>#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">WIN32</span>)
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;winsock2.h&gt;</span>
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_InvalidSocket</span>  INVALID_SOCKET
+#   <span class="enscript-reference">define</span> <span class="enscript-function-name">dnssd_SocketValid</span>(s) ((s) != INVALID_SOCKET)
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_EWOULDBLOCK</span>    WSAEWOULDBLOCK
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_EINTR</span>          WSAEINTR
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_ECONNRESET</span>     WSAECONNRESET
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_socklen_t</span>      int
+#   <span class="enscript-reference">define</span> <span class="enscript-function-name">dnssd_close</span>(sock)    closesocket(sock)
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_errno</span>          WSAGetLastError()
+#   <span class="enscript-reference">define</span> <span class="enscript-function-name">dnssd_strerror</span>(X)    win32_strerror(X)
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">ssize_t</span>              int
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">getpid</span>               _getpid
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">unlink</span>               _unlink
+<span class="enscript-type">extern</span> <span class="enscript-type">char</span> *<span class="enscript-function-name">win32_strerror</span>(<span class="enscript-type">int</span> inErrorCode);
+#<span class="enscript-reference">else</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/types.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/un.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/stat.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>
+#   <span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_InvalidSocket</span>  -1
+#   <span class="enscript-reference">define</span> <span class="enscript-function-name">dnssd_SocketValid</span>(s) ((s) &gt;= 0)
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_EWOULDBLOCK</span>    EWOULDBLOCK
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_EINTR</span>          EINTR
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_ECONNRESET</span>     ECONNRESET
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_EPIPE</span>          EPIPE
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_socklen_t</span>      unsigned int
+#   <span class="enscript-reference">define</span> <span class="enscript-function-name">dnssd_close</span>(sock)    close(sock)
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_errno</span>          errno
+#   <span class="enscript-reference">define</span> <span class="enscript-function-name">dnssd_strerror</span>(X)    strerror(X)
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">USE_TCP_LOOPBACK</span>)
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">AF_DNSSD</span>             AF_INET
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">MDNS_TCP_SERVERADDR</span>  <span class="enscript-string">&quot;127.0.0.1&quot;</span>
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">MDNS_TCP_SERVERPORT</span>  5354
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">LISTENQ</span>              5
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_sockaddr_t</span>     struct sockaddr_in
+#<span class="enscript-reference">else</span>
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">AF_DNSSD</span>             AF_LOCAL
+#   <span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">MDNS_UDS_SERVERPATH</span>
+#       <span class="enscript-reference">define</span> <span class="enscript-variable-name">MDNS_UDS_SERVERPATH</span>  <span class="enscript-string">&quot;/var/run/mDNSResponder&quot;</span>
+#   <span class="enscript-reference">endif</span>
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">MDNS_UDS_SERVERPATH_ENVVAR</span> <span class="enscript-string">&quot;DNSSD_UDS_PATH&quot;</span>
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">LISTENQ</span>              100
+<span class="enscript-comment">// longest legal control path length
+</span>#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_CTLPATH</span>          (sizeof(((struct sockaddr_un*)0)-&gt;sun_path))
+#   <span class="enscript-reference">define</span> <span class="enscript-variable-name">dnssd_sockaddr_t</span>     struct sockaddr_un
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Compatibility workaround
+</span>#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">AF_LOCAL</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">AF_LOCAL</span>    AF_UNIX
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// General UDS constants
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">TXT_RECORD_INDEX</span> ((uint32_t)(-1))   // record index for default text record
+
+<span class="enscript-comment">// IPC data encoding constants and types
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">VERSION</span> 1
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">IPC_FLAGS_NOREPLY</span> 1 // set flag if no asynchronous replies are to be sent to client
+
+<span class="enscript-comment">// Structure packing macro. If we're not using GNUC, it's not fatal. Most compilers naturally pack the on-the-wire
+</span><span class="enscript-comment">// structures correctly anyway, so a plain &quot;struct&quot; is usually fine. In the event that structures are not packed
+</span><span class="enscript-comment">// correctly, our compile-time assertion checks will catch it and prevent inadvertent generation of non-working code.
+</span>#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">packedstruct</span>
+ #<span class="enscript-keyword">if</span> ((__GNUC__ &gt; 2) || ((__GNUC__ == 2) &amp;&amp; (__GNUC_MINOR__ &gt;= 9)))
+  #define packedstruct <span class="enscript-type">struct</span> __attribute__((__packed__))
+  #define packedunion  <span class="enscript-type">union</span>  __attribute__((__packed__))
+ #<span class="enscript-keyword">else</span>
+  #define packedstruct <span class="enscript-type">struct</span>
+  #define packedunion  <span class="enscript-type">union</span>
+ #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span>
+{
+    request_op_none = 0,    <span class="enscript-comment">// No request yet received on this connection
+</span>    connection_request = 1, <span class="enscript-comment">// connected socket via DNSServiceConnect()
+</span>    reg_record_request,     <span class="enscript-comment">// reg/remove record only valid for connected sockets
+</span>    remove_record_request,
+    enumeration_request,
+    reg_service_request,
+    browse_request,
+    resolve_request,
+    query_request,
+    reconfirm_record_request,
+    add_record_request,
+    update_record_request,
+    setdomain_request,      <span class="enscript-comment">// Up to here is in Tiger and B4W 1.0.3
+</span>    getproperty_request,    <span class="enscript-comment">// New in B4W 1.0.4
+</span>    port_mapping_request,   <span class="enscript-comment">// New in Leopard and B4W 2.0
+</span>    addrinfo_request,
+    send_bpf,               <span class="enscript-comment">// New in SL
+</span>    getpid_request,
+    release_request,
+    connection_delegate_request,
+
+    cancel_request = 63
+} request_op_t;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span>
+{
+    enumeration_reply_op = 64,
+    reg_service_reply_op,
+    browse_reply_op,
+    resolve_reply_op,
+    query_reply_op,
+    reg_record_reply_op,    <span class="enscript-comment">// Up to here is in Tiger and B4W 1.0.3
+</span>    getproperty_reply_op,   <span class="enscript-comment">// New in B4W 1.0.4
+</span>    port_mapping_reply_op,  <span class="enscript-comment">// New in Leopard and B4W 2.0
+</span>    addrinfo_reply_op
+} reply_op_t;
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN64</span>)
+#   <span class="enscript-reference">pragma</span> <span class="enscript-variable-name">pack</span>(<span class="enscript-variable-name">push</span>,4)
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Define context object big enough to hold a 64-bit pointer,
+</span><span class="enscript-comment">// to accomodate 64-bit clients communicating with 32-bit daemon.
+</span><span class="enscript-comment">// There's no reason for the daemon to ever be a 64-bit process, but its clients might be
+</span><span class="enscript-type">typedef</span> packedunion
+{
+    <span class="enscript-type">void</span> *context;
+    uint32_t u32[2];
+} client_context_t;
+
+<span class="enscript-type">typedef</span> packedstruct
+{
+    uint32_t version;
+    uint32_t datalen;
+    uint32_t ipc_flags;
+    uint32_t op;        <span class="enscript-comment">// request_op_t or reply_op_t
+</span>    client_context_t client_context; <span class="enscript-comment">// context passed from client, returned by server in corresponding reply
+</span>    uint32_t reg_index;            <span class="enscript-comment">// identifier for a record registered via DNSServiceRegisterRecord() on a
+</span>    <span class="enscript-comment">// socket connected by DNSServiceCreateConnection().  Must be unique in the scope of the connection, such that and
+</span>    <span class="enscript-comment">// index/socket pair uniquely identifies a record.  (Used to select records for removal by DNSServiceRemoveRecord())
+</span>} ipc_msg_hdr;
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">_WIN64</span>)
+#   <span class="enscript-reference">pragma</span> <span class="enscript-variable-name">pack</span>(<span class="enscript-variable-name">pop</span>)
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// routines to write to and extract data from message buffers.
+</span><span class="enscript-comment">// caller responsible for bounds checking.
+</span><span class="enscript-comment">// ptr is the address of the pointer to the start of the field.
+</span><span class="enscript-comment">// it is advanced to point to the next field, or the end of the message
+</span>
+<span class="enscript-type">void</span> <span class="enscript-function-name">put_uint32</span>(<span class="enscript-type">const</span> uint32_t l, <span class="enscript-type">char</span> **ptr);
+uint32_t <span class="enscript-function-name">get_uint32</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> **ptr, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *end);
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">put_uint16</span>(uint16_t s, <span class="enscript-type">char</span> **ptr);
+uint16_t <span class="enscript-function-name">get_uint16</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> **ptr, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *end);
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">put_flags</span> put_uint32
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">get_flags</span> get_uint32
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">put_error_code</span> put_uint32
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">get_error_code</span> get_uint32
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">put_string</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *str, <span class="enscript-type">char</span> **ptr);
+<span class="enscript-type">int</span> <span class="enscript-function-name">get_string</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> **ptr, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> end, <span class="enscript-type">char</span> *buffer, <span class="enscript-type">int</span> buflen);
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">put_rdata</span>(<span class="enscript-type">const</span> <span class="enscript-type">int</span> rdlen, <span class="enscript-type">const</span> <span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> *rdata, <span class="enscript-type">char</span> **ptr);
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-function-name">get_rdata</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> **ptr, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *end, <span class="enscript-type">int</span> rdlen);  <span class="enscript-comment">// return value is rdata pointed to by *ptr -
+</span><span class="enscript-comment">// rdata is not copied from buffer.
+</span>
+<span class="enscript-type">void</span> <span class="enscript-function-name">ConvertHeaderBytes</span>(ipc_msg_hdr *hdr);
+
+<span class="enscript-type">struct</span> CompileTimeAssertionChecks_dnssd_ipc
+{
+    <span class="enscript-comment">// Check that the compiler generated our on-the-wire packet format structure definitions
+</span>    <span class="enscript-comment">// properly packed, without adding padding bytes to align fields on 32-bit or 64-bit boundaries.
+</span>    <span class="enscript-type">char</span> assert0[(<span class="enscript-keyword">sizeof</span>(client_context_t) ==  8) ? 1 : -1];
+    <span class="enscript-type">char</span> assert1[(<span class="enscript-keyword">sizeof</span>(ipc_msg_hdr)      == 28) ? 1 : -1];
+};
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DNSSD_IPC_H</span>
+</pre>
+<hr />
+</body></html>

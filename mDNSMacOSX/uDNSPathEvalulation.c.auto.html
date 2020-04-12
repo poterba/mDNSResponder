@@ -1,0 +1,197 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>uDNSPathEvalulation.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">uDNSPathEvalulation.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="uDNSPathEvalulation.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4; c-file-style: &quot;bsd&quot;; c-basic-offset: 4; fill-column: 108; indent-tabs-mode: nil; -*-
+ *
+ * Copyright (c) 2013-2018 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;libproc.h&gt;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">__has_include</span>(&lt;<span class="enscript-variable-name">nw</span>/<span class="enscript-variable-name">private</span>.<span class="enscript-variable-name">h</span>&gt;)
+    #include &lt;nw/private.h&gt;
+#<span class="enscript-reference">else</span>
+    #include &lt;network/private.h&gt;
+    #define nw_release(X) network_release(X)
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd_internal.h&quot;</span>
+
+<span class="enscript-comment">//Gets the DNSPolicy from NW PATH EVALUATOR
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformGetDNSRoutePolicy</span>(DNSQuestion *q, mDNSBool *isBlocked)
+{
+    <span class="enscript-keyword">if</span> (__builtin_available(macOS 10.14, *))
+    {
+        q-&gt;ServiceID = -1; <span class="enscript-comment">// initialize the ServiceID to default value of -1
+</span>
+        <span class="enscript-comment">// Return for non-unicast DNS queries, invalid pid, if NWPathEvaluation is already done by the client, or NWPathEvaluation not available on this OS
+</span>        <span class="enscript-keyword">if</span> (mDNSOpaque16IsZero(q-&gt;TargetQID) || (q-&gt;pid &lt; 0) || (q-&gt;flags &amp; kDNSServiceFlagsPathEvaluationDone) || !nw_endpoint_create_host)
+        {
+            *isBlocked = mDNSfalse;
+            <span class="enscript-keyword">return</span>;
+        }
+        
+        mDNSs32 service_id;
+        mDNSu32 client_ifindex, dnspol_ifindex;
+        <span class="enscript-type">int</span> retval;
+        <span class="enscript-type">struct</span> proc_uniqidentifierinfo info;
+        mDNSBool isUUIDSet;
+        
+        <span class="enscript-type">char</span> unenc_name[MAX_ESCAPED_DOMAIN_NAME];
+        ConvertDomainNameToCString(&amp;q-&gt;qname, unenc_name);
+        
+        nw_endpoint_t host = nw_endpoint_create_host(unenc_name, <span class="enscript-string">&quot;0&quot;</span>);
+        <span class="enscript-keyword">if</span> (host == NULL)
+            LogMsg(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: DNS Route Policy: Query for %##s (%s), PID[%d], EUID[%d], ServiceID[%d] nw_endpoint_t host is NULL&quot;</span>, q-&gt;qname.c,
+                   DNSTypeName(q-&gt;qtype), q-&gt;pid, q-&gt;euid, q-&gt;ServiceID);
+        
+        nw_parameters_t parameters = nw_parameters_create();
+        <span class="enscript-keyword">if</span> (parameters == NULL)
+            LogMsg(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: DNS Route Policy: Query for %##s (%s), PID[%d], EUID[%d], ServiceID[%d] nw_endpoint_t parameters is NULL&quot;</span>, q-&gt;qname.c,
+                   DNSTypeName(q-&gt;qtype), q-&gt;pid, q-&gt;euid, q-&gt;ServiceID);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TARGET_OS_WATCH</span>
+        <span class="enscript-comment">// Companion interface on watchOS does not support DNS, so we don't want path evalution to return it to us.
+</span>        nw_parameters_set_companion_preference(parameters, nw_parameters_agent_preference_avoid);
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">TARGET_OS_WATCH</span>
+        
+        <span class="enscript-comment">// Check for all the special (negative) internal value interface indices before initializing client_ifindex
+</span>        <span class="enscript-keyword">if</span> (   (q-&gt;InterfaceID == mDNSInterface_Any)
+            || (q-&gt;InterfaceID == mDNSInterface_LocalOnly)
+            || (q-&gt;InterfaceID == mDNSInterfaceMark)
+            || (q-&gt;InterfaceID == mDNSInterface_P2P)
+            || (q-&gt;InterfaceID == mDNSInterface_BLE)
+            || (q-&gt;InterfaceID == uDNSInterfaceMark))
+        {
+            client_ifindex = 0;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            client_ifindex = (mDNSu32)(uintptr_t)q-&gt;InterfaceID;
+        }
+
+        <span class="enscript-keyword">if</span> (client_ifindex &gt; 0)
+        {
+            nw_interface_t client_intf = nw_interface_create_with_index(client_ifindex);
+            nw_parameters_require_interface(parameters, client_intf);
+            <span class="enscript-keyword">if</span> (client_intf != NULL)
+                nw_release(client_intf);
+            <span class="enscript-keyword">else</span>
+                LogInfo(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: DNS Route Policy: client_intf returned by nw_interface_create_with_index() is NULL&quot;</span>);
+        }
+        
+        nw_parameters_set_uid(parameters,(uid_t)q-&gt;euid);
+
+        <span class="enscript-keyword">if</span> (q-&gt;pid != 0)
+        {
+            nw_parameters_set_pid(parameters, q-&gt;pid);
+            retval = proc_pidinfo(q-&gt;pid, PROC_PIDUNIQIDENTIFIERINFO, 1, &amp;info, <span class="enscript-keyword">sizeof</span>(info));
+            <span class="enscript-keyword">if</span> (retval == (<span class="enscript-type">int</span>)<span class="enscript-keyword">sizeof</span>(info))
+            {
+                nw_parameters_set_e_proc_uuid(parameters, info.p_uuid);
+                isUUIDSet = mDNStrue;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                debugf(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: proc_pidinfo returned %d&quot;</span>, retval);
+                isUUIDSet = mDNSfalse;
+            }
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            nw_parameters_set_e_proc_uuid(parameters, q-&gt;uuid);
+            isUUIDSet = mDNStrue;
+        }
+        
+        nw_path_evaluator_t evaluator = nw_path_create_evaluator_for_endpoint(host, parameters);
+        <span class="enscript-keyword">if</span> (evaluator == NULL)
+            LogMsg(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: DNS Route Policy: Query for %##s (%s), PID[%d], EUID[%d], ServiceID[%d] nw_path_evaluator_t evaluator is NULL&quot;</span>, q-&gt;qname.c,
+                    DNSTypeName(q-&gt;qtype), q-&gt;pid, q-&gt;euid, q-&gt;ServiceID);
+        
+        <span class="enscript-keyword">if</span> (host != NULL)
+            nw_release(host);
+        <span class="enscript-keyword">if</span> (parameters != NULL)
+            nw_release(parameters);
+        
+        nw_path_t path = nw_path_evaluator_copy_path(evaluator);
+        <span class="enscript-keyword">if</span> (path == NULL)
+            LogMsg(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: DNS Route Policy: Query for %##s (%s), PID[%d], EUID[%d], ServiceID[%d] nw_path_t path is NULL&quot;</span>, q-&gt;qname.c,
+                   DNSTypeName(q-&gt;qtype), q-&gt;pid, q-&gt;euid, q-&gt;ServiceID);
+        
+        service_id = nw_path_get_flow_divert_unit(path);
+        <span class="enscript-keyword">if</span> (service_id != 0)
+        {
+            q-&gt;ServiceID = service_id;
+            LogInfo(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: DNS Route Policy: Query for %##s service ID is set -&gt;service_ID:[%d] &quot;</span>, q-&gt;qname.c, service_id);
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            nw_interface_t nwpath_intf = nw_path_copy_scoped_interface(path);
+            <span class="enscript-keyword">if</span> (nwpath_intf != NULL)
+            {
+                <span class="enscript-comment">// Use the new scoped interface given by NW PATH EVALUATOR
+</span>                dnspol_ifindex = nw_interface_get_index(nwpath_intf);
+                q-&gt;InterfaceID = (mDNSInterfaceID)(uintptr_t)dnspol_ifindex;
+                
+                nw_release(nwpath_intf);
+                
+                <span class="enscript-keyword">if</span> (dnspol_ifindex != client_ifindex)
+                    LogInfo(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: DNS Route Policy has changed the scoped ifindex from [%d] to [%d]&quot;</span>,
+                            client_ifindex, dnspol_ifindex);
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                debugf(<span class="enscript-string">&quot;mDNSPlatformGetDNSRoutePolicy: Query for %##s (%s), PID[%d], EUID[%d], ServiceID[%d] nw_interface_t nwpath_intf is NULL &quot;</span>, q-&gt;qname.c, DNSTypeName(q-&gt;qtype), q-&gt;pid, q-&gt;euid, q-&gt;ServiceID);
+            }
+        }
+        
+        <span class="enscript-keyword">if</span> (isUUIDSet &amp;&amp; path &amp;&amp; (nw_path_get_status(path) == nw_path_status_unsatisfied) &amp;&amp; (nw_path_get_reason(path) == nw_path_reason_policy_drop))
+            *isBlocked = mDNStrue;
+        <span class="enscript-keyword">else</span>
+            *isBlocked = mDNSfalse;
+
+        <span class="enscript-keyword">if</span> (path != NULL)
+            nw_release(path);
+        <span class="enscript-keyword">if</span> (evaluator != NULL)
+            nw_release(evaluator);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        *isBlocked = mDNSfalse;
+    }
+}
+</pre>
+<hr />
+</body></html>

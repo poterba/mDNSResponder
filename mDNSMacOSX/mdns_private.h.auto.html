@@ -1,0 +1,399 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>mdns_private.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">mdns_private.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="mdns_private.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="https://www.apache.org/licenses/LICENSE-2.0">https://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__MDNS_PRIVATE_H__</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__MDNS_PRIVATE_H__</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;CoreFoundation/CoreFoundation.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;dispatch/dispatch.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;MacTypes.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;os/object.h&gt;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">OS_OBJECT_USE_OBJC</span>
+	#define MDNS_DECL(NAME)			OS_OBJECT_DECL_SUBCLASS(mdns_ ## NAME, mdns_object)
+	#define MDNS_RETURNS_RETAINED	OS_OBJECT_RETURNS_RETAINED
+
+	OS_OBJECT_DECL(mdns_object,);
+#<span class="enscript-reference">else</span>
+	#define MDNS_DECL(NAME)			<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> mdns_ ## NAME ## _s *	mdns_ ## NAME ## _t
+	#define MDNS_RETURNS_RETAINED
+
+	MDNS_DECL(object);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// mdns Object Declarations
+</span>
+<span class="enscript-function-name">MDNS_DECL</span>(interface_monitor);
+
+OS_ASSUME_NONNULL_BEGIN
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">OS_OBJECT_USE_OBJC</span>
+	<span class="enscript-type">typedef</span> mdns_object_t	mdns_any_t;
+#<span class="enscript-reference">else</span>
+	#<span class="enscript-keyword">if</span> !defined(__cplusplus)
+		<span class="enscript-type">typedef</span> <span class="enscript-type">union</span> {
+			mdns_object_t				base;
+			mdns_interface_monitor_t	interface_monitor;
+		} mdns_any_t __attribute__((__transparent_union__));
+	#<span class="enscript-keyword">else</span>
+		<span class="enscript-type">typedef</span> <span class="enscript-type">void</span> *	mdns_any_t;
+	#endif
+#<span class="enscript-reference">endif</span>
+
+__BEGIN_DECLS
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Increments the reference count of an mdns object.
+ *
+ *	@param object
+ *		The mdns object.
+ */</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">mdns_retain</span>(mdns_any_t object);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">OS_OBJECT_USE_OBJC_RETAIN_RELEASE</span>
+	#undef mdns_retain
+	#define mdns_retain(object)	[(object) retain]
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Decrements the reference count of an mdns object.
+ *
+ *	@param object
+ *		The mdns object.
+ */</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">mdns_release</span>(mdns_any_t object);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">OS_OBJECT_USE_OBJC_RETAIN_RELEASE</span>
+	#undef mdns_release
+	#define mdns_release(object)	[(object) release]
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Creates a human-readable description of an mdns object as a C string.
+ *
+ *	@param object
+ *		The mdns object.
+ *
+ *	@result
+ *		A C string that must be freed with free(3).
+ */</span>
+OS_WARN_RESULT
+<span class="enscript-type">char</span> * _Nullable
+<span class="enscript-function-name">mdns_copy_description</span>(mdns_any_t object);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		CFArray callbacks for mdns objects.
+ */</span>
+<span class="enscript-type">extern</span> <span class="enscript-type">const</span> CFArrayCallBacks mdns_cfarray_callbacks;
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Creates an interface monitor.
+ *
+ *	@param interface_index
+ *		Index of the interface to monitor.
+ *
+ *	@result
+ *		A new interface monitor or NULL if there was a lack of resources.
+ *
+ *	@discussion
+ *		An interface monitor provides up-to-date information about an interface's properties, such as IPv4
+ *		connectivity, IPv6 connectivity, whether the interface is expensive, and whether the interface is constrained.
+ *
+ *		If this function returns non-NULL, then the caller has an ownership reference to the newly created interface
+ *		monitor, which can be relinquished with &lt;code&gt;mdns_release()&lt;/code&gt;.
+ */</span>
+MDNS_RETURNS_RETAINED mdns_interface_monitor_t _Nullable
+<span class="enscript-function-name">mdns_interface_monitor_create</span>(uint32_t interface_index);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Activates an interface monitor.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@discussion
+ *		Successful activation enables interface monitor updates.
+ *
+ *		This function has no effect on an interface monitor that has already been activated or one that has been
+ *		invalidated.
+ */</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">mdns_interface_monitor_activate</span>(mdns_interface_monitor_t monitor);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Asynchronously invalidates an interface monitor.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@discussion
+ *		This function should be called when the interface monitor is no longer needed.
+ *
+ *		As a result of calling this function, the interface monitor's event handler will be invoked with a
+ *		&lt;code&gt;mdns_event_invalidated&lt;/code&gt; event, after which the interface monitor's event and update handlers will
+ *		never be invoked again.
+ *
+ *		This function has no effect on an interface monitor that has already been invalidated.
+ */</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">mdns_interface_monitor_invalidate</span>(mdns_interface_monitor_t monitor);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Specifies the queue on which to invoke the interface monitor's event and update handlers.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@param queue
+ *		A serial queue.
+ *
+ *	@discussion
+ *		This function must be called before activating the interface monitor.
+ *
+ *		This function has no effect on an interface monitor that has been activated or invalidated.
+ */</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">mdns_interface_monitor_set_queue</span>(mdns_interface_monitor_t monitor, dispatch_queue_t queue);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Generic events that can occur during the lifetime of an mdns object.
+ */</span>
+<span class="enscript-function-name">OS_CLOSED_ENUM</span>(mdns_event, <span class="enscript-type">int</span>,
+	<span class="enscript-comment">/*! @const mdns_event_error A fatal error has occurred. */</span>
+	mdns_event_error		= 1,
+	<span class="enscript-comment">/*! @const mdns_event_invalidated The object has been invalidated. */</span>
+	mdns_event_invalidated	= 2
+);
+
+<span class="enscript-type">static</span> inline <span class="enscript-type">const</span> <span class="enscript-type">char</span> *
+<span class="enscript-function-name">mdns_event_to_string</span>(mdns_event_t event)
+{
+	<span class="enscript-keyword">switch</span> (event) {
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">mdns_event_error</span>:			<span class="enscript-keyword">return</span> <span class="enscript-string">&quot;Error&quot;</span>;
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">mdns_event_invalidated</span>:	<span class="enscript-keyword">return</span> <span class="enscript-string">&quot;Invalidated&quot;</span>;
+		<span class="enscript-reference">default</span>:						<span class="enscript-keyword">return</span> <span class="enscript-string">&quot;?&quot;</span>;
+	}
+}
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Generic event handler for mdns objects.
+ *
+ *	@param event
+ *		The event.
+ *
+ *	@param error
+ *		The error associated with a &lt;code&gt;mdns_event_error&lt;/code&gt; event. This argument should be ignored for all other
+ *		types of events.
+ *
+ *	@discussion
+ *		After an &lt;code&gt;mdns_event_invalidated&lt;/code&gt; event, none of the object's handlers will ever be invoked again.
+ */</span>
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (^mdns_event_handler_t)(mdns_event_t event, OSStatus error);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Sets an interface monitor's event handler.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@param handler
+ *		The event handler.
+ *
+ *	@discussion
+ *		The event handler will never be invoked prior to activation.
+ *
+ *		The event handler will be invoked on the dispatch queue specified by
+ *		&lt;code&gt;mdns_interface_monitor_set_queue()&lt;/code&gt; with event &lt;code&gt;mdns_event_error&lt;/code&gt; when a fatal error
+ *		occurs and with event &lt;code&gt;mdns_event_invalidated&lt;/code&gt; when the interface monitor has been invalidated.
+ *
+ *		After an &lt;code&gt;mdns_event_invalidated&lt;/code&gt; event, the event handler will never be invoked again.
+ */</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">mdns_interface_monitor_set_event_handler</span>(mdns_interface_monitor_t monitor, mdns_event_handler_t _Nullable handler);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Flags that represent the properties of a monitored interface.
+ *
+ *	@discussion
+ *		These flags don't represent the actual values of properties. The meaning of these flags depends on the context
+ *		in which they're used. For example, as a parameter of mdns_interface_monitor_update_handler_t, a set flag
+ *		means that the value of a given property has changed.
+ */</span>
+<span class="enscript-function-name">OS_CLOSED_OPTIONS</span>(mdns_interface_flags, uint32_t,
+	mdns_interface_flag_null				= 0,
+	mdns_interface_flag_ipv4_connectivity	= (1U &lt;&lt;  0),
+	mdns_interface_flag_ipv6_connectivity	= (1U &lt;&lt;  1),
+	mdns_interface_flag_expensive			= (1U &lt;&lt;  2),
+	mdns_interface_flag_constrained			= (1U &lt;&lt;  3),
+	mdns_interface_flag_clat46				= (1U &lt;&lt;  4),
+	mdns_interface_flag_reserved			= (1U &lt;&lt; 31)
+);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Update handler for an interface monitor.
+ *
+ *	@param change_flags
+ *		Each flag bit represents a property of a monitored interface. If the bit is set, then the value of that
+ *		property has changed. If the bit is clear, then the value of that property has not changed.
+ */</span>
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (^mdns_interface_monitor_update_handler_t)(mdns_interface_flags_t change_flags);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Sets an interface monitor's update handler.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@param handler
+ *		The update handler.
+ *
+ *	@discussion
+ *		The update handler will never be invoked prior to activation.
+ *
+ *		The update handler will be invoked on the dispatch queue specified by
+ *		&lt;code&gt;mdns_interface_monitor_set_queue()&lt;/code&gt; when any of the monitored interface's properties have been
+ *		updated.
+ *
+ *		After an &lt;code&gt;mdns_event_invalidated&lt;/code&gt; event, the update handler will ever be invoked again.
+ */</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">mdns_interface_monitor_set_update_handler</span>(mdns_interface_monitor_t monitor,
+	mdns_interface_monitor_update_handler_t _Nullable handler);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Returns the index of the monitored interface.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ */</span>
+uint32_t
+<span class="enscript-function-name">mdns_interface_monitor_get_interface_index</span>(mdns_interface_monitor_t monitor);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Determines whether the monitored interface currently has IPv4 connectivity.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@discussion
+ *		mdns_interface_flag_ipv4_connectivity will be set in the update handler's change_flags argument when the value
+ *		of this property has changed.
+ */</span>
+bool
+<span class="enscript-function-name">mdns_interface_monitor_has_ipv4_connectivity</span>(mdns_interface_monitor_t monitor);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Determines whether the monitored interface currently has IPv6 connectivity.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@discussion
+ *		mdns_interface_flag_ipv6_connectivity will be set in the update handler's change_flags argument when the value
+ *		of this property has changed.
+ */</span>
+bool
+<span class="enscript-function-name">mdns_interface_monitor_has_ipv6_connectivity</span>(mdns_interface_monitor_t monitor);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Determines whether the monitored interface is currently expensive.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@discussion
+ *		mdns_interface_flag_expensive will be set in the update handler's change_flags argument when the value
+ *		of this property has changed.
+ */</span>
+bool
+<span class="enscript-function-name">mdns_interface_monitor_is_expensive</span>(mdns_interface_monitor_t monitor);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Determines whether the monitored interface is currently constrained.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@discussion
+ *		mdns_interface_flag_constrained will be set in the update handler's change_flags argument when the value
+ *		of this property has changed.
+ */</span>
+bool
+<span class="enscript-function-name">mdns_interface_monitor_is_constrained</span>(mdns_interface_monitor_t monitor);
+
+<span class="enscript-comment">/*!
+ *	@brief
+ *		Determines whether the monitored interface has CLAT46 support.
+ *
+ *	@param monitor
+ *		The interface monitor.
+ *
+ *	@discussion
+ *		mdns_interface_flag_clat46 will be set in the update handler's change_flags argument when the value
+ *		of this property has changed.
+ */</span>
+bool
+<span class="enscript-function-name">mdns_interface_monitor_is_clat46</span>(mdns_interface_monitor_t monitor);
+
+__END_DECLS
+
+OS_ASSUME_NONNULL_END
+
+#<span class="enscript-reference">endif</span>	// <span class="enscript-variable-name">__MDNS_PRIVATE_H__</span>
+</pre>
+<hr />
+</body></html>

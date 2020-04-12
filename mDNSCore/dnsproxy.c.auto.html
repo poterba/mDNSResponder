@@ -1,0 +1,863 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnsproxy.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnsproxy.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnsproxy.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2011-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnsproxy.h&quot;</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">UNICAST_DISABLED</span>
+
+<span class="enscript-type">extern</span> mDNS mDNSStorage;
+
+<span class="enscript-comment">// Implementation Notes
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// DNS Proxy listens on port 53 (UDPv4v6 &amp; TCPv4v6) for DNS queries. It handles only
+</span><span class="enscript-comment">// the &quot;Query&quot; opcode of the DNS protocol described in RFC 1035. For all other opcodes, it returns
+</span><span class="enscript-comment">// &quot;Not Implemented&quot; error. The platform interface mDNSPlatformInitDNSProxySkts
+</span><span class="enscript-comment">// sets up the sockets and whenever it receives a packet, it calls ProxyTCPCallback or ProxyUDPCallback
+</span><span class="enscript-comment">// defined here. For TCP socket, the platform does the &quot;accept&quot; and only sends the received packets
+</span><span class="enscript-comment">// on the newly accepted socket. A single UDP socket (per address family) is used to send/recv
+</span><span class="enscript-comment">// requests/responses from all clients. For TCP, there is one socket per request. Hence, there is some
+</span><span class="enscript-comment">// extra state that needs to be disposed at the end.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// When a DNS request is received, ProxyCallbackCommon checks for malformed packet etc. and also checks
+</span><span class="enscript-comment">// for duplicates, before creating DNSProxyClient state and starting a question with the &quot;core&quot;
+</span><span class="enscript-comment">// (mDNS_StartQuery). When the callback for the question happens, it gathers all the necessary
+</span><span class="enscript-comment">// resource records, constructs a response and sends it back to the client.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">//   - Question callback is called with only one resource record at a time. We need all the resource
+</span><span class="enscript-comment">//     records to construct the response. Hence, we lookup all the records ourselves. 
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">//   - The response may not fit the client's buffer size. In that case, we need to set the truncate bit
+</span><span class="enscript-comment">//     and the client would retry using TCP.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">//   - The client may have set the DNSSEC OK bit in the EDNS0 option and that means we also have to
+</span><span class="enscript-comment">//     return the RRSIGs or the NSEC records with the RRSIGs in the Additional section. We need to
+</span><span class="enscript-comment">//     ask the &quot;core&quot; to fetch the DNSSEC records and do the validation if the CD bit is not set.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// Once the response is sent to the client, the client state is disposed. When there is no response
+</span><span class="enscript-comment">// from the &quot;core&quot;, it eventually times out and we will not find any answers in the cache and we send a
+</span><span class="enscript-comment">// &quot;NXDomain&quot; response back. Thus, we don't need any special timers to reap the client state in the case
+</span><span class="enscript-comment">// of errors. 
+</span>
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> DNSProxyClient_struct DNSProxyClient;
+
+<span class="enscript-type">struct</span> DNSProxyClient_struct {
+
+    DNSProxyClient *next; 
+    mDNSAddr    addr;               <span class="enscript-comment">// Client's IP address 
+</span>    mDNSIPPort  port;               <span class="enscript-comment">// Client's port number
+</span>    mDNSOpaque16 msgid;             <span class="enscript-comment">// DNS msg id
+</span>    mDNSInterfaceID interfaceID;    <span class="enscript-comment">// Interface on which we received the request
+</span>    <span class="enscript-type">void</span> *socket;                   <span class="enscript-comment">// Return socket
+</span>    mDNSBool tcp;                   <span class="enscript-comment">// TCP or UDP ?
+</span>    mDNSOpaque16 requestFlags;      <span class="enscript-comment">// second 16 bit word in the DNSMessageHeader of the request
+</span>    mDNSu8 *optRR;                  <span class="enscript-comment">// EDNS0 option
+</span>    mDNSu16 optLen;                 <span class="enscript-comment">// Total Length of the EDNS0 option 
+</span>    mDNSu16 rcvBufSize;             <span class="enscript-comment">// How much can the client receive ?
+</span>    mDNSBool DNSSECOK;              <span class="enscript-comment">// DNSSEC OK ?
+</span>    <span class="enscript-type">void</span> *context;                  <span class="enscript-comment">// Platform context to be disposed if non-NULL
+</span>    domainname qname;               <span class="enscript-comment">// q-&gt;qname can't be used for duplicate check
+</span>    DNSQuestion q;                  <span class="enscript-comment">// as it can change underneath us for CNAMEs
+</span>};
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MIN_DNS_MESSAGE_SIZE</span>    512
+<span class="enscript-type">static</span> DNSProxyClient *DNSProxyClients;
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">FreeDNSProxyClient</span>(DNSProxyClient *pc)
+{
+    <span class="enscript-keyword">if</span> (pc-&gt;optRR)
+        mDNSPlatformMemFree(pc-&gt;optRR);
+    mDNSPlatformMemFree(pc);
+}
+
+mDNSlocal mDNSBool <span class="enscript-function-name">ParseEDNS0</span>(DNSProxyClient *pc, <span class="enscript-type">const</span> mDNSu8 *ptr, <span class="enscript-type">int</span> length, <span class="enscript-type">const</span> mDNSu8 *limit)
+{
+    <span class="enscript-keyword">if</span> (ptr + length &gt; limit)
+    {
+        LogInfo(<span class="enscript-string">&quot;ParseEDNS0: Not enough space in the packet&quot;</span>);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-comment">// Skip the root label
+</span>    ptr++;
+    mDNSu16 rrtype  = (mDNSu16) ((mDNSu16)ptr[0] &lt;&lt;  8 | ptr[1]);
+    <span class="enscript-keyword">if</span> (rrtype != kDNSType_OPT)
+    {
+        LogInfo(<span class="enscript-string">&quot;ParseEDNS0: Not the right type %d&quot;</span>, rrtype);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    mDNSu16 rrclass = (mDNSu16) ((mDNSu16)ptr[2] &lt;&lt;  8 | ptr[3]);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span>
+    mDNSu8  rcode   = ptr[4];
+    mDNSu8  version = ptr[5];
+    mDNSu16 flag    = (mDNSu16) ((mDNSu16)ptr[6] &lt;&lt;  8 | ptr[7]);
+    debugf(<span class="enscript-string">&quot;rrtype is %s, length is %d, rcode %d, version %d, flag 0x%x&quot;</span>, DNSTypeName(rrtype), rrclass, rcode, version, flag);
+#<span class="enscript-reference">endif</span>
+    pc-&gt;rcvBufSize = rrclass;
+    pc-&gt;DNSSECOK = ptr[6] &amp; 0x80;
+    
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+mDNSexport mDNSu8 *<span class="enscript-function-name">DNSProxySetAttributes</span>(DNSQuestion *q, DNSMessageHeader *h, DNSMessage *msg, mDNSu8 *ptr, mDNSu8 *limit)
+{
+    DNSProxyClient *pc = (DNSProxyClient *)q-&gt;QuestionContext;
+
+    (<span class="enscript-type">void</span>) msg;
+
+    h-&gt;flags = pc-&gt;requestFlags;
+    <span class="enscript-keyword">if</span> (pc-&gt;optRR)
+    {
+        <span class="enscript-keyword">if</span> (ptr + pc-&gt;optLen &gt; limit)
+        {
+            LogInfo(<span class="enscript-string">&quot;DNSProxySetAttributes: Cannot set EDNS0 option start %p, OptLen %d, end %p&quot;</span>, ptr, pc-&gt;optLen, limit);
+            <span class="enscript-keyword">return</span> ptr;
+        }
+        h-&gt;numAdditionals++;
+        mDNSPlatformMemCopy(ptr, pc-&gt;optRR, pc-&gt;optLen);
+        ptr += pc-&gt;optLen;
+    }
+    <span class="enscript-keyword">return</span> ptr;
+}
+
+mDNSlocal mDNSu8 *<span class="enscript-function-name">AddEDNS0Option</span>(mDNSu8 *ptr, mDNSu8 *limit)
+{
+    <span class="enscript-type">int</span> len = 4096;
+
+    <span class="enscript-keyword">if</span> (ptr + 11 &gt; limit)
+    {
+        LogInfo(<span class="enscript-string">&quot;AddEDNS0Option: not enough space&quot;</span>);
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+    mDNSStorage.omsg.h.numAdditionals++;
+    ptr[0] = 0;
+    ptr[1] = (mDNSu8) (kDNSType_OPT &gt;&gt; 8);
+    ptr[2] = (mDNSu8) (kDNSType_OPT &amp; 0xFF);
+    ptr[3] = (mDNSu8) (len &gt;&gt; 8);
+    ptr[4] = (mDNSu8) (len &amp; 0xFF);
+    ptr[5] = 0;     <span class="enscript-comment">// rcode
+</span>    ptr[6] = 0;     <span class="enscript-comment">// version
+</span>    ptr[7] = 0;
+    ptr[8] = 0;     <span class="enscript-comment">// flags
+</span>    ptr[9] = 0;     <span class="enscript-comment">// rdlength
+</span>    ptr[10] = 0;    <span class="enscript-comment">// rdlength
+</span>
+    debugf(<span class="enscript-string">&quot;AddEDNS0 option&quot;</span>);
+
+    <span class="enscript-keyword">return</span> (ptr + 11);
+}
+
+<span class="enscript-comment">// Currently RD and CD bit should be copied if present in the request or cleared if
+</span><span class="enscript-comment">// not present in the request. RD bit is normally set in the response and hence the
+</span><span class="enscript-comment">// cache reflects the right value. CD bit behaves differently. If the CD bit is set
+</span><span class="enscript-comment">// the first time, the cache retains it, if it is present in response (assuming the
+</span><span class="enscript-comment">// upstream server does it right). Next time through we should not use the cached
+</span><span class="enscript-comment">// value of the CD bit blindly. It depends on whether it was in the request or not.
+</span>mDNSlocal mDNSOpaque16 <span class="enscript-function-name">SetResponseFlags</span>(DNSProxyClient *pc, <span class="enscript-type">const</span> mDNSOpaque16 responseFlags)
+{
+    mDNSOpaque16 rFlags = responseFlags;
+
+    <span class="enscript-keyword">if</span> (pc-&gt;requestFlags.b[0] &amp; kDNSFlag0_RD)
+        rFlags.b[0] |= kDNSFlag0_RD;
+    <span class="enscript-keyword">else</span>
+        rFlags.b[0] &amp;= ~kDNSFlag0_RD;
+
+    <span class="enscript-keyword">if</span> (pc-&gt;requestFlags.b[1] &amp; kDNSFlag1_CD)
+        rFlags.b[1] |= kDNSFlag1_CD;
+    <span class="enscript-keyword">else</span>
+        rFlags.b[1] &amp;= ~kDNSFlag1_CD;
+
+    <span class="enscript-keyword">return</span> rFlags;
+}
+
+mDNSlocal mDNSu8 *<span class="enscript-function-name">AddResourceRecords</span>(DNSProxyClient *pc, mDNSu8 **prevptr, mStatus *error)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    CacheGroup *cg;
+    CacheRecord *cr;
+    <span class="enscript-type">int</span> len = <span class="enscript-keyword">sizeof</span>(DNSMessageHeader);
+    mDNSu8 *orig = m-&gt;omsg.data;
+    mDNSBool first = mDNStrue;
+    mDNSu8 *ptr = mDNSNULL;
+    mDNSs32 now;
+    mDNSs32 ttl;
+    CacheRecord *nsec = mDNSNULL;
+    CacheRecord *soa = mDNSNULL;
+    CacheRecord *cname = mDNSNULL;
+    mDNSu8 *limit;
+    domainname tempQName;
+    mDNSu32 tempQNameHash;
+
+    *error = mStatus_NoError;
+    *prevptr = mDNSNULL;
+
+    mDNS_Lock(m);
+    now = m-&gt;timenow;
+    mDNS_Unlock(m);
+
+    <span class="enscript-keyword">if</span> (!pc-&gt;tcp)
+    {
+        <span class="enscript-keyword">if</span> (!pc-&gt;rcvBufSize)
+        {
+            limit = m-&gt;omsg.data + MIN_DNS_MESSAGE_SIZE;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            limit = (pc-&gt;rcvBufSize &gt; AbsoluteMaxDNSMessageData ? m-&gt;omsg.data + AbsoluteMaxDNSMessageData : m-&gt;omsg.data + pc-&gt;rcvBufSize);
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-comment">// For TCP, limit is not determined by EDNS0 but by 16 bit rdlength field and
+</span>        <span class="enscript-comment">// AbsoluteMaxDNSMessageData is smaller than 64k.
+</span>        limit = m-&gt;omsg.data + AbsoluteMaxDNSMessageData;
+    }
+    LogInfo(<span class="enscript-string">&quot;AddResourceRecords: Limit is %d&quot;</span>, limit - m-&gt;omsg.data);
+
+    AssignDomainName(&amp;tempQName, &amp;pc-&gt;qname);
+    tempQNameHash = DomainNameHashValue(&amp;tempQName);
+
+<span class="enscript-reference">again</span>:
+    nsec = soa = cname = mDNSNULL;
+
+    cg = CacheGroupForName(m, tempQNameHash, &amp;tempQName);
+    <span class="enscript-keyword">if</span> (!cg)
+    {
+        LogInfo(<span class="enscript-string">&quot;AddResourceRecords: CacheGroup not found for %##s&quot;</span>, tempQName.c);
+        *error = mStatus_NoSuchRecord;
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+    <span class="enscript-comment">// Set ValidatingResponse so that you can get RRSIGs also matching
+</span>    <span class="enscript-comment">// the question
+</span>    <span class="enscript-keyword">if</span> (pc-&gt;DNSSECOK)
+        pc-&gt;q.ValidatingResponse = 1;
+    <span class="enscript-keyword">for</span> (cr = cg-&gt;members; cr; cr = cr-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (SameNameCacheRecordAnswersQuestion(cr, &amp;pc-&gt;q))
+        {
+            <span class="enscript-keyword">if</span> (first)
+            {
+                <span class="enscript-comment">// If this is the first time, initialize the header and the question.
+</span>                <span class="enscript-comment">// This code needs to be here so that we can use the responseFlags from the
+</span>                <span class="enscript-comment">// cache record
+</span>                mDNSOpaque16 responseFlags = SetResponseFlags(pc, cr-&gt;responseFlags);
+                InitializeDNSMessage(&amp;m-&gt;omsg.h, pc-&gt;msgid, responseFlags);
+                ptr = putQuestion(&amp;m-&gt;omsg, m-&gt;omsg.data, m-&gt;omsg.data + AbsoluteMaxDNSMessageData, &amp;pc-&gt;qname, pc-&gt;q.qtype, pc-&gt;q.qclass);
+                <span class="enscript-keyword">if</span> (!ptr)
+                {
+                    LogInfo(<span class="enscript-string">&quot;AddResourceRecords: putQuestion NULL for %##s (%s)&quot;</span>, &amp;pc-&gt;qname.c, DNSTypeName(pc-&gt;q.qtype));
+                    <span class="enscript-keyword">return</span> mDNSNULL;
+                }
+                first = mDNSfalse;
+            }
+            <span class="enscript-comment">// - For NegativeAnswers there is nothing to add
+</span>            <span class="enscript-comment">// - If DNSSECOK is set, we also automatically lookup the RRSIGs which
+</span>            <span class="enscript-comment">//   will also be returned. If the client is explicitly looking up
+</span>            <span class="enscript-comment">//   a DNSSEC record (e.g., DNSKEY, DS) we should return the response.
+</span>            <span class="enscript-comment">//   DNSSECOK bit only influences whether we add the RRSIG or not.
+</span>            <span class="enscript-keyword">if</span> (cr-&gt;resrec.RecordType != kDNSRecordTypePacketNegative)
+            {
+                LogInfo(<span class="enscript-string">&quot;AddResourceRecords: Answering question with %s&quot;</span>, CRDisplayString(m, cr));
+                ttl = cr-&gt;resrec.rroriginalttl - (now - cr-&gt;TimeRcvd) / mDNSPlatformOneSecond;
+                ptr = PutResourceRecordTTLWithLimit(&amp;m-&gt;omsg, ptr, &amp;m-&gt;omsg.h.numAnswers, &amp;cr-&gt;resrec, ttl, limit);
+                <span class="enscript-keyword">if</span> (!ptr)
+                {
+                    *prevptr = orig;
+                    <span class="enscript-keyword">return</span> mDNSNULL;
+                }
+                len += (ptr - orig); 
+                orig = ptr;
+            }
+            <span class="enscript-comment">// If we have nsecs (wildcard expanded answer or negative response), add them
+</span>            <span class="enscript-comment">// in the additional section below if the DNSSECOK bit is set
+</span>            <span class="enscript-keyword">if</span> (pc-&gt;DNSSECOK &amp;&amp; cr-&gt;nsec)
+            {
+                LogInfo(<span class="enscript-string">&quot;AddResourceRecords: nsec set for %s&quot;</span>, CRDisplayString(m ,cr));
+                nsec = cr-&gt;nsec;
+            }
+            <span class="enscript-keyword">if</span> (cr-&gt;soa)
+            {
+                LogInfo(<span class="enscript-string">&quot;AddResourceRecords: soa set for %s&quot;</span>, CRDisplayString(m ,cr));
+                soa = cr-&gt;soa;
+            }
+            <span class="enscript-comment">// If we are using CNAME to answer a question and CNAME is not the type we
+</span>            <span class="enscript-comment">// are looking for, note down the CNAME record so that we can follow them
+</span>            <span class="enscript-comment">// later. Before we follow the CNAME, print the RRSIGs and any nsec (wildcard
+</span>            <span class="enscript-comment">// expanded) if any.
+</span>            <span class="enscript-keyword">if</span> ((pc-&gt;q.qtype != cr-&gt;resrec.rrtype) &amp;&amp; cr-&gt;resrec.rrtype == kDNSType_CNAME)
+            {
+                LogInfo(<span class="enscript-string">&quot;AddResourceRecords: cname set for %s&quot;</span>, CRDisplayString(m ,cr));
+                cname = cr;
+            }
+        }
+    }
+    <span class="enscript-comment">// Along with the nsec records, we also cache the SOA record. For non-DNSSEC question, we need
+</span>    <span class="enscript-comment">// to send the SOA back. Normally we either cache the SOA record (non-DNSSEC question) pointed
+</span>    <span class="enscript-comment">// to by &quot;cr-&gt;soa&quot; or the NSEC/SOA records along with their RRSIGs (DNSSEC question) pointed to
+</span>    <span class="enscript-comment">// by &quot;cr-&gt;nsec&quot;. Two cases:
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// - if we issue a DNSSEC question followed by non-DNSSEC question for the same name,
+</span>    <span class="enscript-comment">//   we only have the nsec records and we need to filter the SOA record alone for the
+</span>    <span class="enscript-comment">//   non-DNSSEC questions.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// - if we issue a non-DNSSEC question followed by DNSSEC question for the same name,
+</span>    <span class="enscript-comment">//   the &quot;core&quot; flushes the cache entry and re-issue the question with EDNS0/DOK bit and
+</span>    <span class="enscript-comment">//   in this case we return all the DNSSEC records we have.
+</span>    <span class="enscript-keyword">for</span> (; nsec; nsec = nsec-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (!pc-&gt;DNSSECOK &amp;&amp; DNSSECRecordType(nsec-&gt;resrec.rrtype))
+            <span class="enscript-keyword">continue</span>;
+        LogInfo(<span class="enscript-string">&quot;AddResourceRecords:NSEC Answering question with %s&quot;</span>, CRDisplayString(m, nsec));
+        ttl = nsec-&gt;resrec.rroriginalttl - (now - nsec-&gt;TimeRcvd) / mDNSPlatformOneSecond;
+        ptr = PutResourceRecordTTLWithLimit(&amp;m-&gt;omsg, ptr, &amp;m-&gt;omsg.h.numAuthorities, &amp;nsec-&gt;resrec, ttl, limit);
+        <span class="enscript-keyword">if</span> (!ptr)
+        {
+            *prevptr = orig;
+            <span class="enscript-keyword">return</span> mDNSNULL;
+        }
+        len += (ptr - orig); 
+        orig = ptr;
+    }
+    <span class="enscript-keyword">if</span> (soa)
+    {
+        LogInfo(<span class="enscript-string">&quot;AddResourceRecords: SOA Answering question with %s&quot;</span>, CRDisplayString(m, soa));
+        ptr = PutResourceRecordTTLWithLimit(&amp;m-&gt;omsg, ptr, &amp;m-&gt;omsg.h.numAuthorities, &amp;soa-&gt;resrec, soa-&gt;resrec.rroriginalttl, limit);
+        <span class="enscript-keyword">if</span> (!ptr)
+        {
+            *prevptr = orig;
+            <span class="enscript-keyword">return</span> mDNSNULL;
+        }
+        len += (ptr - orig); 
+        orig = ptr;
+    }
+    <span class="enscript-keyword">if</span> (cname)
+    {
+        AssignDomainName(&amp;tempQName, &amp;cname-&gt;resrec.rdata-&gt;u.name);
+        tempQNameHash = DomainNameHashValue(&amp;tempQName);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">again</span>;
+    }
+    <span class="enscript-keyword">if</span> (!ptr)
+    {
+        LogInfo(<span class="enscript-string">&quot;AddResourceRecords: Did not find any valid ResourceRecords&quot;</span>);
+        *error = mStatus_NoSuchRecord;
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+    <span class="enscript-keyword">if</span> (pc-&gt;rcvBufSize)
+    {
+        ptr = AddEDNS0Option(ptr, limit);
+        <span class="enscript-keyword">if</span> (!ptr)
+        {
+            *prevptr = orig;
+            <span class="enscript-keyword">return</span> mDNSNULL;
+        }
+        len += (ptr - orig); 
+        <span class="enscript-comment">// orig = ptr; Commented out to avoid ‘value never read’ error message
+</span>    }
+    LogInfo(<span class="enscript-string">&quot;AddResourceRecord: Added %d bytes to the packet&quot;</span>, len);
+    <span class="enscript-keyword">return</span> ptr;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">ProxyClientCallback</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *question, <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> answer, QC_result AddRecord)
+{
+    DNSProxyClient *pc = question-&gt;QuestionContext;
+    DNSProxyClient **ppc = &amp;DNSProxyClients;
+    mDNSu8 *ptr;
+    mDNSu8 *prevptr;
+    mStatus error;
+
+    <span class="enscript-keyword">if</span> (!AddRecord)
+        <span class="enscript-keyword">return</span>;
+
+    LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: ResourceRecord %s&quot;</span>, RRDisplayString(m, answer));
+
+    <span class="enscript-comment">// We asked for validation and not timed out yet, then wait for the DNSSEC result.
+</span>    <span class="enscript-comment">// We have to set the AD bit in the response if it is secure which can't be done
+</span>    <span class="enscript-comment">// till we get the DNSSEC result back (indicated by QC_dnssec).
+</span>    <span class="enscript-keyword">if</span> (question-&gt;ValidationRequired)
+    {
+        mDNSs32 now;
+
+        mDNS_Lock(m);
+        now = m-&gt;timenow;
+        mDNS_Unlock(m);
+        <span class="enscript-keyword">if</span> (((now - question-&gt;StopTime) &lt; 0) &amp;&amp; AddRecord != QC_dnssec)
+        {
+            LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: No DNSSEC answer yet for Question %##s (%s), AddRecord %d, answer %s&quot;</span>, question-&gt;qname.c,
+                DNSTypeName(question-&gt;qtype), AddRecord, RRDisplayString(m, answer));
+            <span class="enscript-keyword">return</span>;
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (answer-&gt;RecordType != kDNSRecordTypePacketNegative)
+    {
+        <span class="enscript-keyword">if</span> (answer-&gt;rrtype != question-&gt;qtype)
+        {
+            <span class="enscript-comment">// Wait till we get called for the real response
+</span>            LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: Received %s, not answering yet&quot;</span>, RRDisplayString(m, answer));
+            <span class="enscript-keyword">return</span>;
+        }
+    }
+    ptr = AddResourceRecords(pc, &amp;prevptr, &amp;error);
+    <span class="enscript-keyword">if</span> (!ptr)
+    {
+        LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: AddResourceRecords NULL for %##s (%s)&quot;</span>, &amp;pc-&gt;qname.c, DNSTypeName(pc-&gt;q.qtype));
+        <span class="enscript-keyword">if</span> (error == mStatus_NoError &amp;&amp; prevptr)
+        {
+            <span class="enscript-comment">// No space to add the record. Set the Truncate bit for UDP.
+</span>            <span class="enscript-comment">//
+</span>            <span class="enscript-comment">// TBD: For TCP, we need to send the rest of the data. But finding out what is left
+</span>            <span class="enscript-comment">// is harder. We should allocate enough buffer in the first place to send all
+</span>            <span class="enscript-comment">// of the data.
+</span>            <span class="enscript-keyword">if</span> (!pc-&gt;tcp)
+            {
+                m-&gt;omsg.h.flags.b[0] |= kDNSFlag0_TC;
+                ptr = prevptr;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: ERROR!! Not enough space to return in TCP for %##s (%s)&quot;</span>, &amp;pc-&gt;qname.c, DNSTypeName(pc-&gt;q.qtype));
+                ptr = prevptr;
+            }
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            mDNSOpaque16 flags   = { { kDNSFlag0_QR_Response | kDNSFlag0_OP_StdQuery, kDNSFlag1_RC_ServFail } };
+            <span class="enscript-comment">// We could not find the record for some reason. Return a response, so that the client
+</span>            <span class="enscript-comment">// is not waiting forever.
+</span>            LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: No response&quot;</span>);
+            <span class="enscript-keyword">if</span> (!mDNSOpaque16IsZero(pc-&gt;q.responseFlags))
+                flags = pc-&gt;q.responseFlags;
+            InitializeDNSMessage(&amp;m-&gt;omsg.h, pc-&gt;msgid, flags);
+            ptr = putQuestion(&amp;m-&gt;omsg, m-&gt;omsg.data, m-&gt;omsg.data + AbsoluteMaxDNSMessageData, &amp;pc-&gt;qname, pc-&gt;q.qtype, pc-&gt;q.qclass);
+            <span class="enscript-keyword">if</span> (!ptr)
+            {
+                LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: putQuestion NULL for %##s (%s)&quot;</span>, &amp;pc-&gt;qname.c, DNSTypeName(pc-&gt;q.qtype));
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">done</span>;
+            }
+        }
+    }
+    <span class="enscript-keyword">if</span> (question-&gt;ValidationRequired)
+    {
+        <span class="enscript-keyword">if</span> (question-&gt;ValidationState == DNSSECValDone &amp;&amp; question-&gt;ValidationStatus == DNSSEC_Secure)
+        {
+            LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: Setting AD bit for Question %##s (%s)&quot;</span>, question-&gt;qname.c, DNSTypeName(question-&gt;qtype));
+            m-&gt;omsg.h.flags.b[1] |= kDNSFlag1_AD;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-comment">// If some external resolver sets the AD bit and we did not validate the response securely, don't set
+</span>            <span class="enscript-comment">// the AD bit. It is possible that we did not see all the records that the upstream resolver saw or
+</span>            <span class="enscript-comment">// a buggy implementation somewhere.
+</span>            <span class="enscript-keyword">if</span> (m-&gt;omsg.h.flags.b[1] &amp; kDNSFlag1_AD)
+            {
+                LogInfo(<span class="enscript-string">&quot;ProxyClientCallback: AD bit set in the response for response that was not validated locally %##s (%s)&quot;</span>,
+                    question-&gt;qname.c, DNSTypeName(question-&gt;qtype));
+                m-&gt;omsg.h.flags.b[1] &amp;= ~kDNSFlag1_AD;
+            }
+        }
+    }
+    
+    debugf(<span class="enscript-string">&quot;ProxyClientCallback: InterfaceID is %p for response to client&quot;</span>, pc-&gt;interfaceID);
+
+    <span class="enscript-keyword">if</span> (!pc-&gt;tcp)
+    {
+        mDNSSendDNSMessage(m, &amp;m-&gt;omsg, ptr, pc-&gt;interfaceID, mDNSNULL, (UDPSocket *)pc-&gt;socket, &amp;pc-&gt;addr, pc-&gt;port, mDNSNULL, mDNSfalse);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        mDNSSendDNSMessage(m, &amp;m-&gt;omsg, ptr, pc-&gt;interfaceID, (TCPSocket *)pc-&gt;socket, mDNSNULL, &amp;pc-&gt;addr, pc-&gt;port, mDNSNULL, mDNSfalse);
+    }
+
+<span class="enscript-reference">done</span>:
+    mDNS_StopQuery(m, question);
+
+    <span class="enscript-keyword">while</span> (*ppc &amp;&amp; *ppc != pc)
+        ppc=&amp;(*ppc)-&gt;next;
+    <span class="enscript-keyword">if</span> (!*ppc)
+    {
+        LogMsg(<span class="enscript-string">&quot;ProxyClientCallback: question %##s (%s) not found&quot;</span>, question-&gt;qname.c, DNSTypeName(question-&gt;qtype));
+        <span class="enscript-keyword">return</span>;
+    }
+    *ppc = pc-&gt;next;
+    mDNSPlatformDisposeProxyContext(pc-&gt;context);
+    FreeDNSProxyClient(pc);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">SendError</span>(<span class="enscript-type">void</span> *socket, DNSMessage *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end, <span class="enscript-type">const</span> mDNSAddr *dstaddr,
+    <span class="enscript-type">const</span> mDNSIPPort dstport, <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID, mDNSBool tcp, <span class="enscript-type">void</span> *context, mDNSu8 rcode)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    <span class="enscript-type">int</span> pktlen = (<span class="enscript-type">int</span>)(end - (mDNSu8 *)msg);
+
+    <span class="enscript-comment">// RFC 1035 requires that we copy the question back and RFC 2136 is okay with sending nothing
+</span>    <span class="enscript-comment">// in the body or send back whatever we get for updates. It is easy to return whatever we get
+</span>    <span class="enscript-comment">// in the question back to the responder. We return as much as we can fit in our standard
+</span>    <span class="enscript-comment">// output packet.
+</span>    <span class="enscript-keyword">if</span> (pktlen &gt; AbsoluteMaxDNSMessageData)
+        pktlen = AbsoluteMaxDNSMessageData;
+
+    mDNSPlatformMemCopy(&amp;m-&gt;omsg.h, &amp;msg-&gt;h, <span class="enscript-keyword">sizeof</span>(DNSMessageHeader));
+    m-&gt;omsg.h.flags.b[0] |= kDNSFlag0_QR_Response;
+    m-&gt;omsg.h.flags.b[1] = rcode;
+    mDNSPlatformMemCopy(m-&gt;omsg.data, (mDNSu8 *)&amp;msg-&gt;data, (pktlen - <span class="enscript-keyword">sizeof</span>(DNSMessageHeader)));
+    
+    <span class="enscript-keyword">if</span> (!tcp)
+    {
+        mDNSSendDNSMessage(m, &amp;m-&gt;omsg, (mDNSu8 *)&amp;m-&gt;omsg + pktlen, InterfaceID, mDNSNULL, socket, dstaddr, dstport, mDNSNULL, mDNSfalse);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        mDNSSendDNSMessage(m, &amp;m-&gt;omsg, (mDNSu8 *)&amp;m-&gt;omsg + pktlen, InterfaceID, (TCPSocket *)socket, mDNSNULL, dstaddr, dstport, mDNSNULL, mDNSfalse);
+    }
+    mDNSPlatformDisposeProxyContext(context);
+}
+
+mDNSlocal DNSQuestion *<span class="enscript-function-name">IsDuplicateClient</span>(<span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> addr, <span class="enscript-type">const</span> mDNSIPPort port, <span class="enscript-type">const</span> mDNSOpaque16 id,
+    <span class="enscript-type">const</span> DNSQuestion *<span class="enscript-type">const</span> question)
+{
+    DNSProxyClient *pc;
+
+	<span class="enscript-keyword">for</span> (pc = DNSProxyClients; pc; pc = pc-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (mDNSSameAddress(&amp;pc-&gt;addr, addr)   &amp;&amp;
+            mDNSSameIPPort(pc-&gt;port, port)  &amp;&amp;
+            mDNSSameOpaque16(pc-&gt;msgid, id) &amp;&amp;
+            pc-&gt;q.qtype == question-&gt;qtype  &amp;&amp;
+            pc-&gt;q.qclass  == question-&gt;qclass &amp;&amp;
+            SameDomainName(&amp;pc-&gt;qname, &amp;question-&gt;qname))
+        {
+            LogInfo(<span class="enscript-string">&quot;IsDuplicateClient: Found a duplicate client in the list&quot;</span>);
+            <span class="enscript-keyword">return</span>(&amp;pc-&gt;q);
+        }
+    }
+    <span class="enscript-keyword">return</span>(mDNSNULL);
+}
+
+mDNSlocal mDNSBool <span class="enscript-function-name">CheckDNSProxyIpIntf</span>(mDNSInterfaceID InterfaceID)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    <span class="enscript-type">int</span> i;
+    mDNSu32 ip_ifindex = (mDNSu32)(<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)InterfaceID;
+
+    LogInfo(<span class="enscript-string">&quot;CheckDNSProxyIpIntf: Check for ifindex[%d] in stored input interface list: [%d] [%d] [%d] [%d] [%d]&quot;</span>,
+            ip_ifindex, m-&gt;dp_ipintf[0], m-&gt;dp_ipintf[1], m-&gt;dp_ipintf[2], m-&gt;dp_ipintf[3], m-&gt;dp_ipintf[4]);
+
+    <span class="enscript-keyword">if</span> (ip_ifindex &gt; 0)
+    {
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; MaxIp; i++)
+        {
+            <span class="enscript-keyword">if</span> (ip_ifindex == m-&gt;dp_ipintf[i])
+                <span class="enscript-keyword">return</span> mDNStrue;
+        }
+    }
+    
+    LogMsg(<span class="enscript-string">&quot;CheckDNSProxyIpIntf: ifindex[%d] not in stored input interface list: [%d] [%d] [%d] [%d] [%d]&quot;</span>,
+            ip_ifindex, m-&gt;dp_ipintf[0], m-&gt;dp_ipintf[1], m-&gt;dp_ipintf[2], m-&gt;dp_ipintf[3], m-&gt;dp_ipintf[4]);
+    
+    <span class="enscript-keyword">return</span> mDNSfalse;
+
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">ProxyCallbackCommon</span>(<span class="enscript-type">void</span> *socket, DNSMessage *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end, <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> srcaddr,
+    <span class="enscript-type">const</span> mDNSIPPort srcport, <span class="enscript-type">const</span> mDNSAddr *dstaddr, <span class="enscript-type">const</span> mDNSIPPort dstport, <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID, mDNSBool tcp, <span class="enscript-type">void</span> *context)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    mDNSu8 QR_OP;
+    <span class="enscript-type">const</span> mDNSu8 *ptr;
+    DNSQuestion q, *qptr;
+    DNSProxyClient *pc;
+    <span class="enscript-type">const</span> mDNSu8 *optRR = mDNSNULL;
+    <span class="enscript-type">int</span> optLen = 0;
+    DNSProxyClient **ppc = &amp;DNSProxyClients;
+
+    (<span class="enscript-type">void</span>) dstaddr;
+    (<span class="enscript-type">void</span>) dstport;
+
+    debugf(<span class="enscript-string">&quot;ProxyCallbackCommon: DNS Query coming from InterfaceID %p&quot;</span>, InterfaceID);
+    <span class="enscript-comment">// Ignore if the DNS Query is not from a Valid Input InterfaceID
+</span>    <span class="enscript-keyword">if</span> (!CheckDNSProxyIpIntf(InterfaceID))
+    {
+        LogMsg(<span class="enscript-string">&quot;ProxyCallbackCommon: Rejecting DNS Query coming from InterfaceID %p&quot;</span>, InterfaceID);
+        <span class="enscript-keyword">return</span>;
+    }
+    
+    <span class="enscript-keyword">if</span> ((<span class="enscript-type">unsigned</span>)(end - (mDNSu8 *)msg) &lt; <span class="enscript-keyword">sizeof</span>(DNSMessageHeader))
+    {
+        debugf(<span class="enscript-string">&quot;ProxyCallbackCommon: DNS Message from %#a:%d to %#a:%d length %d too short&quot;</span>, srcaddr, mDNSVal16(srcport), dstaddr, mDNSVal16(dstport), (<span class="enscript-type">int</span>)(end - (mDNSu8 *)msg));
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// Read the integer parts which are in IETF byte-order (MSB first, LSB second)
+</span>    ptr = (mDNSu8 *)&amp;msg-&gt;h.numQuestions;
+    msg-&gt;h.numQuestions   = (mDNSu16)((mDNSu16)ptr[0] &lt;&lt; 8 | ptr[1]);
+    msg-&gt;h.numAnswers     = (mDNSu16)((mDNSu16)ptr[2] &lt;&lt; 8 | ptr[3]);
+    msg-&gt;h.numAuthorities = (mDNSu16)((mDNSu16)ptr[4] &lt;&lt; 8 | ptr[5]);
+    msg-&gt;h.numAdditionals = (mDNSu16)((mDNSu16)ptr[6] &lt;&lt; 8 | ptr[7]);
+
+    QR_OP = (mDNSu8)(msg-&gt;h.flags.b[0] &amp; kDNSFlag0_QROP_Mask);
+    <span class="enscript-keyword">if</span> (QR_OP != kDNSFlag0_QR_Query)
+    {
+        LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: Not a query(%d) for pkt from %#a:%d&quot;</span>, QR_OP, srcaddr, mDNSVal16(srcport));
+        SendError(socket, msg, end, srcaddr, srcport, InterfaceID, tcp, context, kDNSFlag1_RC_NotImpl);
+        <span class="enscript-keyword">return</span>;
+    }
+    
+    <span class="enscript-keyword">if</span> (msg-&gt;h.numQuestions != 1 || msg-&gt;h.numAnswers || msg-&gt;h.numAuthorities)
+    {
+        LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: Malformed pkt from %#a:%d, Q:%d, An:%d, Au:%d&quot;</span>, srcaddr, mDNSVal16(srcport),
+            msg-&gt;h.numQuestions, msg-&gt;h.numAnswers, msg-&gt;h.numAuthorities);
+        SendError(socket, msg, end, srcaddr, srcport, InterfaceID, tcp, context, kDNSFlag1_RC_FormErr);
+        <span class="enscript-keyword">return</span>;
+    }
+    ptr = msg-&gt;data;
+    ptr = getQuestion(msg, ptr, end, InterfaceID, &amp;q);
+    <span class="enscript-keyword">if</span> (!ptr)
+    {
+        LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: Question cannot be parsed for pkt from %#a:%d&quot;</span>, srcaddr, mDNSVal16(srcport));
+        SendError(socket, msg, end, srcaddr, srcport, InterfaceID, tcp, context, kDNSFlag1_RC_FormErr);
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: Question %##s (%s)&quot;</span>, q.qname.c, DNSTypeName(q.qtype));
+    }
+    ptr = LocateOptRR(msg, end, 0);
+    <span class="enscript-keyword">if</span> (ptr)
+    {
+        optRR = ptr;
+        ptr = skipResourceRecord(msg, ptr, end);
+        <span class="enscript-comment">// Be liberal and ignore the EDNS0 option if we can't parse it properly
+</span>        <span class="enscript-keyword">if</span> (!ptr)
+        {
+            LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: EDNS0 cannot be parsed for pkt from %#a:%d, ignoring&quot;</span>, srcaddr, mDNSVal16(srcport));
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            optLen = ptr - optRR;
+            LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: EDNS0 opt length %d present in Question %##s (%s)&quot;</span>, optLen, q.qname.c, DNSTypeName(q.qtype));
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: EDNS0 opt not present in Question %##s (%s), ptr %p&quot;</span>, q.qname.c, DNSTypeName(q.qtype), ptr);
+    }
+        
+    qptr = IsDuplicateClient(srcaddr, srcport, msg-&gt;h.id, &amp;q);
+    <span class="enscript-keyword">if</span> (qptr)
+    {
+        LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: Found a duplicate for pkt from %#a:%d, ignoring this&quot;</span>, srcaddr, mDNSVal16(srcport));
+        <span class="enscript-keyword">return</span>;
+    }
+    pc = (DNSProxyClient *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*pc));
+    <span class="enscript-keyword">if</span> (!pc)
+    {
+        LogMsg(<span class="enscript-string">&quot;ProxyCallbackCommon: Memory failure for pkt from %#a:%d, ignoring this&quot;</span>, srcaddr, mDNSVal16(srcport));
+        <span class="enscript-keyword">return</span>;
+    }
+    pc-&gt;addr = *srcaddr;
+    pc-&gt;port = srcport;
+    pc-&gt;msgid = msg-&gt;h.id;
+    pc-&gt;interfaceID = InterfaceID; <span class="enscript-comment">// input interface 
+</span>    pc-&gt;socket = socket;
+    pc-&gt;tcp = tcp;
+    pc-&gt;requestFlags = msg-&gt;h.flags;
+    pc-&gt;context = context;
+    AssignDomainName(&amp;pc-&gt;qname, &amp;q.qname);
+    <span class="enscript-keyword">if</span> (optRR)
+    {
+        <span class="enscript-keyword">if</span> (!ParseEDNS0(pc, optRR, optLen, end))
+        {
+            LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: Invalid EDNS0 option for pkt from %#a:%d, ignoring this&quot;</span>, srcaddr, mDNSVal16(srcport));
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            pc-&gt;optRR = (mDNSu8 *) mDNSPlatformMemAllocate(optLen);
+            <span class="enscript-keyword">if</span> (!pc-&gt;optRR)
+            {
+                LogMsg(<span class="enscript-string">&quot;ProxyCallbackCommon: Memory failure for pkt from %#a:%d, ignoring this&quot;</span>, srcaddr, mDNSVal16(srcport));
+                FreeDNSProxyClient(pc);
+                <span class="enscript-keyword">return</span>;
+            }
+            mDNSPlatformMemCopy(pc-&gt;optRR, optRR, optLen);
+            pc-&gt;optLen = optLen;
+        }
+    }
+
+    debugf(<span class="enscript-string">&quot;ProxyCallbackCommon: DNS Query forwarding to interface index %d&quot;</span>, m-&gt;dp_opintf);
+    mDNS_SetupQuestion(&amp;pc-&gt;q, (mDNSInterfaceID)(<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)m-&gt;dp_opintf, &amp;q.qname, q.qtype, ProxyClientCallback, pc);
+    pc-&gt;q.TimeoutQuestion = 1;
+    <span class="enscript-comment">// Set ReturnIntermed so that we get the negative responses
+</span>    pc-&gt;q.ReturnIntermed  = mDNStrue;
+    pc-&gt;q.ProxyQuestion   = mDNStrue;
+    pc-&gt;q.ProxyDNSSECOK   = pc-&gt;DNSSECOK;
+    pc-&gt;q.responseFlags   = zeroID;
+    <span class="enscript-keyword">if</span> (pc-&gt;DNSSECOK)
+    {
+        <span class="enscript-keyword">if</span> (!(msg-&gt;h.flags.b[1] &amp; kDNSFlag1_CD) &amp;&amp; pc-&gt;q.qtype != kDNSType_RRSIG &amp;&amp; pc-&gt;q.qtype != kDNSQType_ANY)
+        {
+            LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: Setting Validation required bit for %#a:%d, validating %##s (%s)&quot;</span>, srcaddr, mDNSVal16(srcport),
+                q.qname.c, DNSTypeName(q.qtype));
+            pc-&gt;q.ValidationRequired = DNSSEC_VALIDATION_SECURE;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: CD bit not set OR not a valid type for %#a:%d, not validating %##s (%s)&quot;</span>, srcaddr, mDNSVal16(srcport),
+                q.qname.c, DNSTypeName(q.qtype));
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogInfo(<span class="enscript-string">&quot;ProxyCallbackCommon: DNSSEC OK bit not set for %#a:%d, not validating %##s (%s)&quot;</span>, srcaddr, mDNSVal16(srcport),
+                q.qname.c, DNSTypeName(q.qtype));
+    }
+
+    <span class="enscript-keyword">while</span> (*ppc)
+        ppc = &amp;((*ppc)-&gt;next);
+    *ppc = pc;
+
+    mDNS_StartQuery(m, &amp;pc-&gt;q);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">ProxyUDPCallback</span>(<span class="enscript-type">void</span> *socket, DNSMessage *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end, <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> srcaddr,
+    <span class="enscript-type">const</span> mDNSIPPort srcport, <span class="enscript-type">const</span> mDNSAddr *dstaddr, <span class="enscript-type">const</span> mDNSIPPort dstport, <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID, <span class="enscript-type">void</span> *context)
+{
+    LogInfo(<span class="enscript-string">&quot;ProxyUDPCallback: DNS Message from %#a:%d to %#a:%d length %d&quot;</span>, srcaddr, mDNSVal16(srcport), dstaddr, mDNSVal16(dstport), (<span class="enscript-type">int</span>)(end - (mDNSu8 *)msg));
+    ProxyCallbackCommon(socket, msg, end, srcaddr, srcport, dstaddr, dstport, InterfaceID, mDNSfalse, context);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">ProxyTCPCallback</span>(<span class="enscript-type">void</span> *socket, DNSMessage *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end, <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> srcaddr,
+    <span class="enscript-type">const</span> mDNSIPPort srcport, <span class="enscript-type">const</span> mDNSAddr *dstaddr, <span class="enscript-type">const</span> mDNSIPPort dstport, <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID, <span class="enscript-type">void</span> *context)
+{
+    LogInfo(<span class="enscript-string">&quot;ProxyTCPCallback: DNS Message from %#a:%d to %#a:%d length %d&quot;</span>, srcaddr, mDNSVal16(srcport), dstaddr, mDNSVal16(dstport), (<span class="enscript-type">int</span>)(end - (mDNSu8 *)msg));
+    
+    <span class="enscript-comment">// If the connection was closed from the other side or incoming packet does not match stored input interface list, locate the client
+</span>    <span class="enscript-comment">// state and free it.
+</span>    <span class="enscript-keyword">if</span> (((end - (mDNSu8 *)msg) == 0) || (!CheckDNSProxyIpIntf(InterfaceID)))
+    {
+        DNSProxyClient **ppc = &amp;DNSProxyClients;
+        DNSProxyClient **prevpc;
+
+        prevpc = ppc;
+        <span class="enscript-keyword">while</span> (*ppc &amp;&amp; (*ppc)-&gt;socket != socket)
+        {
+            prevpc = ppc;
+            ppc=&amp;(*ppc)-&gt;next;
+        }
+        <span class="enscript-keyword">if</span> (!*ppc)
+        {
+            mDNSPlatformDisposeProxyContext(socket);
+            LogMsg(<span class="enscript-string">&quot;ProxyTCPCallback: socket cannot be found&quot;</span>);
+            <span class="enscript-keyword">return</span>;
+        }
+        *prevpc = (*ppc)-&gt;next;
+        LogInfo(<span class="enscript-string">&quot;ProxyTCPCallback: free&quot;</span>);
+        mDNSPlatformDisposeProxyContext(socket);
+        FreeDNSProxyClient(*ppc);
+        <span class="enscript-keyword">return</span>;
+    }
+    ProxyCallbackCommon(socket, msg, end, srcaddr, srcport, dstaddr, dstport, InterfaceID, mDNStrue, context);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNSProxyInit</span>(mDNSu32 IpIfArr[MaxIp], mDNSu32 OpIf)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    <span class="enscript-type">int</span> i;
+
+    <span class="enscript-comment">// Store DNSProxy Interface fields in mDNS struct
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; MaxIp; i++)
+        m-&gt;dp_ipintf[i]  = IpIfArr[i];
+    m-&gt;dp_opintf         = OpIf;
+
+    LogInfo(<span class="enscript-string">&quot;DNSProxyInit Storing interface list: Input [%d, %d, %d, %d, %d] Output [%d]&quot;</span>, m-&gt;dp_ipintf[0],
+            m-&gt;dp_ipintf[1], m-&gt;dp_ipintf[2], m-&gt;dp_ipintf[3], m-&gt;dp_ipintf[4], m-&gt;dp_opintf);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNSProxyTerminate</span>(<span class="enscript-type">void</span>)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    <span class="enscript-type">int</span> i;
+    
+    <span class="enscript-comment">// Clear DNSProxy Interface fields from mDNS struct
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; MaxIp; i++)
+        m-&gt;dp_ipintf[i]  = 0;
+    m-&gt;dp_opintf         = 0; 
+    
+    LogInfo(<span class="enscript-string">&quot;DNSProxyTerminate Cleared interface list: Input [%d, %d, %d, %d, %d] Output [%d]&quot;</span>, m-&gt;dp_ipintf[0],
+            m-&gt;dp_ipintf[1], m-&gt;dp_ipintf[2], m-&gt;dp_ipintf[3], m-&gt;dp_ipintf[4], m-&gt;dp_opintf);
+}
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">UNICAST_DISABLED</span>
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">ProxyUDPCallback</span>(<span class="enscript-type">void</span> *socket, DNSMessage *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end, <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> srcaddr, <span class="enscript-type">const</span> mDNSIPPort srcport, <span class="enscript-type">const</span> mDNSAddr *dstaddr, <span class="enscript-type">const</span> mDNSIPPort dstport, <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID, <span class="enscript-type">void</span> *context)
+{
+    (<span class="enscript-type">void</span>) socket;
+    (<span class="enscript-type">void</span>) msg;
+    (<span class="enscript-type">void</span>) end;
+    (<span class="enscript-type">void</span>) srcaddr;
+    (<span class="enscript-type">void</span>) srcport;
+    (<span class="enscript-type">void</span>) dstaddr;
+    (<span class="enscript-type">void</span>) dstport;
+    (<span class="enscript-type">void</span>) InterfaceID;
+    (<span class="enscript-type">void</span>) context;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">ProxyTCPCallback</span>(<span class="enscript-type">void</span> *socket, DNSMessage *<span class="enscript-type">const</span> msg, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> end, <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> srcaddr, <span class="enscript-type">const</span> mDNSIPPort srcport, <span class="enscript-type">const</span> mDNSAddr *dstaddr, <span class="enscript-type">const</span> mDNSIPPort dstport, <span class="enscript-type">const</span> mDNSInterfaceID InterfaceID, <span class="enscript-type">void</span> *context)
+{
+    (<span class="enscript-type">void</span>) socket;
+    (<span class="enscript-type">void</span>) msg;
+    (<span class="enscript-type">void</span>) end;
+    (<span class="enscript-type">void</span>) srcaddr;
+    (<span class="enscript-type">void</span>) srcport;
+    (<span class="enscript-type">void</span>) dstaddr;
+    (<span class="enscript-type">void</span>) dstport;
+    (<span class="enscript-type">void</span>) InterfaceID;
+    (<span class="enscript-type">void</span>) context;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNSProxyInit</span>(mDNSu32 IpIfArr[MaxIp], mDNSu32 OpIf)
+{
+    (<span class="enscript-type">void</span>) IpIfArr;
+    (<span class="enscript-type">void</span>) OpIf;
+}
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSProxyTerminate</span>(<span class="enscript-type">void</span>)
+{
+}
+
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">UNICAST_DISABLED</span>
+</pre>
+<hr />
+</body></html>

@@ -1,0 +1,210 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>mDNSResponder.sb</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">mDNSResponder.sb&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="mDNSResponder.sb">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+;
+; Copyright (c) 2012-2019 Apple Inc. All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without 
+; modification, are permitted provided that the following conditions are met:
+;
+; 1.  Redistributions of source code must retain the above copyright notice, 
+;     this list of conditions and the following disclaimer. 
+; 2.  Redistributions in binary form must reproduce the above copyright notice, 
+;     this list of conditions and the following disclaimer in the documentation 
+;     and/or other materials provided with the distribution. 
+; 3.  Neither the name of Apple Inc. (&quot;Apple&quot;) nor the names of its 
+;     contributors may be used to endorse or promote products derived from this 
+;     software without specific prior written permission. 
+;
+; THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS &quot;AS IS&quot; AND ANY 
+; EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED 
+; WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE 
+; DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY 
+; DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES 
+; (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; 
+; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND 
+; ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT 
+; (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS 
+; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;
+;############################################################################
+
+
+; WARNING: The sandbox rule capabilities and syntax used in this file are currently an
+; Apple SPI (System Private Interface) and are subject to change at any time without notice.
+
+(version 1)
+; When mDNSResponder is denied access, we want to avoid symoblification of mDNSResponder
+; to get the stack trace as that can get into deadlock. no-callout will prevent
+; symbolification.
+(deny default (with no-callout))
+
+(import &quot;system.sb&quot;)
+
+; Baseline
+(allow file-read-metadata ipc-posix-shm)
+
+; Mach communications
+; These are needed for things like getpwnam, hostname changes, &amp; keychain
+(allow mach-lookup
+       (global-name &quot;com.apple.analyticsd&quot;)
+       (global-name &quot;com.apple.awdd&quot;)
+       (global-name &quot;com.apple.bsd.dirhelper&quot;)
+       (global-name &quot;com.apple.CoreServices.coreservicesd&quot;)
+       (global-name &quot;com.apple.coreservices.quarantine-resolver&quot;)
+       (global-name &quot;com.apple.distributed_notifications.2&quot;)
+       (global-name &quot;com.apple.distributed_notifications@1v3&quot;)
+       (global-name &quot;com.apple.lsd.mapdb&quot;)
+       (global-name &quot;com.apple.ocspd&quot;)
+       (global-name &quot;com.apple.PowerManagement.control&quot;)
+       (global-name &quot;com.apple.mDNSResponderHelper&quot;)
+       (global-name &quot;com.apple.mDNSResponder_Helper&quot;)
+       (global-name &quot;com.apple.SecurityServer&quot;)
+       (global-name &quot;com.apple.SystemConfiguration.configd&quot;)
+       (global-name &quot;com.apple.SystemConfiguration.SCNetworkReachability&quot;)
+       (global-name &quot;com.apple.SystemConfiguration.DNSConfiguration&quot;)
+       (global-name &quot;com.apple.SystemConfiguration.NetworkInformation&quot;)
+       (global-name &quot;com.apple.system.notification_center&quot;)
+       (global-name &quot;com.apple.system.logger&quot;)
+       (global-name &quot;com.apple.trustd&quot;)
+       (global-name &quot;com.apple.usymptomsd&quot;)
+       (global-name &quot;com.apple.webcontentfilter.dns&quot;)
+       (global-name &quot;com.apple.server.bluetooth&quot;)
+       (global-name &quot;com.apple.server.bluetooth.le.att.xpc&quot;)
+       (global-name &quot;com.apple.awacs&quot;)
+       (global-name &quot;com.apple.networkd&quot;)
+       (global-name &quot;com.apple.securityd&quot;)
+       (global-name &quot;com.apple.wifi.manager&quot;)
+       (global-name &quot;com.apple.wifip2pd&quot;)
+       ; &quot;com.apple.blued&quot; is the name used in pre Lobo builds,
+       ; leave it in place while still running roots on pre Lobo targets
+       (global-name &quot;com.apple.blued&quot;)
+       (global-name &quot;com.apple.bluetoothd&quot;)
+       (global-name &quot;com.apple.mobilegestalt.xpc&quot;)
+       (global-name &quot;com.apple.ReportCrash.SimulateCrash&quot;)
+       (global-name &quot;com.apple.snhelper&quot;)
+       (global-name &quot;com.apple.networkd_privileged&quot;))
+
+(allow mach-register
+       (global-name &quot;com.apple.d2d.ipc&quot;))
+
+; Networking, including Unix Domain Sockets
+(allow network*)
+
+; Raw sockets
+(if (defined? 'system-socket)
+    (allow system-socket))
+
+; Hardware model information
+(allow sysctl-read)
+
+; Syslog early in the boot process
+(allow file-read-data file-write-data (literal &quot;/dev/console&quot;))
+
+(allow file-read-data
+       ; /etc/hosts support
+       (literal &quot;/private/etc/hosts&quot;)
+       (literal &quot;/private/etc&quot;))
+
+; Our socket
+(allow file-read* file-write* (literal &quot;/private/var/run/mDNSResponder&quot;))
+
+; BPF control for sleep proxy server
+(allow file-ioctl (prefix &quot;/dev/bpf&quot;))
+
+; Used by CoreCrypto AES routines.
+(allow file-read* file-write-data file-ioctl
+           (literal &quot;/dev/aes_0&quot;))
+
+; System version, settings, and other miscellaneous necessary file system accesses
+(allow file-read-data
+       ; Needed for CFCopyVersionDictionary()
+       (literal &quot;/usr/sbin&quot;)
+       (literal &quot;/usr/sbin/mDNSResponder&quot;)
+
+       (literal &quot;/Library/Preferences/com.apple.mDNSResponder.plist&quot;)
+       (literal &quot;/Library/Preferences/SystemConfiguration/preferences.plist&quot;)
+       (literal &quot;/Library/Preferences/SystemConfiguration/com.apple.nat.plist&quot;)
+       (regex #&quot;^/Library/Preferences/(ByHost/)?\.GlobalPreferences\.&quot;)
+       (literal &quot;/Library/Preferences/com.apple.crypto.plist&quot;)
+       (literal &quot;/Library/Security/Trust Settings/Admin.plist&quot;)
+       (regex #&quot;^/Library/Preferences/com\.apple\.security\.&quot;)
+       (literal &quot;/Library/Preferences/SystemConfiguration/com.apple.PowerManagement.plist&quot;)
+       (literal &quot;/private/var/preferences/SystemConfiguration/preferences.plist&quot;)
+       (subpath &quot;/System/Library/Preferences/Logging&quot;)
+       (subpath &quot;/AppleInternal/Library/Preferences/Logging&quot;)
+       (subpath &quot;/private/var/preferences/Logging&quot;)
+       (subpath &quot;/private/var/db/timezone&quot;)
+       (subpath &quot;/Library/Preferences/Logging&quot;))
+
+
+; For MAC Address
+(allow system-info (info-type &quot;net.link.addr&quot;))
+
+; We just need access to System.keychain. But we don't want errors logged if other keychains are
+; accessed under /Library/Keychains. Other keychains may be accessed as part of setting up an SSL
+; connection. Instead of adding access to it here (to things which we don't need), we disable any
+; logging that might happen during the access
+(deny file-read-data (regex #&quot;^/Library/Keychains/&quot;) (with no-log))
+(allow file-read-data (literal &quot;/Library/Keychains/System.keychain&quot;))
+
+
+; Our Module Directory Services cache
+(allow file-read-data
+       (subpath &quot;/private/var/tmp/mds&quot;)
+       (subpath &quot;/private/var/db/mds&quot;))
+
+(allow file-read* file-write*
+       (regex #&quot;^/private/var/tmp/mds/[0-9]+(/|$)&quot;)
+       (regex #&quot;^/private/var/db/mds/[0-9]+(/|$)&quot;)
+       (regex #&quot;^/private/var/folders/[^/]+/[^/]+/C/mds(/|$)&quot;)
+
+       ; Required on 10.5 and 10.6
+       (regex #&quot;^/private/var/folders/[^/]+/[^/]+/-Caches-/mds(/|$)&quot;))
+
+; CRL Cache for SSL/TLS connections
+(allow file-read-data (literal &quot;/private/var/db/crls/crlcache.db&quot;))
+
+; For mDNS sleep proxy offload and IOPMConnectionCreate
+(if (defined? 'iokit-open)
+   (begin
+     (allow iokit-open
+        (iokit-user-client-class &quot;NVEthernetUserClientMDNS&quot;)
+        (iokit-user-client-class &quot;mDNSOffloadUserClient&quot;)
+        (iokit-user-client-class &quot;wlDNSOffloadUserClient&quot;)
+        (iokit-user-client-class &quot;RootDomainUserClient&quot;)
+        (iokit-user-client-class &quot;AppleMobileFileIntegrityUserClient&quot;))))
+
+; Internal builds only
+(with-filter (system-attribute apple-internal)
+    (allow sysctl-read sysctl-write
+        (sysctl-name &quot;vm.footprint_suspend&quot;))) ; dyld performance reporting
+
+; Used to dump internal state
+; Allows directory lookup, and creating, reading and writing files under /private/var/log/mDNSResponder
+; We know that this sandbox rule seems to give the broader access to mDNSResponder, but given the fact that the directory
+; &quot;/private/var/log/mDNSResponder&quot; is owned by user &quot;_mdnsresponder&quot; who is in &quot;wheel&quot; group, no one else would have the
+; access to this directory, so there is not much security concern.
+(allow file-read* file-write* (subpath &quot;/private/var/log/mDNSResponder&quot;))
+</pre>
+<hr />
+</body></html>

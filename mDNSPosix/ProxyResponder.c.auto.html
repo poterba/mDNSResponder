@@ -1,0 +1,325 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>ProxyResponder.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">ProxyResponder.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="ProxyResponder.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2002-2004 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>              // For printf()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>             // For exit() etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>             // For strlen() etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>             // For select()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;signal.h&gt;</span>             // For SIGINT, SIGTERM
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>              // For errno, EINTR
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>         // For INADDR_NONE
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>          // For inet_addr()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netdb.h&gt;</span>              // For gethostbyname()
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>    // Defines the interface to the client layer above
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSPosix.h&quot;</span>          // Defines the specific types needed to run mDNS on this platform
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;ExampleClientApp.h&quot;</span>
+
+<span class="enscript-comment">// Compatibility workaround: Solaris 2.5 has no INADDR_NONE
+</span>#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">INADDR_NONE</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">INADDR_NONE</span> (mDNSu32)0xffffffff
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Globals
+</span>mDNS mDNSStorage;       <span class="enscript-comment">// mDNS core uses this to store its globals
+</span><span class="enscript-type">static</span> mDNS_PlatformSupport PlatformStorage;  <span class="enscript-comment">// Stores this platform's globals
+</span>mDNSexport <span class="enscript-type">const</span> <span class="enscript-type">char</span> ProgramName[] = <span class="enscript-string">&quot;mDNSProxyResponderPosix&quot;</span>;
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Proxy Host Registration
+</span>
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    mDNSv4Addr ip;
+    domainlabel hostlabel;      <span class="enscript-comment">// Conforms to standard DNS letter-digit-hyphen host name rules
+</span>    AuthRecord RR_A;        <span class="enscript-comment">// 'A' (address) record for our &quot;.local&quot; name
+</span>    AuthRecord RR_PTR;      <span class="enscript-comment">// PTR (reverse lookup) record
+</span>} ProxyHost;
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">HostNameCallback</span>(mDNS *<span class="enscript-type">const</span> m, AuthRecord *<span class="enscript-type">const</span> rr, mStatus result)
+{
+    ProxyHost *f = (ProxyHost*)rr-&gt;RecordContext;
+    <span class="enscript-keyword">if</span> (result == mStatus_NoError)
+        debugf(<span class="enscript-string">&quot;Host name successfully registered: %##s&quot;</span>, rr-&gt;resrec.name-&gt;c);
+    <span class="enscript-keyword">else</span>
+    {
+        debugf(<span class="enscript-string">&quot;Host name conflict for %##s&quot;</span>, rr-&gt;resrec.name-&gt;c);
+        mDNS_Deregister(m, &amp;f-&gt;RR_A);
+        mDNS_Deregister(m, &amp;f-&gt;RR_PTR);
+        exit(-1);
+    }
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">mDNS_RegisterProxyHost</span>(mDNS *m, ProxyHost *p)
+{
+    <span class="enscript-type">char</span> buffer[32];
+
+    mDNS_SetupResourceRecord(&amp;p-&gt;RR_A,   mDNSNULL, mDNSInterface_Any, kDNSType_A,   60, kDNSRecordTypeUnique,      AuthRecordAny, HostNameCallback, p);
+    mDNS_SetupResourceRecord(&amp;p-&gt;RR_PTR, mDNSNULL, mDNSInterface_Any, kDNSType_PTR, 60, kDNSRecordTypeKnownUnique, AuthRecordAny, HostNameCallback, p);
+
+    p-&gt;RR_A.namestorage.c[0] = 0;
+    AppendDomainLabel(&amp;p-&gt;RR_A.namestorage, &amp;p-&gt;hostlabel);
+    AppendLiteralLabelString(&amp;p-&gt;RR_A.namestorage, <span class="enscript-string">&quot;local&quot;</span>);
+
+    <span class="enscript-comment">// Note: This is reverse order compared to a normal dotted-decimal IP address, so we can't use our customary &quot;%.4a&quot; format code
+</span>    mDNS_snprintf(buffer, <span class="enscript-keyword">sizeof</span>(buffer), <span class="enscript-string">&quot;%d.%d.%d.%d.in-addr.arpa.&quot;</span>, p-&gt;ip.b[3], p-&gt;ip.b[2], p-&gt;ip.b[1], p-&gt;ip.b[0]);
+    MakeDomainNameFromDNSNameString(&amp;p-&gt;RR_PTR.namestorage, buffer);
+    p-&gt;RR_PTR.ForceMCast = mDNStrue; <span class="enscript-comment">// This PTR points to our dot-local name, so don't ever try to write it into a uDNS server
+</span>
+    p-&gt;RR_A.resrec.rdata-&gt;u.ipv4 = p-&gt;ip;
+    AssignDomainName(&amp;p-&gt;RR_PTR.resrec.rdata-&gt;u.name, p-&gt;RR_A.resrec.name);
+
+    mDNS_Register(m, &amp;p-&gt;RR_A);
+    mDNS_Register(m, &amp;p-&gt;RR_PTR);
+
+    debugf(<span class="enscript-string">&quot;Made Proxy Host Records for %##s&quot;</span>, p-&gt;RR_A.resrec.name-&gt;c);
+
+    <span class="enscript-keyword">return</span>(mStatus_NoError);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Service Registration
+</span>
+<span class="enscript-comment">// This sample ServiceCallback just calls mDNS_RenameAndReregisterService to automatically pick a new
+</span><span class="enscript-comment">// unique name for the service. For a device such as a printer, this may be appropriate.
+</span><span class="enscript-comment">// For a device with a user interface, and a screen, and a keyboard, the appropriate
+</span><span class="enscript-comment">// response may be to prompt the user and ask them to choose a new name for the service.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">ServiceCallback</span>(mDNS *<span class="enscript-type">const</span> m, ServiceRecordSet *<span class="enscript-type">const</span> sr, mStatus result)
+{
+    <span class="enscript-keyword">switch</span> (result)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">mStatus_NoError</span>:      debugf(<span class="enscript-string">&quot;Callback: %##s Name Registered&quot;</span>,    sr-&gt;RR_SRV.resrec.name-&gt;c); <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">mStatus_NameConflict</span>: debugf(<span class="enscript-string">&quot;Callback: %##s Name Conflict&quot;</span>,      sr-&gt;RR_SRV.resrec.name-&gt;c); <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">mStatus_MemFree</span>:      debugf(<span class="enscript-string">&quot;Callback: %##s Memory Free&quot;</span>,        sr-&gt;RR_SRV.resrec.name-&gt;c); <span class="enscript-keyword">break</span>;
+    <span class="enscript-reference">default</span>:                   debugf(<span class="enscript-string">&quot;Callback: %##s Unknown Result %ld&quot;</span>, sr-&gt;RR_SRV.resrec.name-&gt;c, result); <span class="enscript-keyword">break</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (result == mStatus_NoError)
+    {
+        <span class="enscript-type">char</span> buffer[MAX_ESCAPED_DOMAIN_NAME];
+        ConvertDomainNameToCString(sr-&gt;RR_SRV.resrec.name, buffer);
+        printf(<span class="enscript-string">&quot;Service %s now registered and active\n&quot;</span>, buffer);
+    }
+
+    <span class="enscript-keyword">if</span> (result == mStatus_NameConflict)
+    {
+        <span class="enscript-type">char</span> buffer1[MAX_ESCAPED_DOMAIN_NAME], buffer2[MAX_ESCAPED_DOMAIN_NAME];
+        ConvertDomainNameToCString(sr-&gt;RR_SRV.resrec.name, buffer1);
+        mDNS_RenameAndReregisterService(m, sr, mDNSNULL);
+        ConvertDomainNameToCString(sr-&gt;RR_SRV.resrec.name, buffer2);
+        printf(<span class="enscript-string">&quot;Name Conflict! %s renamed as %s\n&quot;</span>, buffer1, buffer2);
+    }
+}
+
+<span class="enscript-comment">// RegisterService() is a simple wrapper function which takes C string
+</span><span class="enscript-comment">// parameters, converts them to domainname parameters, and calls mDNS_RegisterService()
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">RegisterService</span>(mDNS *m, ServiceRecordSet *recordset,
+                               <span class="enscript-type">const</span> <span class="enscript-type">char</span> name[], <span class="enscript-type">const</span> <span class="enscript-type">char</span> type[], <span class="enscript-type">const</span> <span class="enscript-type">char</span> domain[],
+                               <span class="enscript-type">const</span> domainname *host, mDNSu16 PortAsNumber, <span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+{
+    domainlabel n;
+    domainname t, d;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> txtbuffer[1024], *bptr = txtbuffer;
+    <span class="enscript-type">char</span> buffer[MAX_ESCAPED_DOMAIN_NAME];
+
+    MakeDomainLabelFromLiteralString(&amp;n, name);
+    MakeDomainNameFromDNSNameString(&amp;t, type);
+    MakeDomainNameFromDNSNameString(&amp;d, domain);
+    <span class="enscript-keyword">while</span> (argc)
+    {
+        <span class="enscript-type">int</span> len = strlen(argv[0]);
+        <span class="enscript-keyword">if</span> (len &gt; 255 || bptr + 1 + len &gt;= txtbuffer + <span class="enscript-keyword">sizeof</span>(txtbuffer)) <span class="enscript-keyword">break</span>;
+        printf(<span class="enscript-string">&quot;STR: %s\n&quot;</span>, argv[0]);
+        bptr[0] = len;
+        strcpy((<span class="enscript-type">char</span>*)(bptr+1), argv[0]);
+        bptr += 1 + len;
+        argc--;
+        argv++;
+    }
+
+    mDNS_RegisterService(m, recordset,
+                         &amp;n, &amp;t, &amp;d, <span class="enscript-comment">// Name, type, domain
+</span>                         host, mDNSOpaque16fromIntVal(PortAsNumber),
+                         mDNSNULL, txtbuffer, bptr-txtbuffer, <span class="enscript-comment">// TXT data, length
+</span>                         mDNSNULL, 0, <span class="enscript-comment">// Subtypes
+</span>                         mDNSInterface_Any, <span class="enscript-comment">// Interface ID
+</span>                         ServiceCallback, mDNSNULL, 0); <span class="enscript-comment">// Callback, context, flags
+</span>
+    ConvertDomainNameToCString(recordset-&gt;RR_SRV.resrec.name, buffer);
+    printf(<span class="enscript-string">&quot;Made Service Records for %s\n&quot;</span>, buffer);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Service non-existence assertion
+</span><span class="enscript-comment">// (claiming a service name without actually providing a service at that name, to prevent anyone else using that name)
+</span><span class="enscript-comment">// This is useful to avoid confusion between similar services
+</span><span class="enscript-comment">// e.g. A printer that implements IPP printing service using the name &quot;My Printer&quot;, but doesn't implement LPR service,
+</span><span class="enscript-comment">// should also claim the LPR service name &quot;My Printer&quot; to stop a different printer offering LPR service under the same name,
+</span><span class="enscript-comment">// since it would be confusing to users to have two equivalent services with the same name.
+</span>
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">NoSuchServiceCallback</span>(mDNS *<span class="enscript-type">const</span> m, AuthRecord *<span class="enscript-type">const</span> rr, mStatus result)
+{
+    <span class="enscript-type">const</span> domainname *proxyhostname = (<span class="enscript-type">const</span> domainname *)rr-&gt;RecordContext;
+    <span class="enscript-keyword">switch</span> (result)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">mStatus_NoError</span>:      debugf(<span class="enscript-string">&quot;Callback: %##s Name Registered&quot;</span>,    rr-&gt;resrec.name-&gt;c); <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">mStatus_NameConflict</span>: debugf(<span class="enscript-string">&quot;Callback: %##s Name Conflict&quot;</span>,      rr-&gt;resrec.name-&gt;c); <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">mStatus_MemFree</span>:      debugf(<span class="enscript-string">&quot;Callback: %##s Memory Free&quot;</span>,        rr-&gt;resrec.name-&gt;c); <span class="enscript-keyword">break</span>;
+    <span class="enscript-reference">default</span>:                   debugf(<span class="enscript-string">&quot;Callback: %##s Unknown Result %ld&quot;</span>, rr-&gt;resrec.name-&gt;c, result); <span class="enscript-keyword">break</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (result == mStatus_NoError)
+    {
+        <span class="enscript-type">char</span> buffer[MAX_ESCAPED_DOMAIN_NAME];
+        ConvertDomainNameToCString(rr-&gt;resrec.name, buffer);
+        printf(<span class="enscript-string">&quot;Non-existence assertion %s now registered and active\n&quot;</span>, buffer);
+    }
+
+    <span class="enscript-keyword">if</span> (result == mStatus_NameConflict)
+    {
+        domainlabel n;
+        domainname t, d;
+        <span class="enscript-type">char</span> buffer1[MAX_ESCAPED_DOMAIN_NAME], buffer2[MAX_ESCAPED_DOMAIN_NAME];
+        ConvertDomainNameToCString(rr-&gt;resrec.name, buffer1);
+        DeconstructServiceName(rr-&gt;resrec.name, &amp;n, &amp;t, &amp;d);
+        IncrementLabelSuffix(&amp;n, mDNStrue);
+        mDNS_RegisterNoSuchService(m, rr, &amp;n, &amp;t, &amp;d, proxyhostname, mDNSInterface_Any, NoSuchServiceCallback, mDNSNULL, 0);
+        ConvertDomainNameToCString(rr-&gt;resrec.name, buffer2);
+        printf(<span class="enscript-string">&quot;Name Conflict! %s renamed as %s\n&quot;</span>, buffer1, buffer2);
+    }
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">RegisterNoSuchService</span>(mDNS *m, AuthRecord *<span class="enscript-type">const</span> rr, domainname *proxyhostname,
+                                     <span class="enscript-type">const</span> <span class="enscript-type">char</span> name[], <span class="enscript-type">const</span> <span class="enscript-type">char</span> type[], <span class="enscript-type">const</span> <span class="enscript-type">char</span> domain[])
+{
+    domainlabel n;
+    domainname t, d;
+    <span class="enscript-type">char</span> buffer[MAX_ESCAPED_DOMAIN_NAME];
+    MakeDomainLabelFromLiteralString(&amp;n, name);
+    MakeDomainNameFromDNSNameString(&amp;t, type);
+    MakeDomainNameFromDNSNameString(&amp;d, domain);
+    mDNS_RegisterNoSuchService(m, rr, &amp;n, &amp;t, &amp;d, proxyhostname, mDNSInterface_Any, NoSuchServiceCallback, proxyhostname, 0);
+    ConvertDomainNameToCString(rr-&gt;resrec.name, buffer);
+    printf(<span class="enscript-string">&quot;Made Non-existence Record for %s\n&quot;</span>, buffer);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Main
+</span>
+mDNSexport <span class="enscript-type">int</span> <span class="enscript-function-name">main</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+{
+    mStatus status;
+    sigset_t signals;
+
+    <span class="enscript-keyword">if</span> (argc &lt; 3) <span class="enscript-keyword">goto</span> <span class="enscript-reference">usage</span>;
+
+    status = mDNS_Init(&amp;mDNSStorage, &amp;PlatformStorage,
+                       mDNS_Init_NoCache, mDNS_Init_ZeroCacheSize,
+                       mDNS_Init_DontAdvertiseLocalAddresses,
+                       mDNS_Init_NoInitCallback, mDNS_Init_NoInitCallbackContext);
+    <span class="enscript-keyword">if</span> (status) { fprintf(stderr, <span class="enscript-string">&quot;Daemon start: mDNS_Init failed %d\n&quot;</span>, (<span class="enscript-type">int</span>)status); <span class="enscript-keyword">return</span>(status); }
+
+    mDNSPosixListenForSignalInEventLoop(SIGINT);
+    mDNSPosixListenForSignalInEventLoop(SIGTERM);
+
+    <span class="enscript-keyword">if</span> (!strcmp(argv[1], <span class="enscript-string">&quot;-&quot;</span>))
+    {
+        domainname proxyhostname;
+        AuthRecord proxyrecord;
+        <span class="enscript-keyword">if</span> (argc &lt; 5) <span class="enscript-keyword">goto</span> <span class="enscript-reference">usage</span>;
+        proxyhostname.c[0] = 0;
+        AppendLiteralLabelString(&amp;proxyhostname, argv[2]);
+        AppendLiteralLabelString(&amp;proxyhostname, <span class="enscript-string">&quot;local&quot;</span>);
+        RegisterNoSuchService(&amp;mDNSStorage, &amp;proxyrecord, &amp;proxyhostname, argv[3], argv[4], <span class="enscript-string">&quot;local.&quot;</span>);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        ProxyHost proxyhost;
+        ServiceRecordSet proxyservice;
+
+        proxyhost.ip.NotAnInteger = inet_addr(argv[1]);
+        <span class="enscript-keyword">if</span> (proxyhost.ip.NotAnInteger == INADDR_NONE)   <span class="enscript-comment">// INADDR_NONE is 0xFFFFFFFF
+</span>        {
+            <span class="enscript-type">struct</span> hostent *h = gethostbyname(argv[1]);
+            <span class="enscript-keyword">if</span> (h) proxyhost.ip.NotAnInteger = *(<span class="enscript-type">long</span>*)h-&gt;h_addr;
+        }
+        <span class="enscript-keyword">if</span> (proxyhost.ip.NotAnInteger == INADDR_NONE)   <span class="enscript-comment">// INADDR_NONE is 0xFFFFFFFF
+</span>        {
+            fprintf(stderr, <span class="enscript-string">&quot;%s is not valid host address\n&quot;</span>, argv[1]);
+            <span class="enscript-keyword">return</span>(-1);
+        }
+
+        MakeDomainLabelFromLiteralString(&amp;proxyhost.hostlabel, argv[2]);
+
+        mDNS_RegisterProxyHost(&amp;mDNSStorage, &amp;proxyhost);
+
+        <span class="enscript-keyword">if</span> (argc &gt;=6)
+            RegisterService(&amp;mDNSStorage, &amp;proxyservice, argv[3], argv[4], <span class="enscript-string">&quot;local.&quot;</span>,
+                            proxyhost.RR_A.resrec.name, atoi(argv[5]), argc-6, &amp;argv[6]);
+    }
+
+    <span class="enscript-keyword">do</span>
+    {
+        <span class="enscript-type">struct</span> timeval timeout = { FutureTime, 0 };     <span class="enscript-comment">// wait until SIGINT or SIGTERM
+</span>        mDNSBool gotSomething;
+        mDNSPosixRunEventLoopOnce(&amp;mDNSStorage, &amp;timeout, &amp;signals, &amp;gotSomething);
+    }
+    <span class="enscript-keyword">while</span> ( !( sigismember( &amp;signals, SIGINT) || sigismember( &amp;signals, SIGTERM)));
+
+    mDNS_Close(&amp;mDNSStorage);
+
+    <span class="enscript-keyword">return</span>(0);
+
+<span class="enscript-reference">usage</span>:
+    fprintf(stderr, <span class="enscript-string">&quot;%s ip hostlabel [srvname srvtype port txt [txt ...]]\n&quot;</span>, argv[0]);
+    fprintf(stderr, <span class="enscript-string">&quot;ip        Real IP address (or valid host name) of the host where the service actually resides\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;hostlabel First label of the dot-local host name to create for this host, e.g. \&quot;foo\&quot; for \&quot;foo.local.\&quot;\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;srvname   Descriptive name of service, e.g. \&quot;Stuart's Ink Jet Printer\&quot;\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;srvtype   IANA service type, e.g. \&quot;_ipp._tcp\&quot; or \&quot;_ssh._tcp\&quot;, etc.\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;port      Port number where the service resides (1-65535)\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;txt       Additional name/value pairs specified in service definition, e.g. \&quot;pdl=application/postscript\&quot;\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;e.g. %s 169.254.12.34 thehost                                (just create a dot-local host name)\n&quot;</span>, argv[0]);
+    fprintf(stderr, <span class="enscript-string">&quot;or   %s 169.254.12.34 thehost \&quot;My Printer\&quot; _printer._tcp. 515 rp=lpt1 pdl=application/postscript\n&quot;</span>, argv[0]);
+    fprintf(stderr, <span class="enscript-string">&quot;or   %s -             thehost \&quot;My Printer\&quot; _printer._tcp.           (assertion of non-existence)\n&quot;</span>, argv[0]);
+    <span class="enscript-keyword">return</span>(-1);
+}
+</pre>
+<hr />
+</body></html>

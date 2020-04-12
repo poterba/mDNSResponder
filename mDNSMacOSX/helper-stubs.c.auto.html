@@ -1,0 +1,537 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>helper-stubs.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">helper-stubs.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="helper-stubs.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2007-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mach/mach.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mach/mach_error.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mach/vm_map.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;servers/bootstrap.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;IOKit/IOReturn.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;CoreFoundation/CoreFoundation.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;helper.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;dispatch/dispatch.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;xpc/private.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;Block.h&gt;</span>
+
+<span class="enscript-comment">//
+</span><span class="enscript-comment">// Implementation Notes about the HelperQueue:
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// To prevent blocking the main queue, all communications with mDNSResponderHelper should happen on
+</span><span class="enscript-comment">// HelperQueue. There are a few calls which are still synchronous and needs to be handled separately
+</span><span class="enscript-comment">// case by case.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// When spawning off the work to the HelperQueue, any arguments that are pointers need to be copied
+</span><span class="enscript-comment">// explicitly as they may cease to exist after the call returns. From within the block that is scheduled,
+</span><span class="enscript-comment">// arrays defined on the stack can't be referenced and hence it is enclosed them in a struct. If the array is
+</span><span class="enscript-comment">// an argument to the function, the blocks can reference them as they are passed in as pointers. But care should
+</span><span class="enscript-comment">// be taken to copy them locally as they may cease to exist when the function returns.
+</span><span class="enscript-comment">//
+</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Globals
+</span><span class="enscript-type">static</span> dispatch_queue_t HelperQueue;
+
+<span class="enscript-type">static</span> int64_t maxwait_secs = 5LL;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">mDNSHELPER_DEBUG</span> LogOperation
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Utility Functions
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">HelperLog</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *prefix, xpc_object_t o)
+{
+    <span class="enscript-type">char</span> *desc = xpc_copy_description(o);
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;HelperLog %s: %s&quot;</span>, prefix, desc);
+    free(desc);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// XPC Funcs:
+</span><span class="enscript-comment">//*************************************************************************************************************
+</span>
+
+mDNSlocal xpc_connection_t <span class="enscript-function-name">Create_Connection</span>(<span class="enscript-type">void</span>)
+{
+    xpc_connection_t connection = xpc_connection_create_mach_service(kHelperService, HelperQueue,
+        XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
+    <span class="enscript-keyword">if</span> (connection)
+    {
+        xpc_connection_set_event_handler(connection, ^(xpc_object_t event)
+        {
+            mDNSHELPER_DEBUG(<span class="enscript-string">&quot;Create_Connection xpc: [%s] \n&quot;</span>, xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION));
+        });
+        xpc_connection_activate(connection);
+    }
+    <span class="enscript-keyword">return</span> connection;
+}
+
+mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">SendDict_ToServer</span>(xpc_object_t msg, xpc_object_t *out_reply)
+{
+    xpc_connection_t connection;
+    dispatch_semaphore_t sem = NULL;
+    __block xpc_object_t reply = NULL;
+    __block <span class="enscript-type">int</span> errorcode = kHelperErr_NoResponse;
+    
+    HelperLog(<span class="enscript-string">&quot;SendDict_ToServer Sending msg to Daemon&quot;</span>, msg);
+    
+    connection = Create_Connection();
+    <span class="enscript-keyword">if</span> (!connection)
+    {
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    sem = dispatch_semaphore_create(0);
+    <span class="enscript-keyword">if</span> (!sem)
+    {
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+    
+    dispatch_retain(sem); <span class="enscript-comment">// for the block below
+</span>    xpc_connection_send_message_with_reply(connection, msg, HelperQueue, ^(xpc_object_t recv_msg)
+    {
+        <span class="enscript-type">const</span> xpc_type_t type = xpc_get_type(recv_msg);
+                                               
+        <span class="enscript-keyword">if</span> (type == XPC_TYPE_DICTIONARY)
+        {
+            HelperLog(<span class="enscript-string">&quot;SendDict_ToServer Received reply msg from Daemon&quot;</span>, recv_msg);
+            uint64_t reply_status = xpc_dictionary_get_uint64(recv_msg, kHelperReplyStatus);
+            errorcode = (<span class="enscript-type">int</span>)xpc_dictionary_get_int64(recv_msg, kHelperErrCode);
+            
+            <span class="enscript-keyword">switch</span> (reply_status)
+            {
+                <span class="enscript-keyword">case</span> <span class="enscript-reference">kHelperReply_ACK</span>:
+                    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;NoError: successful reply&quot;</span>);
+                    <span class="enscript-keyword">break</span>;
+                <span class="enscript-reference">default</span>:
+                    LogMsg(<span class="enscript-string">&quot;default: Unexpected reply from Helper&quot;</span>);
+                    <span class="enscript-keyword">break</span>;
+            }
+            reply = recv_msg;
+            xpc_retain(reply);
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogMsg(<span class="enscript-string">&quot;SendDict_ToServer Received unexpected reply from daemon [%s]&quot;</span>,
+                    xpc_dictionary_get_string(recv_msg, XPC_ERROR_KEY_DESCRIPTION));
+            HelperLog(<span class="enscript-string">&quot;SendDict_ToServer Unexpected Reply contents&quot;</span>, recv_msg);
+        }
+        
+        dispatch_semaphore_signal(sem);
+        dispatch_release(sem);
+    });
+    
+    <span class="enscript-keyword">if</span> (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (maxwait_secs * NSEC_PER_SEC))) != 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;SendDict_ToServer: UNEXPECTED WAIT_TIME in dispatch_semaphore_wait&quot;</span>);
+
+        <span class="enscript-comment">// If we insist on using a semaphore timeout, then cancel the connection if the timeout is reached.
+</span>        <span class="enscript-comment">// This forces the reply block to be called if a reply wasn't received to keep things serialized.
+</span>        xpc_connection_cancel(connection);
+        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    }
+    <span class="enscript-keyword">if</span> (out_reply)
+    {
+        *out_reply = reply;
+        reply = NULL;
+    }
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;SendDict_ToServer returning with errorcode[%d]&quot;</span>, errorcode);
+    
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">if</span> (connection)
+    {
+        xpc_connection_cancel(connection);
+        xpc_release(connection);
+    }
+    <span class="enscript-keyword">if</span> (sem)
+    {
+        dispatch_release(sem);
+    }
+    <span class="enscript-keyword">if</span> (reply)
+    {
+        xpc_release(reply);
+    }
+    <span class="enscript-keyword">return</span> errorcode;
+}
+
+<span class="enscript-comment">//**************************************************************************************************************
+</span>
+mDNSexport mStatus <span class="enscript-function-name">mDNSHelperInit</span>()
+{
+    HelperQueue = dispatch_queue_create(<span class="enscript-string">&quot;com.apple.mDNSResponder.HelperQueue&quot;</span>, NULL);
+    <span class="enscript-keyword">if</span> (HelperQueue == NULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;dispatch_queue_create: Helper queue NULL&quot;</span>);
+        <span class="enscript-keyword">return</span> mStatus_NoMemoryErr;
+    }
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPreferencesSetName</span>(<span class="enscript-type">int</span> key, domainlabel *old, domainlabel *new)
+{
+    <span class="enscript-type">struct</span>
+    {
+        <span class="enscript-type">char</span> oldname[MAX_DOMAIN_LABEL+1];
+        <span class="enscript-type">char</span> newname[MAX_DOMAIN_LABEL+1];
+    } names;
+
+    mDNSPlatformMemZero(names.oldname, MAX_DOMAIN_LABEL + 1);
+    mDNSPlatformMemZero(names.newname, MAX_DOMAIN_LABEL + 1);
+
+    ConvertDomainLabelToCString_unescaped(old, names.oldname);
+    
+    <span class="enscript-keyword">if</span> (new)
+        ConvertDomainLabelToCString_unescaped(new, names.newname);
+    
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSPreferencesSetName: XPC IPC Test oldname %s newname %s&quot;</span>, names.oldname, names.newname);
+     
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, set_name);
+    
+    xpc_dictionary_set_uint64(dict, kPrefsNameKey, key);
+    xpc_dictionary_set_string(dict, kPrefsOldName, names.oldname);
+    xpc_dictionary_set_string(dict, kPrefsNewName, names.newname);
+    
+    SendDict_ToServer(dict, NULL);
+    xpc_release(dict);
+    dict = NULL;
+    
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">mDNSRequestBPF</span>()
+{
+     mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSRequestBPF: Using XPC IPC&quot;</span>);
+     
+     <span class="enscript-comment">// Create Dictionary To Send
+</span>     xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+     xpc_dictionary_set_uint64(dict, kHelperMode, bpf_request);
+     SendDict_ToServer(dict, NULL);
+     xpc_release(dict);
+     dict = NULL;
+
+}
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">mDNSPowerRequest</span>(<span class="enscript-type">int</span> key, <span class="enscript-type">int</span> interval)
+{
+    <span class="enscript-type">int</span> err_code = kHelperErr_NotConnected;
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSPowerRequest: Using XPC IPC calling out to Helper key is [%d] interval is [%d]&quot;</span>, key, interval);
+    
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, power_req);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;powerreq_key&quot;</span>, key);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;powerreq_interval&quot;</span>, interval);
+    
+    err_code = SendDict_ToServer(dict, NULL);
+    xpc_release(dict);
+    dict = NULL;
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSPowerRequest: Using XPC IPC returning error_code %d&quot;</span>, err_code);
+    <span class="enscript-keyword">return</span> err_code;
+}
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">mDNSSetLocalAddressCacheEntry</span>(<span class="enscript-type">int</span> ifindex, <span class="enscript-type">int</span> family, <span class="enscript-type">const</span> v6addr_t ip, <span class="enscript-type">const</span> ethaddr_t eth)
+{
+    <span class="enscript-type">int</span> err_code = kHelperErr_NotConnected;
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSSetLocalAddressCacheEntry: Using XPC IPC calling out to Helper: ifindex is [%d] family is [%d]&quot;</span>, ifindex, family);
+    
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, set_localaddr_cacheentry);
+    
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;slace_ifindex&quot;</span>, ifindex);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;slace_family&quot;</span>, family);
+    
+    xpc_dictionary_set_data(dict, <span class="enscript-string">&quot;slace_ip&quot;</span>, (uint8_t*)ip, <span class="enscript-keyword">sizeof</span>(v6addr_t));
+    xpc_dictionary_set_data(dict, <span class="enscript-string">&quot;slace_eth&quot;</span>, (uint8_t*)eth, <span class="enscript-keyword">sizeof</span>(ethaddr_t));
+    
+    err_code = SendDict_ToServer(dict, NULL);
+    xpc_release(dict);
+    dict = NULL;
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSSetLocalAddressCacheEntry: Using XPC IPC returning error_code %d&quot;</span>, err_code);
+    <span class="enscript-keyword">return</span> err_code;
+}
+
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">mDNSNotify</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *title, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg) <span class="enscript-comment">// Both strings are UTF-8 text
+</span>{
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSNotify() calling out to Helper XPC IPC title[%s] msg[%s]&quot;</span>, title, msg);
+    
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, user_notify);
+    
+    xpc_dictionary_set_string(dict, <span class="enscript-string">&quot;notify_title&quot;</span>, title);
+    xpc_dictionary_set_string(dict, <span class="enscript-string">&quot;notify_msg&quot;</span>, msg);
+    
+    SendDict_ToServer(dict, NULL);
+    xpc_release(dict);
+    dict = NULL;
+    
+}
+
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">mDNSKeychainGetSecrets</span>(CFArrayRef *result)
+{
+    
+    CFPropertyListRef plist = NULL;
+    CFDataRef bytes = NULL;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> numsecrets = 0;
+    size_t secretsCnt = 0;
+    <span class="enscript-type">int</span> error_code = kHelperErr_NotConnected;
+    xpc_object_t reply_dict = NULL;
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span> *sec = NULL;
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSKeychainGetSecrets: Using XPC IPC calling out to Helper&quot;</span>);
+    
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, keychain_getsecrets);
+
+    SendDict_ToServer(dict, &amp;reply_dict);
+ 
+    <span class="enscript-keyword">if</span> (reply_dict != NULL)
+    {
+        numsecrets = xpc_dictionary_get_uint64(reply_dict, <span class="enscript-string">&quot;keychain_num_secrets&quot;</span>);
+        sec = xpc_dictionary_get_data(reply_dict, <span class="enscript-string">&quot;keychain_secrets&quot;</span>, &amp;secretsCnt);
+        error_code = xpc_dictionary_get_int64(reply_dict,   kHelperErrCode);
+    }
+ 
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSKeychainGetSecrets: Using XPC IPC calling out to Helper: numsecrets is %u, secretsCnt is %u error_code is %d&quot;</span>,
+                     numsecrets, (<span class="enscript-type">unsigned</span> <span class="enscript-type">int</span>)secretsCnt, error_code);
+     
+    <span class="enscript-keyword">if</span> (NULL == (bytes = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, (<span class="enscript-type">void</span>*)sec, secretsCnt, kCFAllocatorNull)))
+    {
+        error_code = kHelperErr_ApiErr;
+        LogMsg(<span class="enscript-string">&quot;mDNSKeychainGetSecrets: CFDataCreateWithBytesNoCopy failed&quot;</span>);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">fin</span>;
+    }
+    
+    <span class="enscript-keyword">if</span> (NULL == (plist = CFPropertyListCreateWithData(kCFAllocatorDefault, bytes, kCFPropertyListImmutable, NULL, NULL)))
+    {
+        error_code = kHelperErr_ApiErr;
+        LogMsg(<span class="enscript-string">&quot;mDNSKeychainGetSecrets: CFPropertyListCreateFromXMLData failed&quot;</span>);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">fin</span>;
+    }
+    
+    <span class="enscript-keyword">if</span> (CFArrayGetTypeID() != CFGetTypeID(plist))
+    {
+        error_code = kHelperErr_ApiErr;
+        LogMsg(<span class="enscript-string">&quot;mDNSKeychainGetSecrets: Unexpected result type&quot;</span>);
+        CFRelease(plist);
+        plist = NULL;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">fin</span>;
+    }
+    
+    *result = (CFArrayRef)plist;
+    
+    
+<span class="enscript-reference">fin</span>:
+    <span class="enscript-keyword">if</span> (bytes)
+        CFRelease(bytes);
+    <span class="enscript-keyword">if</span> (dict)
+        xpc_release(dict);
+    <span class="enscript-keyword">if</span> (reply_dict)
+        xpc_release(reply_dict);
+    
+    dict = NULL;
+    reply_dict = NULL;
+    
+    <span class="enscript-keyword">return</span> error_code;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">mDNSSendWakeupPacket</span>(<span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> ifid, <span class="enscript-type">char</span> *eth_addr, <span class="enscript-type">char</span> *ip_addr, <span class="enscript-type">int</span> iteration)
+{
+    <span class="enscript-comment">// (void) ip_addr; // unused
+</span>    <span class="enscript-comment">// (void) iteration; // unused
+</span>
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSSendWakeupPacket: Entered ethernet address[%s],ip_address[%s], interface_id[%d], iteration[%d]&quot;</span>,
+           eth_addr, ip_addr, ifid, iteration);
+    
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, send_wakepkt);
+    
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;interface_index&quot;</span>, ifid);
+    xpc_dictionary_set_string(dict, <span class="enscript-string">&quot;ethernet_address&quot;</span>, eth_addr);
+    xpc_dictionary_set_string(dict, <span class="enscript-string">&quot;ip_address&quot;</span>, ip_addr);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;swp_iteration&quot;</span>, iteration);
+    
+    SendDict_ToServer(dict, NULL);
+    xpc_release(dict);
+    dict = NULL;
+
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPacketFilterControl</span>(uint32_t command, <span class="enscript-type">char</span> * ifname, uint32_t count, pfArray_t portArray, pfArray_t protocolArray)
+{
+    <span class="enscript-type">struct</span>
+    {
+        pfArray_t portArray;
+        pfArray_t protocolArray;
+    } pfa;
+    
+    mDNSPlatformMemCopy(pfa.portArray, portArray, <span class="enscript-keyword">sizeof</span>(pfArray_t));
+    mDNSPlatformMemCopy(pfa.protocolArray, protocolArray, <span class="enscript-keyword">sizeof</span>(pfArray_t));
+
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSPacketFilterControl: XPC IPC, ifname %s&quot;</span>, ifname);
+    
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, p2p_packetfilter);
+    
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;pf_opcode&quot;</span>, command);
+    <span class="enscript-keyword">if</span> (ifname)
+        xpc_dictionary_set_string(dict, <span class="enscript-string">&quot;pf_ifname&quot;</span>, ifname);
+
+    xpc_object_t xpc_obj_portArray = xpc_array_create(NULL, 0);
+    xpc_object_t xpc_obj_protocolArray = xpc_array_create(NULL, 0);
+
+    <span class="enscript-keyword">for</span> (size_t i = 0; i &lt; count &amp;&amp; i &lt; PFPortArraySize; i++) {
+        xpc_array_set_uint64(xpc_obj_portArray, XPC_ARRAY_APPEND, pfa.portArray[i]);
+        xpc_array_set_uint64(xpc_obj_protocolArray, XPC_ARRAY_APPEND, pfa.protocolArray[i]);
+    }
+    xpc_dictionary_set_value(dict, <span class="enscript-string">&quot;xpc_obj_array_port&quot;</span>, xpc_obj_portArray);
+    xpc_dictionary_set_value(dict, <span class="enscript-string">&quot;xpc_obj_array_protocol&quot;</span>, xpc_obj_protocolArray);
+    xpc_release(xpc_obj_portArray);
+    xpc_release(xpc_obj_protocolArray);
+    
+    SendDict_ToServer(dict, NULL);
+    xpc_release(dict);
+    dict = NULL;
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSPacketFilterControl: portArray0[%d] portArray1[%d] portArray2[%d] portArray3[%d] protocolArray0[%d] protocolArray1[%d] protocolArray2[%d] protocolArray3[%d]&quot;</span>,
+            pfa.portArray[0], pfa.portArray[1], pfa.portArray[2], pfa.portArray[3], pfa.protocolArray[0], pfa.protocolArray[1], pfa.protocolArray[2], pfa.protocolArray[3]);
+    
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">mDNSSendKeepalive</span>(<span class="enscript-type">const</span> v6addr_t sadd, <span class="enscript-type">const</span> v6addr_t dadd, uint16_t lport, uint16_t rport, uint32_t seq, uint32_t ack, uint16_t win)
+{
+
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSSendKeepalive: Using XPC IPC calling out to Helper: lport is[%d] rport is[%d] seq is[%d] ack is[%d] win is[%d]&quot;</span>,
+           lport, rport, seq, ack, win);
+    
+    <span class="enscript-type">char</span> buf1[INET6_ADDRSTRLEN];
+    <span class="enscript-type">char</span> buf2[INET6_ADDRSTRLEN];
+    
+    buf1[0] = 0;
+    buf2[0] = 0;
+    
+    inet_ntop(AF_INET6, sadd, buf1, <span class="enscript-keyword">sizeof</span>(buf1));
+    inet_ntop(AF_INET6, dadd, buf2, <span class="enscript-keyword">sizeof</span>(buf2));
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSSendKeepalive: Using XPC IPC calling out to Helper: sadd is %s, dadd is %s&quot;</span>, buf1, buf2);
+    
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, send_keepalive);
+    
+    xpc_dictionary_set_data(dict, <span class="enscript-string">&quot;send_keepalive_sadd&quot;</span>, (uint8_t*)sadd, <span class="enscript-keyword">sizeof</span>(v6addr_t));
+    xpc_dictionary_set_data(dict, <span class="enscript-string">&quot;send_keepalive_dadd&quot;</span>, (uint8_t*)dadd, <span class="enscript-keyword">sizeof</span>(v6addr_t));
+    
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;send_keepalive_lport&quot;</span>, lport);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;send_keepalive_rport&quot;</span>, rport);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;send_keepalive_seq&quot;</span>, seq);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;send_keepalive_ack&quot;</span>, ack);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;send_keepalive_win&quot;</span>, win);
+    
+    SendDict_ToServer(dict, NULL);
+    xpc_release(dict);
+    dict = NULL;
+    
+}
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">mDNSRetrieveTCPInfo</span>(<span class="enscript-type">int</span> family, v6addr_t laddr, uint16_t lport, v6addr_t raddr, uint16_t rport, uint32_t *seq, uint32_t *ack, uint16_t *win, int32_t *intfid)
+{
+    <span class="enscript-type">int</span> error_code = kHelperErr_NotConnected;
+    xpc_object_t reply_dict = NULL;
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSRetrieveTCPInfo: Using XPC IPC calling out to Helper: lport is[%d] rport is[%d] family is[%d]&quot;</span>,
+           lport, rport, family);
+    
+    <span class="enscript-type">char</span> buf1[INET6_ADDRSTRLEN];
+    <span class="enscript-type">char</span> buf2[INET6_ADDRSTRLEN];
+    buf1[0] = 0;
+    buf2[0] = 0;
+    
+    inet_ntop(AF_INET6, laddr, buf1, <span class="enscript-keyword">sizeof</span>(buf1));
+    inet_ntop(AF_INET6, raddr, buf2, <span class="enscript-keyword">sizeof</span>(buf2));
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSRetrieveTCPInfo:: Using XPC IPC calling out to Helper: laddr is %s, raddr is %s&quot;</span>, buf1, buf2);
+    
+    <span class="enscript-comment">// Create Dictionary To Send
+</span>    xpc_object_t dict = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_uint64(dict, kHelperMode, retreive_tcpinfo);
+    
+    xpc_dictionary_set_data(dict, <span class="enscript-string">&quot;retreive_tcpinfo_laddr&quot;</span>, (uint8_t*)laddr, <span class="enscript-keyword">sizeof</span>(v6addr_t));
+    xpc_dictionary_set_data(dict, <span class="enscript-string">&quot;retreive_tcpinfo_raddr&quot;</span>, (uint8_t*)raddr, <span class="enscript-keyword">sizeof</span>(v6addr_t));
+    
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;retreive_tcpinfo_family&quot;</span>, family);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;retreive_tcpinfo_lport&quot;</span>, lport);
+    xpc_dictionary_set_uint64(dict, <span class="enscript-string">&quot;retreive_tcpinfo_rport&quot;</span>, rport);
+    
+    SendDict_ToServer(dict, &amp;reply_dict);
+    
+    <span class="enscript-keyword">if</span> (reply_dict != NULL)
+    {
+        *seq = xpc_dictionary_get_uint64(reply_dict, <span class="enscript-string">&quot;retreive_tcpinfo_seq&quot;</span>);
+        *ack = xpc_dictionary_get_uint64(reply_dict, <span class="enscript-string">&quot;retreive_tcpinfo_ack&quot;</span>);
+        *win = xpc_dictionary_get_uint64(reply_dict, <span class="enscript-string">&quot;retreive_tcpinfo_win&quot;</span>);
+        *intfid = (int32_t)xpc_dictionary_get_uint64(reply_dict, <span class="enscript-string">&quot;retreive_tcpinfo_ifid&quot;</span>);
+        error_code = xpc_dictionary_get_int64(reply_dict, kHelperErrCode);
+    }
+    
+    mDNSHELPER_DEBUG(<span class="enscript-string">&quot;mDNSRetrieveTCPInfo: Using XPC IPC calling out to Helper: seq is %d, ack is %d, win is %d, intfid is %d, error is %d&quot;</span>,
+           *seq, *ack, *win, *intfid, error_code);
+    
+    <span class="enscript-keyword">if</span> (dict)
+        xpc_release(dict);
+    <span class="enscript-keyword">if</span> (reply_dict)
+        xpc_release(reply_dict);
+    dict = NULL;
+    reply_dict = NULL;
+
+    <span class="enscript-keyword">return</span> error_code;
+}
+</pre>
+<hr />
+</body></html>

@@ -1,0 +1,1768 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>daemon.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">daemon.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="daemon.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4; c-file-style: &quot;bsd&quot;; c-basic-offset: 4; fill-column: 108; indent-tabs-mode: nil -*-
+ *
+ * Copyright (c) 2002-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mach/mach.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;mach/mach_error.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/types.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;signal.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;paths.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;fcntl.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;launch.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;launch_priv.h&gt;</span>         // for launch_socket_service_check_in()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;pwd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/event.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;pthread.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sandbox.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;SystemConfiguration/SCDynamicStoreCopyDHCPInfo.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;err.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sysexits.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;TargetConditionals.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;uDNS.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>             // Defines the specific types needed to run mDNS on this platform
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;uds_daemon.h&quot;</span>             // Interface to the server side implementation of dns_sd.h
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;xpc_services.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;xpc_service_dns_proxy.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;xpc_service_log_utility.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;helper.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;posix_utilities.h&quot;</span>        // for getLocalTimestamp()
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">METRICS</span>)
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;Metrics.h&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">DNSSD_XPC_SERVICE</span>)
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssd_server.h&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Used on OSX(10.11.x onwards) for manipulating mDNSResponder program arguments
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span>
+<span class="enscript-comment">// plist file to read the user's preferences
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kProgramArguments</span> CFSTR(<span class="enscript-string">&quot;com.apple.mDNSResponder&quot;</span>)
+<span class="enscript-comment">// possible arguments for external customers
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_DebugLogging</span>              CFSTR(<span class="enscript-string">&quot;DebugLogging&quot;</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_UnicastPacketLogging</span>      CFSTR(<span class="enscript-string">&quot;UnicastPacketLogging&quot;</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_AlwaysAppendSearchDomains</span> CFSTR(<span class="enscript-string">&quot;AlwaysAppendSearchDomains&quot;</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_EnableAllowExpired</span>        CFSTR(<span class="enscript-string">&quot;EnableAllowExpired&quot;</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_NoMulticastAdvertisements</span> CFSTR(<span class="enscript-string">&quot;NoMulticastAdvertisements&quot;</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_StrictUnicastOrdering</span>     CFSTR(<span class="enscript-string">&quot;StrictUnicastOrdering&quot;</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_OfferSleepProxyService</span>    CFSTR(<span class="enscript-string">&quot;OfferSleepProxyService&quot;</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_UseInternalSleepProxy</span>     CFSTR(<span class="enscript-string">&quot;UseInternalSleepProxy&quot;</span>)
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">ENABLE_BLE_TRIGGERED_BONJOUR</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_EnableBLEBasedDiscovery</span>   CFSTR(<span class="enscript-string">&quot;EnableBLEBasedDiscovery&quot;</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_DefaultToBLETriggered</span>     CFSTR(<span class="enscript-string">&quot;DefaultToBLETriggered&quot;</span>)
+#<span class="enscript-reference">endif</span>  // <span class="enscript-variable-name">ENABLE_BLE_TRIGGERED_BONJOUR</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">PREALLOCATED_CACHE</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kPreferencesKey_PreallocateCacheMemory</span>    CFSTR(<span class="enscript-string">&quot;PreallocateCacheMemory&quot;</span>)
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Globals</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> mDNS_PlatformSupport PlatformStorage;
+
+<span class="enscript-comment">// Start off with a default cache of 32K (136 records of 240 bytes each)
+</span><span class="enscript-comment">// Each time we grow the cache we add another 136 records
+</span><span class="enscript-comment">// 136 * 240 = 32640 bytes.
+</span><span class="enscript-comment">// This fits in eight 4kB pages, with 128 bytes spare for memory block headers and similar overhead
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">RR_CACHE_SIZE</span> ((32*1024) / sizeof(CacheRecord))
+<span class="enscript-type">static</span> CacheEntity rrcachestorage[RR_CACHE_SIZE];
+<span class="enscript-type">struct</span> CompileTimeAssertionChecks_RR_CACHE_SIZE { <span class="enscript-type">char</span> a[(RR_CACHE_SIZE &gt;= 136) ? 1 : -1]; };
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kRRCacheGrowSize</span> (sizeof(CacheEntity) * RR_CACHE_SIZE)
+
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">PrepareForIdle</span>(<span class="enscript-type">void</span> *m_param);
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+<span class="enscript-type">static</span> mach_port_t signal_port       = MACH_PORT_NULL;
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+<span class="enscript-type">static</span> dnssd_sock_t *launchd_fds = mDNSNULL;
+<span class="enscript-type">static</span> size_t launchd_fds_count = 0;
+
+<span class="enscript-type">static</span> mDNSBool NoMulticastAdvertisements = mDNSfalse; <span class="enscript-comment">// By default, advertise addresses (&amp; other records) via multicast
+</span>
+<span class="enscript-type">extern</span> mDNSBool StrictUnicastOrdering;
+<span class="enscript-type">extern</span> mDNSBool AlwaysAppendSearchDomains;
+<span class="enscript-type">extern</span> mDNSBool EnableAllowExpired;
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">INFOCallback</span>(<span class="enscript-type">void</span>);
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">dump_state_to_fd</span>(<span class="enscript-type">int</span> fd);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">ENABLE_BLE_TRIGGERED_BONJOUR</span>
+<span class="enscript-type">extern</span> mDNSBool EnableBLEBasedDiscovery;
+<span class="enscript-type">extern</span> mDNSBool DefaultToBLETriggered;
+#<span class="enscript-reference">endif</span>  // <span class="enscript-variable-name">ENABLE_BLE_TRIGGERED_BONJOUR</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">PREALLOCATED_CACHE</span>)
+<span class="enscript-type">static</span> mDNSBool PreallocateCacheMemory = mDNSfalse;
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">CACHE_MEM_LIMIT</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kRRCacheMemoryLimit</span> 1000000 // For now, we limit the cache to at most 1MB on iOS devices.
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// We keep a list of client-supplied event sources in KQSocketEventSource records
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> KQSocketEventSource
+{
+    <span class="enscript-type">struct</span>  KQSocketEventSource *next;
+    <span class="enscript-type">int</span> fd;
+    KQueueEntry kqs;
+    udsEventCallback callback;
+    <span class="enscript-type">void</span> *context;
+} KQSocketEventSource;
+
+<span class="enscript-type">static</span> KQSocketEventSource *gEventSources;
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> -
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">General</span> <span class="enscript-variable-name">Utility</span> <span class="enscript-variable-name">Functions</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_MALLOC_DEBUGGING</span>
+<span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformValidateLists</span>()
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+
+    KQSocketEventSource *k;
+    <span class="enscript-keyword">for</span> (k = gEventSources; k; k=k-&gt;next)
+        <span class="enscript-keyword">if</span> (k-&gt;next == (KQSocketEventSource *)~0 || k-&gt;fd &lt; 0)
+            LogMemCorruption(<span class="enscript-string">&quot;gEventSources: %p is garbage (%d)&quot;</span>, k, k-&gt;fd);
+
+    <span class="enscript-comment">// Check platform-layer lists
+</span>    NetworkInterfaceInfoOSX     *i;
+    <span class="enscript-keyword">for</span> (i = m-&gt;p-&gt;InterfaceList; i; i = i-&gt;next)
+        <span class="enscript-keyword">if</span> (i-&gt;next == (NetworkInterfaceInfoOSX *)~0 || !i-&gt;m || i-&gt;m == (mDNS *)~0)
+            LogMemCorruption(<span class="enscript-string">&quot;m-&gt;p-&gt;InterfaceList: %p is garbage (%p)&quot;</span>, i, i-&gt;ifinfo.ifname);
+
+    ClientTunnel *t;
+    <span class="enscript-keyword">for</span> (t = m-&gt;TunnelClients; t; t=t-&gt;next)
+        <span class="enscript-keyword">if</span> (t-&gt;next == (ClientTunnel *)~0 || t-&gt;dstname.c[0] &gt; 63)
+            LogMemCorruption(<span class="enscript-string">&quot;m-&gt;TunnelClients: %p is garbage (%d)&quot;</span>, t, t-&gt;dstname.c[0]);
+}
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNS_MALLOC_DEBUGGING</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Registration
+</span>
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">RecordUpdatedNiceLabel</span>(mDNSs32 delay)
+{
+    mDNSStorage.p-&gt;NotifyUser = NonZeroTime(mDNSStorage.timenow + delay);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPreferencesSetNames</span>(<span class="enscript-type">int</span> key, domainlabel *old, domainlabel *new)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    domainlabel *prevold, *prevnew;
+    <span class="enscript-keyword">switch</span> (key)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kmDNSComputerName</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kmDNSLocalHostName</span>:
+        <span class="enscript-keyword">if</span> (key == kmDNSComputerName)
+        {
+            prevold = &amp;m-&gt;p-&gt;prevoldnicelabel;
+            prevnew = &amp;m-&gt;p-&gt;prevnewnicelabel;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            prevold = &amp;m-&gt;p-&gt;prevoldhostlabel;
+            prevnew = &amp;m-&gt;p-&gt;prevnewhostlabel;
+        }
+        <span class="enscript-comment">// There are a few cases where we need to invoke the helper.
+</span>        <span class="enscript-comment">//
+</span>        <span class="enscript-comment">// 1. If the &quot;old&quot; label and &quot;new&quot; label are not same, it means there is a conflict. We need
+</span>        <span class="enscript-comment">//    to invoke the helper so that it pops up a dialogue to inform the user about the
+</span>        <span class="enscript-comment">//    conflict
+</span>        <span class="enscript-comment">//
+</span>        <span class="enscript-comment">// 2. If the &quot;old&quot; label and &quot;new&quot; label are same, it means the user has set the host/nice label
+</span>        <span class="enscript-comment">//    through the preferences pane. We may have to inform the helper as it may have popped up
+</span>        <span class="enscript-comment">//    a dialogue previously (due to a conflict) and it needs to suppress it now. We can avoid invoking
+</span>        <span class="enscript-comment">//    the helper in this case if the previous values (old and new) that we told helper last time
+</span>        <span class="enscript-comment">//    are same. If the previous old and new values are same, helper does not care.
+</span>        <span class="enscript-comment">//
+</span>        <span class="enscript-comment">// Note: &quot;new&quot; can be NULL when we have repeated conflicts and we are asking helper to give up. &quot;old&quot;
+</span>        <span class="enscript-comment">// is not called with NULL today, but this makes it future proof.
+</span>        <span class="enscript-keyword">if</span> (!old || !new || !SameDomainLabelCS(old-&gt;c, new-&gt;c) ||
+            !SameDomainLabelCS(old-&gt;c, prevold-&gt;c) ||
+            !SameDomainLabelCS(new-&gt;c, prevnew-&gt;c))
+        {
+<span class="enscript-comment">// Work around bug radar:21397654
+</span>#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__clang_analyzer__</span>
+            <span class="enscript-keyword">if</span> (old)
+                *prevold = *old;
+            <span class="enscript-keyword">else</span>
+                prevold-&gt;c[0] = 0;
+            <span class="enscript-keyword">if</span> (new)
+                *prevnew = *new;
+            <span class="enscript-keyword">else</span>
+                prevnew-&gt;c[0] = 0;
+#<span class="enscript-reference">endif</span>
+            mDNSPreferencesSetName(key, old, new);
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogInfo(<span class="enscript-string">&quot;mDNSPreferencesSetNames not invoking helper %s %#s, %s %#s, old %#s, new %#s&quot;</span>,
+                    (key == kmDNSComputerName ? <span class="enscript-string">&quot;prevoldnicelabel&quot;</span> : <span class="enscript-string">&quot;prevoldhostlabel&quot;</span>), prevold-&gt;c,
+                    (key == kmDNSComputerName ? <span class="enscript-string">&quot;prevnewnicelabel&quot;</span> : <span class="enscript-string">&quot;prevnewhostlabel&quot;</span>), prevnew-&gt;c,
+                    old-&gt;c, new-&gt;c);
+        }
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-reference">default</span>:
+        LogMsg(<span class="enscript-string">&quot;mDNSPreferencesSetNames: unrecognized key: %d&quot;</span>, key);
+        <span class="enscript-keyword">return</span>;
+    }
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">mDNS_StatusCallback</span>(mDNS *<span class="enscript-type">const</span> m, mStatus result)
+{
+    <span class="enscript-keyword">if</span> (result == mStatus_NoError)
+    {
+        <span class="enscript-keyword">if</span> (!SameDomainLabelCS(m-&gt;p-&gt;userhostlabel.c, m-&gt;hostlabel.c))
+            LogInfo(<span class="enscript-string">&quot;Local Hostname changed from \&quot;%#s.local\&quot; to \&quot;%#s.local\&quot;&quot;</span>, m-&gt;p-&gt;userhostlabel.c, m-&gt;hostlabel.c);
+        <span class="enscript-comment">// One second pause in case we get a Computer Name update too -- don't want to alert the user twice
+</span>        RecordUpdatedNiceLabel(mDNSPlatformOneSecond);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (result == mStatus_NameConflict)
+    {
+        LogInfo(<span class="enscript-string">&quot;Local Hostname conflict for \&quot;%#s.local\&quot;&quot;</span>, m-&gt;hostlabel.c);
+        <span class="enscript-keyword">if</span> (!m-&gt;p-&gt;HostNameConflict) m-&gt;p-&gt;HostNameConflict = NonZeroTime(m-&gt;timenow);
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (m-&gt;timenow - m-&gt;p-&gt;HostNameConflict &gt; 60 * mDNSPlatformOneSecond)
+        {
+            <span class="enscript-comment">// Tell the helper we've given up
+</span>            mDNSPreferencesSetNames(kmDNSLocalHostName, &amp;m-&gt;p-&gt;userhostlabel, NULL);
+        }
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (result == mStatus_GrowCache)
+    {
+        <span class="enscript-comment">// Allocate another chunk of cache storage
+</span>        <span class="enscript-type">static</span> <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> allocated = 0;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">CACHE_MEM_LIMIT</span>)
+        <span class="enscript-keyword">if</span> (allocated &gt;= kRRCacheMemoryLimit) <span class="enscript-keyword">return</span>;	<span class="enscript-comment">// For now we limit the cache to at most 1MB on iOS devices
+</span>#<span class="enscript-reference">endif</span>
+        allocated += kRRCacheGrowSize;
+        <span class="enscript-comment">// LogMsg(&quot;GrowCache %d * %d = %d; total so far %6u&quot;, sizeof(CacheEntity), RR_CACHE_SIZE, sizeof(CacheEntity) * RR_CACHE_SIZE, allocated);
+</span>        CacheEntity *storage = mallocL(<span class="enscript-string">&quot;mStatus_GrowCache&quot;</span>, <span class="enscript-keyword">sizeof</span>(CacheEntity) * RR_CACHE_SIZE);
+        <span class="enscript-comment">//LogInfo(&quot;GrowCache %d * %d = %d&quot;, sizeof(CacheEntity), RR_CACHE_SIZE, sizeof(CacheEntity) * RR_CACHE_SIZE);
+</span>        <span class="enscript-keyword">if</span> (storage) mDNS_GrowCache(m, storage, RR_CACHE_SIZE);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (result == mStatus_ConfigChanged)
+    {
+        <span class="enscript-comment">// Tell the helper we've seen a change in the labels.  It will dismiss the name conflict alert if needed.
+</span>        mDNSPreferencesSetNames(kmDNSComputerName, &amp;m-&gt;p-&gt;usernicelabel, &amp;m-&gt;nicelabel);
+        mDNSPreferencesSetNames(kmDNSLocalHostName, &amp;m-&gt;p-&gt;userhostlabel, &amp;m-&gt;hostlabel);
+
+        <span class="enscript-comment">// Then we call into the UDS daemon code, to let it do the same
+</span>        udsserver_handle_configchange(m);
+    }
+}
+
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">COMPILER_LIKES_PRAGMA_MARK</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> -
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Startup</span>, <span class="enscript-variable-name">shutdown</span>, <span class="enscript-variable-name">and</span> <span class="enscript-variable-name">supporting</span> <span class="enscript-variable-name">code</span>
+#<span class="enscript-reference">endif</span>
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">ExitCallback</span>(<span class="enscript-type">int</span> sig)
+{
+    (<span class="enscript-type">void</span>)sig; <span class="enscript-comment">// Unused
+</span>    LogMsg(<span class="enscript-string">&quot;%s stopping&quot;</span>, mDNSResponderVersionString);
+
+    <span class="enscript-keyword">if</span> (udsserver_exit() &lt; 0) 
+        LogMsg(<span class="enscript-string">&quot;ExitCallback: udsserver_exit failed&quot;</span>);
+
+    debugf(<span class="enscript-string">&quot;ExitCallback: mDNS_StartExit&quot;</span>);
+    mDNS_StartExit(&amp;mDNSStorage);
+}
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+<span class="enscript-comment">// Send a mach_msg to ourselves (since that is signal safe) telling us to cleanup and exit
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">HandleSIG</span>(<span class="enscript-type">int</span> sig)
+{
+    kern_return_t status;
+    mach_msg_header_t header;
+
+    <span class="enscript-comment">// WARNING: can't call syslog or fprintf from signal handler
+</span>    header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MAKE_SEND, 0);
+    header.msgh_remote_port = signal_port;
+    header.msgh_local_port = MACH_PORT_NULL;
+    header.msgh_size = <span class="enscript-keyword">sizeof</span>(header);
+    header.msgh_id = sig;
+
+    status = mach_msg(&amp;header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, header.msgh_size,
+                      0, MACH_PORT_NULL, 0, MACH_PORT_NULL);
+
+    <span class="enscript-keyword">if</span> (status != MACH_MSG_SUCCESS)
+    {
+        <span class="enscript-keyword">if</span> (status == MACH_SEND_TIMED_OUT) mach_msg_destroy(&amp;header);
+        <span class="enscript-keyword">if</span> (sig == SIGTERM || sig == SIGINT) exit(-1);
+    }
+}
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">dump_state_to_fd</span>(<span class="enscript-type">int</span> fd)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    <span class="enscript-type">char</span> buffer[1024];
+    buffer[0] = <span class="enscript-string">'\0'</span>;
+
+    mDNSs32 utc = mDNSPlatformUTC();
+    <span class="enscript-type">const</span> mDNSs32 now = mDNS_TimeNow(&amp;mDNSStorage);
+    NetworkInterfaceInfoOSX     *i;
+    DNSServer *s;
+    McastResolver *mr;
+    <span class="enscript-type">char</span> timestamp[64]; <span class="enscript-comment">// 64 is enough to store the UTC timestmp
+</span>
+    LogToFD(fd, <span class="enscript-string">&quot;---- BEGIN STATE LOG ---- %s %s %d&quot;</span>, mDNSResponderVersionString, OSXVers ? <span class="enscript-string">&quot;OSXVers&quot;</span> : <span class="enscript-string">&quot;iOSVers&quot;</span>, OSXVers ? OSXVers : iOSVers);
+    getLocalTimestamp(timestamp, <span class="enscript-keyword">sizeof</span>(timestamp));
+    LogToFD(fd, <span class="enscript-string">&quot;Date: %s&quot;</span>, timestamp);
+    LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_DEFAULT, <span class="enscript-string">&quot;---- BEGIN STATE LOG ---- (&quot;</span> PUB_S <span class="enscript-string">&quot;)&quot;</span>, timestamp);
+
+    udsserver_info_dump_to_fd(fd);
+
+    LogToFD(fd, <span class="enscript-string">&quot;----- Platform Timers -----&quot;</span>);
+    LogTimerToFD(fd, <span class="enscript-string">&quot;m-&gt;NextCacheCheck       &quot;</span>, mDNSStorage.NextCacheCheck);
+    LogTimerToFD(fd, <span class="enscript-string">&quot;m-&gt;NetworkChanged       &quot;</span>, mDNSStorage.NetworkChanged);
+    LogTimerToFD(fd, <span class="enscript-string">&quot;m-&gt;p-&gt;NotifyUser        &quot;</span>, mDNSStorage.p-&gt;NotifyUser);
+    LogTimerToFD(fd, <span class="enscript-string">&quot;m-&gt;p-&gt;HostNameConflict  &quot;</span>, mDNSStorage.p-&gt;HostNameConflict);
+    LogTimerToFD(fd, <span class="enscript-string">&quot;m-&gt;p-&gt;KeyChainTimer     &quot;</span>, mDNSStorage.p-&gt;KeyChainTimer);
+
+    log_dnsproxy_info_to_fd(fd, &amp;mDNSStorage);
+
+    LogToFD(fd, <span class="enscript-string">&quot;----- KQSocketEventSources -----&quot;</span>);
+    <span class="enscript-keyword">if</span> (!gEventSources) LogToFD(fd, <span class="enscript-string">&quot;&lt;None&gt;&quot;</span>);
+    <span class="enscript-keyword">else</span>
+    {
+        KQSocketEventSource *k;
+        <span class="enscript-keyword">for</span> (k = gEventSources; k; k=k-&gt;next)
+            LogToFD(fd, <span class="enscript-string">&quot;%3d %s %s&quot;</span>, k-&gt;fd, k-&gt;kqs.KQtask, k-&gt;fd == mDNSStorage.uds_listener_skt ? <span class="enscript-string">&quot;Listener for incoming UDS clients&quot;</span> : <span class="enscript-string">&quot; &quot;</span>);
+    }
+
+    LogToFD(fd, <span class="enscript-string">&quot;------ Network Interfaces ------&quot;</span>);
+    <span class="enscript-keyword">if</span> (!mDNSStorage.p-&gt;InterfaceList) LogToFD(fd, <span class="enscript-string">&quot;&lt;None&gt;&quot;</span>);
+    <span class="enscript-keyword">else</span>
+    {
+        LogToFD(fd, <span class="enscript-string">&quot;  Struct addr           Registered                MAC               BSSID                                Interface Address&quot;</span>);
+        <span class="enscript-keyword">for</span> (i = mDNSStorage.p-&gt;InterfaceList; i; i = i-&gt;next)
+        {
+            <span class="enscript-comment">// Allow six characters for interface name, for names like &quot;vmnet8&quot;
+</span>            <span class="enscript-keyword">if</span> (!i-&gt;Exists)
+                LogToFD(fd, <span class="enscript-string">&quot;%p %2ld, %p,  %s %-6s %.6a %.6a %#-14a dormant for %d seconds&quot;</span>,
+                          i, i-&gt;ifinfo.InterfaceID, i-&gt;Registered,
+                          i-&gt;sa_family == AF_INET ? <span class="enscript-string">&quot;v4&quot;</span> : i-&gt;sa_family == AF_INET6 ? <span class="enscript-string">&quot;v6&quot;</span> : <span class="enscript-string">&quot;??&quot;</span>, i-&gt;ifinfo.ifname, &amp;i-&gt;ifinfo.MAC, &amp;i-&gt;BSSID,
+                          &amp;i-&gt;ifinfo.ip, utc - i-&gt;LastSeen);
+            <span class="enscript-keyword">else</span>
+            {
+                <span class="enscript-type">const</span> CacheRecord *sps[3];
+                FindSPSInCache(&amp;mDNSStorage, &amp;i-&gt;ifinfo.NetWakeBrowse, sps);
+                LogToFD(fd, <span class="enscript-string">&quot;%p %2ld, %p,  %s %-6s %.6a %.6a %s %s %s %s %s %s %#a&quot;</span>,
+                          i, i-&gt;ifinfo.InterfaceID, i-&gt;Registered,
+                          i-&gt;sa_family == AF_INET ? <span class="enscript-string">&quot;v4&quot;</span> : i-&gt;sa_family == AF_INET6 ? <span class="enscript-string">&quot;v6&quot;</span> : <span class="enscript-string">&quot;??&quot;</span>, i-&gt;ifinfo.ifname, &amp;i-&gt;ifinfo.MAC, &amp;i-&gt;BSSID,
+                          i-&gt;ifinfo.InterfaceActive ? <span class="enscript-string">&quot;Active&quot;</span> : <span class="enscript-string">&quot;      &quot;</span>,
+                          i-&gt;ifinfo.IPv4Available ? <span class="enscript-string">&quot;v4&quot;</span> : <span class="enscript-string">&quot;  &quot;</span>,
+                          i-&gt;ifinfo.IPv6Available ? <span class="enscript-string">&quot;v6&quot;</span> : <span class="enscript-string">&quot;  &quot;</span>,
+                          i-&gt;ifinfo.Advertise ? <span class="enscript-string">&quot;A&quot;</span> : <span class="enscript-string">&quot; &quot;</span>,
+                          i-&gt;ifinfo.McastTxRx ? <span class="enscript-string">&quot;M&quot;</span> : <span class="enscript-string">&quot; &quot;</span>,
+                          !(i-&gt;ifinfo.InterfaceActive &amp;&amp; i-&gt;ifinfo.NetWake) ? <span class="enscript-string">&quot; &quot;</span> : !sps[0] ? <span class="enscript-string">&quot;p&quot;</span> : <span class="enscript-string">&quot;P&quot;</span>,
+                          &amp;i-&gt;ifinfo.ip);
+
+                <span class="enscript-comment">// Only print the discovered sleep proxies once for the lead/active interface of an interface set.
+</span>                <span class="enscript-keyword">if</span> (i == i-&gt;Registered &amp;&amp; (sps[0] || sps[1] || sps[2]))
+                {
+                    LogToFD(fd, <span class="enscript-string">&quot;         Sleep Proxy Metric   Name&quot;</span>);
+                    <span class="enscript-keyword">if</span> (sps[0]) LogToFD(fd, <span class="enscript-string">&quot;  %13d %#s&quot;</span>, SPSMetric(sps[0]-&gt;resrec.rdata-&gt;u.name.c), sps[0]-&gt;resrec.rdata-&gt;u.name.c);
+                    <span class="enscript-keyword">if</span> (sps[1]) LogToFD(fd, <span class="enscript-string">&quot;  %13d %#s&quot;</span>, SPSMetric(sps[1]-&gt;resrec.rdata-&gt;u.name.c), sps[1]-&gt;resrec.rdata-&gt;u.name.c);
+                    <span class="enscript-keyword">if</span> (sps[2]) LogToFD(fd, <span class="enscript-string">&quot;  %13d %#s&quot;</span>, SPSMetric(sps[2]-&gt;resrec.rdata-&gt;u.name.c), sps[2]-&gt;resrec.rdata-&gt;u.name.c);
+                }
+            }
+        }
+    }
+
+    LogToFD(fd, <span class="enscript-string">&quot;--------- DNS Servers(%d) ----------&quot;</span>, CountOfUnicastDNSServers(&amp;mDNSStorage));
+    <span class="enscript-keyword">if</span> (!mDNSStorage.DNSServers) LogToFD(fd, <span class="enscript-string">&quot;&lt;None&gt;&quot;</span>);
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-keyword">for</span> (s = mDNSStorage.DNSServers; s; s = s-&gt;next)
+        {
+            NetworkInterfaceInfoOSX *ifx = IfindexToInterfaceInfoOSX(s-&gt;interface);
+            LogToFD(fd, <span class="enscript-string">&quot;DNS Server %##s %s%s%#a:%d %d %s %d %d %sv4 %sv6 %scell %sexp %sconstrained %sCLAT46 %sDNSSECAware&quot;</span>,
+                    s-&gt;domain.c, ifx ? ifx-&gt;ifinfo.ifname : <span class="enscript-string">&quot;&quot;</span>, ifx ? <span class="enscript-string">&quot; &quot;</span> : <span class="enscript-string">&quot;&quot;</span>, &amp;s-&gt;addr, mDNSVal16(s-&gt;port),
+                    s-&gt;penaltyTime ? (s-&gt;penaltyTime - mDNS_TimeNow(&amp;mDNSStorage)) : 0, DNSScopeToString(s-&gt;scopeType),
+                    s-&gt;timeout, s-&gt;resGroupID,
+                    s-&gt;usableA       ? <span class="enscript-string">&quot;&quot;</span> : <span class="enscript-string">&quot;!&quot;</span>,
+                    s-&gt;usableAAAA    ? <span class="enscript-string">&quot;&quot;</span> : <span class="enscript-string">&quot;!&quot;</span>,
+                    s-&gt;isCell        ? <span class="enscript-string">&quot;&quot;</span> : <span class="enscript-string">&quot;!&quot;</span>,
+                    s-&gt;isExpensive   ? <span class="enscript-string">&quot;&quot;</span> : <span class="enscript-string">&quot;!&quot;</span>,
+                    s-&gt;isConstrained ? <span class="enscript-string">&quot;&quot;</span> : <span class="enscript-string">&quot;!&quot;</span>,
+                    s-&gt;isCLAT46      ? <span class="enscript-string">&quot;&quot;</span> : <span class="enscript-string">&quot;!&quot;</span>,
+                    s-&gt;DNSSECAware   ? <span class="enscript-string">&quot;&quot;</span> : <span class="enscript-string">&quot;!&quot;</span>);
+        }
+    }
+
+    LogToFD(fd, <span class="enscript-string">&quot;v4answers %d&quot;</span>, mDNSStorage.p-&gt;v4answers);
+    LogToFD(fd, <span class="enscript-string">&quot;v6answers %d&quot;</span>, mDNSStorage.p-&gt;v6answers);
+    LogToFD(fd, <span class="enscript-string">&quot;Last DNS Trigger: %d ms ago&quot;</span>, (now - mDNSStorage.p-&gt;DNSTrigger));
+
+    LogToFD(fd, <span class="enscript-string">&quot;-------- Interface Monitors --------&quot;</span>);
+    <span class="enscript-type">const</span> CFIndex n = m-&gt;p-&gt;InterfaceMonitors ? CFArrayGetCount(m-&gt;p-&gt;InterfaceMonitors) : 0;
+    <span class="enscript-keyword">if</span> (n &gt; 0)
+    {
+        <span class="enscript-keyword">for</span> (CFIndex j = 0; j &lt; n; j++)
+        {
+            mdns_interface_monitor_t monitor = (mdns_interface_monitor_t) CFArrayGetValueAtIndex(m-&gt;p-&gt;InterfaceMonitors, j);
+            <span class="enscript-type">char</span> *description = mdns_copy_description(monitor);
+            <span class="enscript-keyword">if</span> (description)
+            {
+                LogToFD(fd, <span class="enscript-string">&quot;%s&quot;</span>, description);
+                free(description);
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogToFD(fd, <span class="enscript-string">&quot;monitor %p (no description)&quot;</span>, monitor);
+            }
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogToFD(fd, <span class="enscript-string">&quot;No interface monitors&quot;</span>);
+    }
+
+    LogToFD(fd, <span class="enscript-string">&quot;--------- Mcast Resolvers ----------&quot;</span>);
+    <span class="enscript-keyword">if</span> (!mDNSStorage.McastResolvers) LogToFD(fd, <span class="enscript-string">&quot;&lt;None&gt;&quot;</span>);
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-keyword">for</span> (mr = mDNSStorage.McastResolvers; mr; mr = mr-&gt;next)
+            LogToFD(fd, <span class="enscript-string">&quot;Mcast Resolver %##s timeout %u&quot;</span>, mr-&gt;domain.c, mr-&gt;timeout);
+    }
+
+    LogToFD(fd, <span class="enscript-string">&quot;------------ Hostnames -------------&quot;</span>);
+    <span class="enscript-keyword">if</span> (!mDNSStorage.Hostnames) LogToFD(fd, <span class="enscript-string">&quot;&lt;None&gt;&quot;</span>);
+    <span class="enscript-keyword">else</span>
+    {
+        HostnameInfo *hi;
+        <span class="enscript-keyword">for</span> (hi = mDNSStorage.Hostnames; hi; hi = hi-&gt;next)
+        {
+            LogToFD(fd, <span class="enscript-string">&quot;%##s v4 %d %s&quot;</span>, hi-&gt;fqdn.c, hi-&gt;arv4.state, ARDisplayString(&amp;mDNSStorage, &amp;hi-&gt;arv4));
+            LogToFD(fd, <span class="enscript-string">&quot;%##s v6 %d %s&quot;</span>, hi-&gt;fqdn.c, hi-&gt;arv6.state, ARDisplayString(&amp;mDNSStorage, &amp;hi-&gt;arv6));
+        }
+    }
+
+    LogToFD(fd, <span class="enscript-string">&quot;--------------- FQDN ---------------&quot;</span>);
+    <span class="enscript-keyword">if</span> (!mDNSStorage.FQDN.c[0]) LogToFD(fd, <span class="enscript-string">&quot;&lt;None&gt;&quot;</span>);
+    <span class="enscript-keyword">else</span>
+    {
+        LogToFD(fd, <span class="enscript-string">&quot;%##s&quot;</span>, mDNSStorage.FQDN.c);
+    }
+
+    #<span class="enscript-keyword">if</span> MDNSRESPONDER_SUPPORTS(APPLE, METRICS)
+        LogMetricsToFD(fd);
+    #endif
+
+<span class="enscript-comment">//    getLocalTimestamp(timestamp, sizeof(timestamp));
+</span>    LogToFD(fd, <span class="enscript-string">&quot;Date: %s&quot;</span>, timestamp);
+    LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_DEFAULT, <span class="enscript-string">&quot;---- END STATE LOG ---- (&quot;</span> PUB_S <span class="enscript-string">&quot;)&quot;</span>, timestamp);
+    LogToFD(fd, <span class="enscript-string">&quot;----  END STATE LOG  ---- %s %s %d&quot;</span>, mDNSResponderVersionString, OSXVers ? <span class="enscript-string">&quot;OSXVers&quot;</span> : <span class="enscript-string">&quot;iOSVers&quot;</span>, OSXVers ? OSXVers : iOSVers);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">INFOCallback</span>(<span class="enscript-type">void</span>)
+{
+    LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_WARNING,
+        <span class="enscript-string">&quot;Sending SIGINFO to mDNSResponder daemon is deprecated. To trigger state dump, please use 'dns-sd -O', enter 'dns-sd -h' for more information&quot;</span>);
+}
+
+<span class="enscript-comment">// Writes the state out to the dynamic store and also affects the ASL filter level
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">UpdateDebugState</span>()
+{
+    mDNSu32 one  = 1;
+    mDNSu32 zero = 0;
+
+    CFMutableDictionaryRef dict = CFDictionaryCreateMutable(NULL, 0, &amp;kCFTypeDictionaryKeyCallBacks, &amp;kCFTypeDictionaryValueCallBacks);
+    <span class="enscript-keyword">if</span> (!dict)
+    {
+        LogMsg(<span class="enscript-string">&quot;UpdateDebugState: Could not create dict&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    CFNumberRef numOne = CFNumberCreate(NULL, kCFNumberSInt32Type, &amp;one);
+    <span class="enscript-keyword">if</span> (numOne == NULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;UpdateDebugState: Could not create CFNumber one&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+    CFNumberRef numZero = CFNumberCreate(NULL, kCFNumberSInt32Type, &amp;zero);
+    <span class="enscript-keyword">if</span> (numZero == NULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;UpdateDebugState: Could not create CFNumber zero&quot;</span>);
+        CFRelease(numOne);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (mDNS_LoggingEnabled)
+        CFDictionarySetValue(dict, CFSTR(<span class="enscript-string">&quot;VerboseLogging&quot;</span>), numOne);
+    <span class="enscript-keyword">else</span>
+        CFDictionarySetValue(dict, CFSTR(<span class="enscript-string">&quot;VerboseLogging&quot;</span>), numZero);
+
+    <span class="enscript-keyword">if</span> (mDNS_PacketLoggingEnabled)
+        CFDictionarySetValue(dict, CFSTR(<span class="enscript-string">&quot;PacketLogging&quot;</span>), numOne);
+    <span class="enscript-keyword">else</span>
+        CFDictionarySetValue(dict, CFSTR(<span class="enscript-string">&quot;PacketLogging&quot;</span>), numZero);
+
+    <span class="enscript-keyword">if</span> (mDNS_McastLoggingEnabled)
+        CFDictionarySetValue(dict, CFSTR(<span class="enscript-string">&quot;McastLogging&quot;</span>), numOne);
+    <span class="enscript-keyword">else</span>
+        CFDictionarySetValue(dict, CFSTR(<span class="enscript-string">&quot;McastLogging&quot;</span>), numZero);
+
+    <span class="enscript-keyword">if</span> (mDNS_McastTracingEnabled)
+        CFDictionarySetValue(dict, CFSTR(<span class="enscript-string">&quot;McastTracing&quot;</span>), numOne);
+    <span class="enscript-keyword">else</span> 
+        CFDictionarySetValue(dict, CFSTR(<span class="enscript-string">&quot;McastTracing&quot;</span>), numZero);
+
+    CFRelease(numOne);
+    CFRelease(numZero);
+    mDNSDynamicStoreSetConfig(kmDNSDebugState, mDNSNULL, dict);
+    CFRelease(dict);
+
+}
+
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">SignalCallback</span>(CFMachPortRef port, <span class="enscript-type">void</span> *msg, CFIndex size, <span class="enscript-type">void</span> *info)
+{
+    (<span class="enscript-type">void</span>)port;     <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)size;     <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)info;     <span class="enscript-comment">// Unused
+</span>    mach_msg_header_t *msg_header = (mach_msg_header_t *)msg;
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+
+    <span class="enscript-comment">// We're running on the CFRunLoop (Mach port) thread, not the kqueue thread, so we need to grab the KQueueLock before proceeding
+</span>    KQueueLock();
+    <span class="enscript-keyword">switch</span>(msg_header-&gt;msgh_id)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGHUP</span>:    {
+        mDNSu32 slot;
+        CacheGroup *cg;
+        CacheRecord *rr;
+        LogMsg(<span class="enscript-string">&quot;SIGHUP: Purge cache&quot;</span>);
+        mDNS_Lock(m);
+        FORALL_CACHERECORDS(slot, cg, rr)
+        {
+            rr-&gt;resrec.mortality = Mortality_Mortal;
+            mDNS_PurgeCacheResourceRecord(m, rr);
+        }
+        <span class="enscript-comment">// Restart unicast and multicast queries
+</span>        mDNSCoreRestartQueries(m);
+        mDNS_Unlock(m);
+    } <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGINT</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGTERM</span>:   ExitCallback(msg_header-&gt;msgh_id); <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGINFO</span>:   INFOCallback(); <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGUSR1</span>:
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span>
+        mDNS_LoggingEnabled = 1;
+        LogMsg(<span class="enscript-string">&quot;SIGUSR1: Logging %s on Apple Platforms&quot;</span>, mDNS_LoggingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+#<span class="enscript-reference">else</span>
+        mDNS_LoggingEnabled = mDNS_LoggingEnabled ? 0 : 1;
+        LogMsg(<span class="enscript-string">&quot;SIGUSR1: Logging %s&quot;</span>, mDNS_LoggingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+#<span class="enscript-reference">endif</span>
+        WatchDogReportingThreshold = mDNS_LoggingEnabled ? 50 : 250;
+        UpdateDebugState();
+        LogInfo(<span class="enscript-string">&quot;USR1 Logging Enabled&quot;</span>); 
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGUSR2</span>:
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span>
+        mDNS_PacketLoggingEnabled = 1;
+        LogMsg(<span class="enscript-string">&quot;SIGUSR2: Packet Logging %s on Apple Platforms&quot;</span>, mDNS_PacketLoggingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+#<span class="enscript-reference">else</span>
+        mDNS_PacketLoggingEnabled = mDNS_PacketLoggingEnabled ? 0 : 1;
+        LogMsg(<span class="enscript-string">&quot;SIGUSR2: Packet Logging %s&quot;</span>, mDNS_PacketLoggingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+#<span class="enscript-reference">endif</span>
+        mDNS_McastTracingEnabled = (mDNS_PacketLoggingEnabled &amp;&amp; mDNS_McastLoggingEnabled) ? mDNStrue : mDNSfalse;
+        LogInfo(<span class="enscript-string">&quot;SIGUSR2: Multicast Tracing is %s&quot;</span>, mDNS_McastTracingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+        UpdateDebugState();
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGPROF</span>:  mDNS_McastLoggingEnabled = mDNS_McastLoggingEnabled ? mDNSfalse : mDNStrue;
+        LogMsg(<span class="enscript-string">&quot;SIGPROF: Multicast Logging %s&quot;</span>, mDNS_McastLoggingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+        LogMcastStateInfo(mDNSfalse, mDNStrue, mDNStrue);
+        mDNS_McastTracingEnabled = (mDNS_PacketLoggingEnabled &amp;&amp; mDNS_McastLoggingEnabled) ? mDNStrue : mDNSfalse;
+        LogMsg(<span class="enscript-string">&quot;SIGPROF: Multicast Tracing is %s&quot;</span>, mDNS_McastTracingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+        UpdateDebugState();
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGTSTP</span>:  mDNS_LoggingEnabled = mDNS_PacketLoggingEnabled = mDNS_McastLoggingEnabled = mDNS_McastTracingEnabled = mDNSfalse;
+        LogMsg(<span class="enscript-string">&quot;All mDNSResponder Debug Logging/Tracing Disabled (USR1/USR2/PROF)&quot;</span>);
+        UpdateDebugState();
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-reference">default</span>: LogMsg(<span class="enscript-string">&quot;SignalCallback: Unknown signal %d&quot;</span>, msg_header-&gt;msgh_id); <span class="enscript-keyword">break</span>;
+    }
+    KQueueUnlock(<span class="enscript-string">&quot;Unix Signal&quot;</span>);
+}
+
+<span class="enscript-comment">// MachServerName is com.apple.mDNSResponder (Supported only till 10.9.x)
+</span>mDNSlocal kern_return_t <span class="enscript-function-name">mDNSDaemonInitialize</span>(<span class="enscript-type">void</span>)
+{
+    mStatus err;
+
+    err = mDNS_Init(&amp;mDNSStorage, &amp;PlatformStorage,
+                    rrcachestorage, RR_CACHE_SIZE,
+                    !NoMulticastAdvertisements,
+                    mDNS_StatusCallback, mDNS_Init_NoInitCallbackContext);
+
+    <span class="enscript-keyword">if</span> (err)
+    {
+        LogMsg(<span class="enscript-string">&quot;Daemon start: mDNS_Init failed %d&quot;</span>, err);
+        <span class="enscript-keyword">return</span>(err);
+    }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">PREALLOCATED_CACHE</span>)
+    <span class="enscript-keyword">if</span> (PreallocateCacheMemory)
+    {
+        <span class="enscript-type">const</span> <span class="enscript-type">int</span> growCount = (kRRCacheMemoryLimit + kRRCacheGrowSize - 1) / kRRCacheGrowSize;
+        <span class="enscript-type">int</span> i;
+
+        <span class="enscript-keyword">for</span> (i = 0; i &lt; growCount; ++i)
+        {
+            mDNS_StatusCallback(&amp;mDNSStorage, mStatus_GrowCache);
+        }
+    }
+#<span class="enscript-reference">endif</span>
+
+    CFMachPortRef i_port = CFMachPortCreate(NULL, SignalCallback, NULL, NULL);
+    CFRunLoopSourceRef i_rls  = CFMachPortCreateRunLoopSource(NULL, i_port, 0);
+    signal_port       = CFMachPortGetPort(i_port);
+    CFRunLoopAddSource(CFRunLoopGetMain(), i_rls, kCFRunLoopDefaultMode);
+    CFRelease(i_rls);
+    
+    <span class="enscript-keyword">return</span>(err);
+}
+
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+<span class="enscript-comment">// SignalDispatch is mostly just a copy/paste of entire code block from SignalCallback above.
+</span><span class="enscript-comment">// The common code should be a subroutine, or we end up having to fix bugs in two places all the time.
+</span><span class="enscript-comment">// The same applies to mDNSDaemonInitialize, much of which is just a copy/paste of chunks
+</span><span class="enscript-comment">// of code from above. Alternatively we could remove the duplicated source code by having
+</span><span class="enscript-comment">// single routines, with the few differing parts bracketed with &quot;#ifndef MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM&quot;
+</span>
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">SignalDispatch</span>(dispatch_source_t source)
+{
+    <span class="enscript-type">int</span> sig = (<span class="enscript-type">int</span>)dispatch_source_get_handle(source);
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    KQueueLock();
+    <span class="enscript-keyword">switch</span>(sig)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGHUP</span>:    {
+        mDNSu32 slot;
+        CacheGroup *cg;
+        CacheRecord *rr;
+        LogMsg(<span class="enscript-string">&quot;SIGHUP: Purge cache&quot;</span>);
+        mDNS_Lock(m);
+        FORALL_CACHERECORDS(slot, cg, rr)
+        {
+           rr-&gt;resrec.mortality = Mortality_Mortal;
+           mDNS_PurgeCacheResourceRecord(m, rr);
+        }
+        <span class="enscript-comment">// Restart unicast and multicast queries
+</span>        mDNSCoreRestartQueries(m);
+        mDNS_Unlock(m);
+    } <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGINT</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGTERM</span>:   ExitCallback(sig); <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGINFO</span>:   INFOCallback(); <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGUSR1</span>:   mDNS_LoggingEnabled = mDNS_LoggingEnabled ? 0 : 1;
+        LogMsg(<span class="enscript-string">&quot;SIGUSR1: Logging %s&quot;</span>, mDNS_LoggingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+        WatchDogReportingThreshold = mDNS_LoggingEnabled ? 50 : 250;
+        UpdateDebugState();
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SIGUSR2</span>:   mDNS_PacketLoggingEnabled = mDNS_PacketLoggingEnabled ? 0 : 1;
+        LogMsg(<span class="enscript-string">&quot;SIGUSR2: Packet Logging %s&quot;</span>, mDNS_PacketLoggingEnabled ? <span class="enscript-string">&quot;Enabled&quot;</span> : <span class="enscript-string">&quot;Disabled&quot;</span>);
+        UpdateDebugState();
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-reference">default</span>: LogMsg(<span class="enscript-string">&quot;SignalCallback: Unknown signal %d&quot;</span>, sig); <span class="enscript-keyword">break</span>;
+    }
+    KQueueUnlock(<span class="enscript-string">&quot;Unix Signal&quot;</span>);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSSetupSignal</span>(dispatch_queue_t queue, <span class="enscript-type">int</span> sig)
+{
+    signal(sig, SIG_IGN);
+    dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, sig, 0, queue);
+
+    <span class="enscript-keyword">if</span> (source)
+    {
+        dispatch_source_set_event_handler(source, ^{SignalDispatch(source);});
+        <span class="enscript-comment">// Start processing signals
+</span>        dispatch_resume(source);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSSetupSignal: Cannot setup signal %d&quot;</span>, sig);
+    }
+}
+
+mDNSlocal kern_return_t <span class="enscript-function-name">mDNSDaemonInitialize</span>(<span class="enscript-type">void</span>)
+{
+    mStatus err;
+    dispatch_queue_t queue = dispatch_get_main_queue();
+
+    err = mDNS_Init(&amp;mDNSStorage, &amp;PlatformStorage,
+                    rrcachestorage, RR_CACHE_SIZE,
+                    !NoMulticastAdvertisements,
+                    mDNS_StatusCallback, mDNS_Init_NoInitCallbackContext);
+
+    <span class="enscript-keyword">if</span> (err)
+    {
+        LogMsg(<span class="enscript-string">&quot;Daemon start: mDNS_Init failed %d&quot;</span>, err);
+        <span class="enscript-keyword">return</span>(err);
+    }
+
+    mDNSSetupSignal(queue, SIGHUP);
+    mDNSSetupSignal(queue, SIGINT);
+    mDNSSetupSignal(queue, SIGTERM);
+    mDNSSetupSignal(queue, SIGINFO);
+    mDNSSetupSignal(queue, SIGUSR1);
+    mDNSSetupSignal(queue, SIGUSR2);
+
+    <span class="enscript-comment">// Create a custom handler for doing the housekeeping work. This is either triggered
+</span>    <span class="enscript-comment">// by the timer or an event source
+</span>    PlatformStorage.custom = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, queue);
+    <span class="enscript-keyword">if</span> (PlatformStorage.custom == mDNSNULL) {LogMsg(<span class="enscript-string">&quot;mDNSDaemonInitialize: Error creating custom source&quot;</span>); <span class="enscript-keyword">return</span> -1;}
+    dispatch_source_set_event_handler(PlatformStorage.custom, ^{PrepareForIdle(&amp;mDNSStorage);});
+    dispatch_resume(PlatformStorage.custom);
+
+    <span class="enscript-comment">// Create a timer source to trigger housekeeping work. The houskeeping work itself
+</span>    <span class="enscript-comment">// is done in the custom handler that we set below.
+</span>
+    PlatformStorage.timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    <span class="enscript-keyword">if</span> (PlatformStorage.timer == mDNSNULL) {LogMsg(<span class="enscript-string">&quot;mDNSDaemonInitialize: Error creating timer source&quot;</span>); <span class="enscript-keyword">return</span> -1;}
+
+    <span class="enscript-comment">// As the API does not support one shot timers, we pass zero for the interval. In the custom handler, we
+</span>    <span class="enscript-comment">// always reset the time to the new time computed. In effect, we ignore the interval
+</span>    dispatch_source_set_timer(PlatformStorage.timer, DISPATCH_TIME_NOW, 1000ull * 1000000000, 0);
+    dispatch_source_set_event_handler(PlatformStorage.timer, ^{
+                                          dispatch_source_merge_data(PlatformStorage.custom, 1);
+                                      });
+    dispatch_resume(PlatformStorage.timer);
+
+    LogMsg(<span class="enscript-string">&quot;DaemonIntialize done successfully&quot;</span>);
+
+    <span class="enscript-keyword">return</span>(err);
+}
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+mDNSlocal mDNSs32 <span class="enscript-function-name">mDNSDaemonIdle</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    mDNSs32 now = mDNS_TimeNow(m);
+
+    <span class="enscript-comment">// 1. If we need to set domain secrets, do so before handling the network change
+</span>    <span class="enscript-comment">// Detailed reason:
+</span>    <span class="enscript-comment">// BTMM domains listed in DynStore Setup:/Network/BackToMyMac are added to the registration domains list,
+</span>    <span class="enscript-comment">// and we need to setup the associated AutoTunnel DomainAuthInfo entries before that happens.
+</span>    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;KeyChainTimer &amp;&amp; now - m-&gt;p-&gt;KeyChainTimer &gt;= 0)
+    {
+        m-&gt;p-&gt;KeyChainTimer = 0;
+        mDNS_Lock(m);
+        SetDomainSecrets(m);
+        mDNS_Unlock(m);
+    }
+
+    <span class="enscript-comment">// 2. If we have network change events to handle, do them before calling mDNS_Execute()
+</span>    <span class="enscript-comment">// Detailed reason:
+</span>    <span class="enscript-comment">// mDNSMacOSXNetworkChanged() currently closes and re-opens its sockets. If there are received packets waiting, they are lost.
+</span>    <span class="enscript-comment">// mDNS_Execute() generates packets, including multicasts that are looped back to ourself.
+</span>    <span class="enscript-comment">// If we call mDNS_Execute() first, and generate packets, and then call mDNSMacOSXNetworkChanged() immediately afterwards
+</span>    <span class="enscript-comment">// we then systematically lose our own looped-back packets.
+</span>    <span class="enscript-keyword">if</span> (m-&gt;NetworkChanged &amp;&amp; now - m-&gt;NetworkChanged &gt;= 0) mDNSMacOSXNetworkChanged();
+
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;RequestReSleep &amp;&amp; now - m-&gt;p-&gt;RequestReSleep &gt;= 0)
+    {
+        m-&gt;p-&gt;RequestReSleep = 0;
+        mDNSPowerRequest(0, 0);
+    }
+
+    <span class="enscript-comment">// 3. Call mDNS_Execute() to let mDNSCore do what it needs to do
+</span>    mDNSs32 nextevent = mDNS_Execute(m);
+
+    <span class="enscript-keyword">if</span> (m-&gt;NetworkChanged)
+        <span class="enscript-keyword">if</span> (nextevent - m-&gt;NetworkChanged &gt; 0)
+            nextevent = m-&gt;NetworkChanged;
+
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;KeyChainTimer)
+        <span class="enscript-keyword">if</span> (nextevent - m-&gt;p-&gt;KeyChainTimer &gt; 0)
+            nextevent = m-&gt;p-&gt;KeyChainTimer;
+
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;RequestReSleep)
+        <span class="enscript-keyword">if</span> (nextevent - m-&gt;p-&gt;RequestReSleep &gt; 0)
+            nextevent = m-&gt;p-&gt;RequestReSleep;
+
+    
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;NotifyUser)
+    {
+        <span class="enscript-keyword">if</span> (m-&gt;p-&gt;NotifyUser - now &lt; 0)
+        {
+            <span class="enscript-keyword">if</span> (!SameDomainLabelCS(m-&gt;p-&gt;usernicelabel.c, m-&gt;nicelabel.c))
+            {
+                LogMsg(<span class="enscript-string">&quot;Name Conflict: Updated Computer Name from \&quot;%#s\&quot; to \&quot;%#s\&quot;&quot;</span>, m-&gt;p-&gt;usernicelabel.c, m-&gt;nicelabel.c);
+                mDNSPreferencesSetNames(kmDNSComputerName, &amp;m-&gt;p-&gt;usernicelabel, &amp;m-&gt;nicelabel);
+                m-&gt;p-&gt;usernicelabel = m-&gt;nicelabel;
+            }
+            <span class="enscript-keyword">if</span> (!SameDomainLabelCS(m-&gt;p-&gt;userhostlabel.c, m-&gt;hostlabel.c))
+            {
+                LogMsg(<span class="enscript-string">&quot;Name Conflict: Updated Local Hostname from \&quot;%#s.local\&quot; to \&quot;%#s.local\&quot;&quot;</span>, m-&gt;p-&gt;userhostlabel.c, m-&gt;hostlabel.c);
+                mDNSPreferencesSetNames(kmDNSLocalHostName, &amp;m-&gt;p-&gt;userhostlabel, &amp;m-&gt;hostlabel);
+                m-&gt;p-&gt;HostNameConflict = 0; <span class="enscript-comment">// Clear our indicator, now name change has been successful
+</span>                m-&gt;p-&gt;userhostlabel = m-&gt;hostlabel;
+            }
+            m-&gt;p-&gt;NotifyUser = 0;
+        }
+        <span class="enscript-keyword">else</span>
+        <span class="enscript-keyword">if</span> (nextevent - m-&gt;p-&gt;NotifyUser &gt; 0)
+            nextevent = m-&gt;p-&gt;NotifyUser;
+    }
+
+    <span class="enscript-keyword">return</span>(nextevent);
+}
+
+<span class="enscript-comment">// Right now we consider *ALL* of our DHCP leases
+</span><span class="enscript-comment">// It might make sense to be a bit more selective and only consider the leases on interfaces
+</span><span class="enscript-comment">// (a) that are capable and enabled for wake-on-LAN, and
+</span><span class="enscript-comment">// (b) where we have found (and successfully registered with) a Sleep Proxy
+</span><span class="enscript-comment">// If we can't be woken for traffic on a given interface, then why keep waking to renew its lease?
+</span>mDNSlocal mDNSu32 <span class="enscript-function-name">DHCPWakeTime</span>(<span class="enscript-type">void</span>)
+{
+    mDNSu32 e = 24 * 3600;      <span class="enscript-comment">// Maximum maintenance wake interval is 24 hours
+</span>    <span class="enscript-type">const</span> CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    <span class="enscript-keyword">if</span> (!now) LogMsg(<span class="enscript-string">&quot;DHCPWakeTime: CFAbsoluteTimeGetCurrent failed&quot;</span>);
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-type">int</span> ic, j;
+
+        <span class="enscript-type">const</span> <span class="enscript-type">void</span> *pattern = SCDynamicStoreKeyCreateNetworkServiceEntity(NULL, kSCDynamicStoreDomainState, kSCCompAnyRegex, kSCEntNetDHCP);
+        <span class="enscript-keyword">if</span> (!pattern)
+        {
+            LogMsg(<span class="enscript-string">&quot;DHCPWakeTime: SCDynamicStoreKeyCreateNetworkServiceEntity failed\n&quot;</span>);
+            <span class="enscript-keyword">return</span> e;
+        }
+        CFArrayRef dhcpinfo = CFArrayCreate(NULL, (<span class="enscript-type">const</span> <span class="enscript-type">void</span> **)&amp;pattern, 1, &amp;kCFTypeArrayCallBacks);
+        CFRelease(pattern);
+        <span class="enscript-keyword">if</span> (dhcpinfo)
+        {
+            SCDynamicStoreRef store = SCDynamicStoreCreate(NULL, CFSTR(<span class="enscript-string">&quot;DHCP-LEASES&quot;</span>), NULL, NULL);
+            <span class="enscript-keyword">if</span> (store)
+            {
+                CFDictionaryRef dict = SCDynamicStoreCopyMultiple(store, NULL, dhcpinfo);
+                <span class="enscript-keyword">if</span> (dict)
+                {
+                    ic = CFDictionaryGetCount(dict);
+                    <span class="enscript-type">const</span> <span class="enscript-type">void</span> *vals[ic];
+                    CFDictionaryGetKeysAndValues(dict, NULL, vals);
+
+                    <span class="enscript-keyword">for</span> (j = 0; j &lt; ic; j++)
+                    {
+                        <span class="enscript-type">const</span> CFDictionaryRef dhcp = (CFDictionaryRef)vals[j];
+                        <span class="enscript-keyword">if</span> (dhcp)
+                        {
+                            <span class="enscript-type">const</span> CFDateRef start = DHCPInfoGetLeaseStartTime(dhcp);
+                            <span class="enscript-type">const</span> CFDataRef lease = DHCPInfoGetOptionData(dhcp, 51);    <span class="enscript-comment">// Option 51 = IP Address Lease Time
+</span>                            <span class="enscript-keyword">if</span> (!start || !lease || CFDataGetLength(lease) &lt; 4)
+                                LogMsg(<span class="enscript-string">&quot;DHCPWakeTime: SCDynamicStoreCopyDHCPInfo index %d failed &quot;</span>
+                                       <span class="enscript-string">&quot;CFDateRef start %p CFDataRef lease %p CFDataGetLength(lease) %d&quot;</span>,
+                                       j, start, lease, lease ? CFDataGetLength(lease) : 0);
+                            <span class="enscript-keyword">else</span>
+                            {
+                                <span class="enscript-type">const</span> UInt8 *d = CFDataGetBytePtr(lease);
+                                <span class="enscript-keyword">if</span> (!d) LogMsg(<span class="enscript-string">&quot;DHCPWakeTime: CFDataGetBytePtr %d failed&quot;</span>, j);
+                                <span class="enscript-keyword">else</span>
+                                {
+                                    <span class="enscript-type">const</span> mDNSu32 elapsed   = now - CFDateGetAbsoluteTime(start);
+                                    <span class="enscript-type">const</span> mDNSu32 lifetime  = (mDNSs32) ((mDNSs32)d[0] &lt;&lt; 24 | (mDNSs32)d[1] &lt;&lt; 16 | (mDNSs32)d[2] &lt;&lt; 8 | d[3]);
+                                    <span class="enscript-type">const</span> mDNSu32 remaining = lifetime - elapsed;
+                                    <span class="enscript-type">const</span> mDNSu32 wake      = remaining &gt; 60 ? remaining - remaining/10 : 54;   <span class="enscript-comment">// Wake at 90% of the lease time
+</span>                                    LogSPS(<span class="enscript-string">&quot;DHCP Address Lease Elapsed %6u Lifetime %6u Remaining %6u Wake %6u&quot;</span>, elapsed, lifetime, remaining, wake);
+                                    <span class="enscript-keyword">if</span> (e &gt; wake) e = wake;
+                                }
+                            }
+                        }
+                    }
+                    CFRelease(dict);
+                }
+                CFRelease(store);
+            }
+            CFRelease(dhcpinfo);
+        }
+    }
+    <span class="enscript-keyword">return</span>(e);
+}
+
+<span class="enscript-comment">// We deliberately schedule our wakeup for halfway between when we'd *like* it and when we *need* it.
+</span><span class="enscript-comment">// For example, if our DHCP lease expires in two hours, we'll typically renew it at the halfway point, after one hour.
+</span><span class="enscript-comment">// If we scheduled our wakeup for the one-hour renewal time, that might be just seconds from now, and sleeping
+</span><span class="enscript-comment">// for a few seconds and then waking again is silly and annoying.
+</span><span class="enscript-comment">// If we scheduled our wakeup for the two-hour expiry time, and we were slow to wake, we might lose our lease.
+</span><span class="enscript-comment">// Scheduling our wakeup for halfway in between -- 90 minutes -- avoids short wakeups while still
+</span><span class="enscript-comment">// allowing us an adequate safety margin to renew our lease before we lose it.
+</span>
+mDNSlocal mDNSBool <span class="enscript-function-name">AllowSleepNow</span>(mDNSs32 now)
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    mDNSBool ready = mDNSCoreReadyForSleep(m, now);
+    <span class="enscript-keyword">if</span> (m-&gt;SleepState &amp;&amp; !ready &amp;&amp; now - m-&gt;SleepLimit &lt; 0) <span class="enscript-keyword">return</span>(mDNSfalse);
+
+    m-&gt;p-&gt;WakeAtUTC = 0;
+    <span class="enscript-type">int</span> result = kIOReturnSuccess;
+    CFDictionaryRef opts = NULL;
+
+    <span class="enscript-comment">// If the sleep request was cancelled, and we're no longer planning to sleep, don't need to
+</span>    <span class="enscript-comment">// do the stuff below, but we *DO* still need to acknowledge the sleep message we received.
+</span>    <span class="enscript-keyword">if</span> (!m-&gt;SleepState)
+        LogMsg(<span class="enscript-string">&quot;AllowSleepNow: Sleep request was canceled with %d ticks remaining&quot;</span>, m-&gt;SleepLimit - now);
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-keyword">if</span> (!m-&gt;SystemWakeOnLANEnabled || !mDNSCoreHaveAdvertisedMulticastServices(m))
+            LogSPS(<span class="enscript-string">&quot;AllowSleepNow: Not scheduling wakeup: SystemWakeOnLAN %s enabled; %s advertised services&quot;</span>,
+                   m-&gt;SystemWakeOnLANEnabled                  ? <span class="enscript-string">&quot;is&quot;</span> : <span class="enscript-string">&quot;not&quot;</span>,
+                   mDNSCoreHaveAdvertisedMulticastServices(m) ? <span class="enscript-string">&quot;have&quot;</span> : <span class="enscript-string">&quot;no&quot;</span>);
+        <span class="enscript-keyword">else</span>
+        {
+            mDNSs32 dhcp = DHCPWakeTime();
+            LogSPS(<span class="enscript-string">&quot;ComputeWakeTime: DHCP Wake %d&quot;</span>, dhcp);
+            mDNSs32 interval = mDNSCoreIntervalToNextWake(m, now) / mDNSPlatformOneSecond;
+            <span class="enscript-keyword">if</span> (interval &gt; dhcp) interval = dhcp;
+
+            <span class="enscript-comment">// If we're not ready to sleep (failed to register with Sleep Proxy, maybe because of
+</span>            <span class="enscript-comment">// transient network problem) then schedule a wakeup in one hour to try again. Otherwise,
+</span>            <span class="enscript-comment">// a single SPS failure could result in a remote machine falling permanently asleep, requiring
+</span>            <span class="enscript-comment">// someone to go to the machine in person to wake it up again, which would be unacceptable.
+</span>            <span class="enscript-keyword">if</span> (!ready &amp;&amp; interval &gt; 3600) interval = 3600;
+
+            <span class="enscript-comment">//interval = 48; // For testing
+</span>
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TARGET_OS_OSX</span> &amp;&amp; <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">kIOPMAcknowledgmentOptionSystemCapabilityRequirements</span>)
+            <span class="enscript-keyword">if</span> (m-&gt;p-&gt;IOPMConnection)   <span class="enscript-comment">// If lightweight-wake capability is available, use that
+</span>            {
+                <span class="enscript-type">const</span> CFDateRef WakeDate = CFDateCreate(NULL, CFAbsoluteTimeGetCurrent() + interval);
+                <span class="enscript-keyword">if</span> (!WakeDate) LogMsg(<span class="enscript-string">&quot;ScheduleNextWake: CFDateCreate failed&quot;</span>);
+                <span class="enscript-keyword">else</span>
+                {
+                    <span class="enscript-type">const</span> mDNSs32 reqs         = kIOPMSystemPowerStateCapabilityNetwork;
+                    <span class="enscript-type">const</span> CFNumberRef Requirements = CFNumberCreate(NULL, kCFNumberSInt32Type, &amp;reqs);
+                    <span class="enscript-keyword">if</span> (Requirements == NULL) LogMsg(<span class="enscript-string">&quot;ScheduleNextWake: CFNumberCreate failed&quot;</span>);
+                    <span class="enscript-keyword">else</span>
+                    {
+                        <span class="enscript-type">const</span> <span class="enscript-type">void</span> *OptionKeys[2] = { kIOPMAckDHCPRenewWakeDate, kIOPMAckSystemCapabilityRequirements };
+                        <span class="enscript-type">const</span> <span class="enscript-type">void</span> *OptionVals[2] = {        WakeDate,          Requirements   };
+                        opts = CFDictionaryCreate(NULL, (<span class="enscript-type">void</span>*)OptionKeys, (<span class="enscript-type">void</span>*)OptionVals, 2, &amp;kCFTypeDictionaryKeyCallBacks, &amp;kCFTypeDictionaryValueCallBacks);
+                        <span class="enscript-keyword">if</span> (!opts) LogMsg(<span class="enscript-string">&quot;ScheduleNextWake: CFDictionaryCreate failed&quot;</span>);
+                        CFRelease(Requirements);
+                    }
+                    CFRelease(WakeDate);
+                }
+                LogSPS(<span class="enscript-string">&quot;AllowSleepNow: Will request lightweight wakeup in %d seconds&quot;</span>, interval);
+            }
+            <span class="enscript-keyword">else</span>                        <span class="enscript-comment">// else schedule the wakeup using the old API instead to
+</span>#<span class="enscript-reference">endif</span>
+            {
+                <span class="enscript-comment">// If we wake within +/- 30 seconds of our requested time we'll assume the system woke for us,
+</span>                <span class="enscript-comment">// so we should put it back to sleep. To avoid frustrating the user, we always request at least
+</span>                <span class="enscript-comment">// 60 seconds sleep, so if they immediately re-wake the system within seconds of it going to sleep,
+</span>                <span class="enscript-comment">// we then shouldn't hit our 30-second window, and we won't attempt to re-sleep the machine.
+</span>                <span class="enscript-keyword">if</span> (interval &lt; 60)
+                    interval = 60;
+
+                result = mDNSPowerRequest(1, interval);
+
+                <span class="enscript-keyword">if</span> (result == kIOReturnNotReady)
+                {
+                    <span class="enscript-type">int</span> r;
+                    LogMsg(<span class="enscript-string">&quot;AllowSleepNow: Requested wakeup in %d seconds unsuccessful; retrying with longer intervals&quot;</span>, interval);
+                    <span class="enscript-comment">// IOPMSchedulePowerEvent fails with kIOReturnNotReady (-536870184/0xe00002d8) if the
+</span>                    <span class="enscript-comment">// requested wake time is &quot;too soon&quot;, but there's no API to find out what constitutes
+</span>                    <span class="enscript-comment">// &quot;too soon&quot; on any given OS/hardware combination, so if we get kIOReturnNotReady
+</span>                    <span class="enscript-comment">// we just have to iterate with successively longer intervals until it doesn't fail.
+</span>                    <span class="enscript-comment">// We preserve the value of &quot;result&quot; because if our original power request was deemed &quot;too soon&quot;
+</span>                    <span class="enscript-comment">// for the machine to get to sleep and wake back up again, we attempt to cancel the sleep request,
+</span>                    <span class="enscript-comment">// since the implication is that the system won't manage to be awake again at the time we need it.
+</span>                    <span class="enscript-keyword">do</span>
+                    {
+                        interval += (interval &lt; 20) ? 1 : ((interval+3) / 4);
+                        r = mDNSPowerRequest(1, interval);
+                    }
+                    <span class="enscript-keyword">while</span> (r == kIOReturnNotReady);
+                    <span class="enscript-keyword">if</span> (r) LogMsg(<span class="enscript-string">&quot;AllowSleepNow: Requested wakeup in %d seconds unsuccessful: %d %X&quot;</span>, interval, r, r);
+                    <span class="enscript-keyword">else</span> LogSPS(<span class="enscript-string">&quot;AllowSleepNow: Requested later wakeup in %d seconds; will also attempt IOCancelPowerChange&quot;</span>, interval);
+                }
+                <span class="enscript-keyword">else</span>
+                {
+                    <span class="enscript-keyword">if</span> (result) LogMsg(<span class="enscript-string">&quot;AllowSleepNow: Requested wakeup in %d seconds unsuccessful: %d %X&quot;</span>, interval, result, result);
+                    <span class="enscript-keyword">else</span> LogSPS(<span class="enscript-string">&quot;AllowSleepNow: Requested wakeup in %d seconds&quot;</span>, interval);
+                }
+                m-&gt;p-&gt;WakeAtUTC = mDNSPlatformUTC() + interval;
+            }
+        }
+
+        m-&gt;SleepState = SleepState_Sleeping;
+		<span class="enscript-comment">// Clear our interface list to empty state, ready to go to sleep
+</span>		<span class="enscript-comment">// As a side effect of doing this, we'll also cancel any outstanding SPS Resolve calls that didn't complete
+</span>        mDNSMacOSXNetworkChanged();
+    }
+
+    LogSPS(<span class="enscript-string">&quot;AllowSleepNow: %s(%lX) %s at %ld (%d ticks remaining)&quot;</span>,
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TARGET_OS_OSX</span> &amp;&amp; <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">kIOPMAcknowledgmentOptionSystemCapabilityRequirements</span>)
+           (m-&gt;p-&gt;IOPMConnection) ? <span class="enscript-string">&quot;IOPMConnectionAcknowledgeEventWithOptions&quot;</span> :
+#<span class="enscript-reference">endif</span>
+           (result == kIOReturnSuccess) ? <span class="enscript-string">&quot;IOAllowPowerChange&quot;</span> : <span class="enscript-string">&quot;IOCancelPowerChange&quot;</span>,
+           m-&gt;p-&gt;SleepCookie, ready ? <span class="enscript-string">&quot;ready for sleep&quot;</span> : <span class="enscript-string">&quot;giving up&quot;</span>, now, m-&gt;SleepLimit - now);
+
+    m-&gt;SleepLimit = 0;  <span class="enscript-comment">// Don't clear m-&gt;SleepLimit until after we've logged it above
+</span>    m-&gt;TimeSlept = mDNSPlatformUTC();
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">TARGET_OS_OSX</span> &amp;&amp; <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">kIOPMAcknowledgmentOptionSystemCapabilityRequirements</span>)
+    <span class="enscript-keyword">if</span> (m-&gt;p-&gt;IOPMConnection) IOPMConnectionAcknowledgeEventWithOptions(m-&gt;p-&gt;IOPMConnection, m-&gt;p-&gt;SleepCookie, opts);
+    <span class="enscript-keyword">else</span>
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-keyword">if</span> (result == kIOReturnSuccess) IOAllowPowerChange (m-&gt;p-&gt;PowerConnection, m-&gt;p-&gt;SleepCookie);
+    <span class="enscript-keyword">else</span> IOCancelPowerChange(m-&gt;p-&gt;PowerConnection, m-&gt;p-&gt;SleepCookie);
+
+    <span class="enscript-keyword">if</span> (opts) CFRelease(opts);
+    <span class="enscript-keyword">return</span>(mDNStrue);
+}
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">TriggerEventCompletion</span>()
+{
+    debugf(<span class="enscript-string">&quot;TriggerEventCompletion: Merge data&quot;</span>);
+    dispatch_source_merge_data(PlatformStorage.custom, 1);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">PrepareForIdle</span>(<span class="enscript-type">void</span> *m_param)
+{
+    mDNS            *m = m_param;
+    int64_t time_offset;
+    dispatch_time_t dtime;
+
+    <span class="enscript-type">const</span> <span class="enscript-type">int</span> multiplier = 1000000000 / mDNSPlatformOneSecond;
+
+    <span class="enscript-comment">// This is the main work loop:
+</span>    <span class="enscript-comment">// (1) First we give mDNSCore a chance to finish off any of its deferred work and calculate the next sleep time
+</span>    <span class="enscript-comment">// (2) Then we make sure we've delivered all waiting browse messages to our clients
+</span>    <span class="enscript-comment">// (3) Then we sleep for the time requested by mDNSCore, or until the next event, whichever is sooner
+</span>
+    debugf(<span class="enscript-string">&quot;PrepareForIdle: called&quot;</span>);
+    <span class="enscript-comment">// Run mDNS_Execute to find out the time we next need to wake up
+</span>    mDNSs32 start          = mDNSPlatformRawTime();
+    mDNSs32 nextTimerEvent = udsserver_idle(mDNSDaemonIdle(m));
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">COMMON</span>, <span class="enscript-variable-name">DNS_PUSH</span>)
+    <span class="enscript-keyword">if</span> (m-&gt;DNSPushServers != mDNSNULL)
+    {
+        nextTimerEvent = dso_idle(m, nextTimerEvent);
+    }
+#<span class="enscript-reference">endif</span>
+    mDNSs32 end            = mDNSPlatformRawTime();
+    <span class="enscript-keyword">if</span> (end - start &gt;= WatchDogReportingThreshold)
+    {
+        LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_WARNING,
+            <span class="enscript-string">&quot;CustomSourceHandler: WARNING: Idle task took %d ms to complete&quot;</span>, end - start);
+    }
+
+    mDNSs32 now = mDNS_TimeNow(m);
+
+    <span class="enscript-keyword">if</span> (m-&gt;ShutdownTime)
+    {
+        <span class="enscript-keyword">if</span> (mDNSStorage.ResourceRecords)
+        {
+            LogInfo(<span class="enscript-string">&quot;Cannot exit yet; Resource Record still exists: %s&quot;</span>, ARDisplayString(m, mDNSStorage.ResourceRecords));
+            <span class="enscript-keyword">if</span> (mDNS_LoggingEnabled) usleep(10000);     <span class="enscript-comment">// Sleep 10ms so that we don't flood syslog with too many messages
+</span>        }
+        <span class="enscript-keyword">if</span> (mDNS_ExitNow(m, now))
+        {
+            LogInfo(<span class="enscript-string">&quot;IdleLoop: mDNS_FinalExit&quot;</span>);
+            mDNS_FinalExit(&amp;mDNSStorage);
+            usleep(1000);       <span class="enscript-comment">// Little 1ms pause before exiting, so we don't lose our final syslog messages
+</span>            exit(0);
+        }
+        <span class="enscript-keyword">if</span> (nextTimerEvent - m-&gt;ShutdownTime &gt;= 0)
+            nextTimerEvent = m-&gt;ShutdownTime;
+    }
+
+    <span class="enscript-keyword">if</span> (m-&gt;SleepLimit)
+        <span class="enscript-keyword">if</span> (!AllowSleepNow(now))
+            <span class="enscript-keyword">if</span> (nextTimerEvent - m-&gt;SleepLimit &gt;= 0)
+                nextTimerEvent = m-&gt;SleepLimit;
+
+    <span class="enscript-comment">// Convert absolute wakeup time to a relative time from now
+</span>    mDNSs32 ticks = nextTimerEvent - now;
+    <span class="enscript-keyword">if</span> (ticks &lt; 1) ticks = 1;
+
+    <span class="enscript-type">static</span> mDNSs32 RepeatedBusy = 0;    <span class="enscript-comment">// Debugging sanity check, to guard against CPU spins
+</span>    <span class="enscript-keyword">if</span> (ticks &gt; 1)
+        RepeatedBusy = 0;
+    <span class="enscript-keyword">else</span>
+    {
+        ticks = 1;
+        <span class="enscript-keyword">if</span> (++RepeatedBusy &gt;= mDNSPlatformOneSecond) { ShowTaskSchedulingError(&amp;mDNSStorage); RepeatedBusy = 0; }
+    }
+
+    time_offset = ((mDNSu32)ticks / mDNSPlatformOneSecond) * 1000000000 + (ticks % mDNSPlatformOneSecond) * multiplier;
+    dtime = dispatch_time(DISPATCH_TIME_NOW, time_offset);
+    dispatch_source_set_timer(PlatformStorage.timer, dtime, 1000ull*1000000000, 0);
+    debugf(<span class="enscript-string">&quot;PrepareForIdle: scheduling timer with ticks %d&quot;</span>, ticks);
+    <span class="enscript-keyword">return</span>;
+}
+
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">KQWokenFlushBytes</span>(<span class="enscript-type">int</span> fd, __unused <span class="enscript-type">short</span> filter, __unused <span class="enscript-type">void</span> *context, __unused mDNSBool encounteredEOF)
+{
+    <span class="enscript-comment">// Read all of the bytes so we won't wake again.
+</span>    <span class="enscript-type">char</span> buffer[100];
+    <span class="enscript-keyword">while</span> (recv(fd, buffer, <span class="enscript-keyword">sizeof</span>(buffer), MSG_DONTWAIT) &gt; 0) <span class="enscript-keyword">continue</span>;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">SetLowWater</span>(<span class="enscript-type">const</span> KQSocketSet *<span class="enscript-type">const</span> k, <span class="enscript-type">const</span> <span class="enscript-type">int</span> r)
+{
+    <span class="enscript-keyword">if</span> (k-&gt;sktv4 &gt;=0 &amp;&amp; setsockopt(k-&gt;sktv4, SOL_SOCKET, SO_RCVLOWAT, &amp;r, <span class="enscript-keyword">sizeof</span>(r)) &lt; 0)
+        LogMsg(<span class="enscript-string">&quot;SO_RCVLOWAT IPv4 %d error %d errno %d (%s)&quot;</span>, k-&gt;sktv4, r, errno, strerror(errno));
+    <span class="enscript-keyword">if</span> (k-&gt;sktv6 &gt;=0 &amp;&amp; setsockopt(k-&gt;sktv6, SOL_SOCKET, SO_RCVLOWAT, &amp;r, <span class="enscript-keyword">sizeof</span>(r)) &lt; 0)
+        LogMsg(<span class="enscript-string">&quot;SO_RCVLOWAT IPv6 %d error %d errno %d (%s)&quot;</span>, k-&gt;sktv6, r, errno, strerror(errno));
+}
+
+mDNSlocal <span class="enscript-type">void</span> * <span class="enscript-function-name">KQueueLoop</span>(<span class="enscript-type">void</span> *m_param)
+{
+    mDNS            *m = m_param;
+    <span class="enscript-type">int</span> numevents = 0;
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">USE_SELECT_WITH_KQUEUEFD</span>
+    fd_set readfds;
+    FD_ZERO(&amp;readfds);
+    <span class="enscript-type">const</span> <span class="enscript-type">int</span> multiplier = 1000000    / mDNSPlatformOneSecond;
+#<span class="enscript-reference">else</span>
+    <span class="enscript-type">const</span> <span class="enscript-type">int</span> multiplier = 1000000000 / mDNSPlatformOneSecond;
+#<span class="enscript-reference">endif</span>
+
+    pthread_mutex_lock(&amp;PlatformStorage.BigMutex);
+    LogInfo(<span class="enscript-string">&quot;Starting time value 0x%08lX (%ld)&quot;</span>, (mDNSu32)mDNSStorage.timenow_last, mDNSStorage.timenow_last);
+
+    <span class="enscript-comment">// This is the main work loop:
+</span>    <span class="enscript-comment">// (1) First we give mDNSCore a chance to finish off any of its deferred work and calculate the next sleep time
+</span>    <span class="enscript-comment">// (2) Then we make sure we've delivered all waiting browse messages to our clients
+</span>    <span class="enscript-comment">// (3) Then we sleep for the time requested by mDNSCore, or until the next event, whichever is sooner
+</span>    <span class="enscript-comment">// (4) On wakeup we first process *all* events
+</span>    <span class="enscript-comment">// (5) then when no more events remain, we go back to (1) to finish off any deferred work and do it all again
+</span>    <span class="enscript-keyword">for</span> ( ; ; )
+    {
+        #define kEventsToReadAtOnce 1
+        <span class="enscript-type">struct</span> kevent new_events[kEventsToReadAtOnce];
+
+        <span class="enscript-comment">// Run mDNS_Execute to find out the time we next need to wake up
+</span>        mDNSs32 start          = mDNSPlatformRawTime();
+        mDNSs32 nextTimerEvent = udsserver_idle(mDNSDaemonIdle(m));
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">DNSSD_XPC_SERVICE</span>)
+        dnssd_server_idle();
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">COMMON</span>, <span class="enscript-variable-name">DNS_PUSH</span>)
+        <span class="enscript-keyword">if</span> (m-&gt;DNSPushServers != mDNSNULL)
+        {
+            mDNS_Lock(m);
+            nextTimerEvent = dso_idle(m, m-&gt;timenow, nextTimerEvent);
+            mDNS_Unlock(m);
+        }
+#<span class="enscript-reference">endif</span>
+        mDNSs32 end            = mDNSPlatformRawTime();
+        <span class="enscript-keyword">if</span> (end - start &gt;= WatchDogReportingThreshold)
+        {
+            LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_WARNING, <span class="enscript-string">&quot;WARNING: Idle task took %d ms to complete&quot;</span>, end - start);
+        }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_MALLOC_DEBUGGING</span> &gt;= 1
+        mDNSPlatformValidateLists();
+#<span class="enscript-reference">endif</span>
+
+        mDNSs32 now = mDNS_TimeNow(m);
+
+        <span class="enscript-keyword">if</span> (m-&gt;ShutdownTime)
+        {
+            <span class="enscript-keyword">if</span> (mDNSStorage.ResourceRecords)
+            {
+                AuthRecord *rr;
+                <span class="enscript-keyword">for</span> (rr = mDNSStorage.ResourceRecords; rr; rr=rr-&gt;next)
+                {
+                    LogInfo(<span class="enscript-string">&quot;Cannot exit yet; Resource Record still exists: %s&quot;</span>, ARDisplayString(m, rr));
+                    <span class="enscript-keyword">if</span> (mDNS_LoggingEnabled) usleep(10000);     <span class="enscript-comment">// Sleep 10ms so that we don't flood syslog with too many messages
+</span>                }
+            }
+            <span class="enscript-keyword">if</span> (mDNS_ExitNow(m, now))
+            {
+                LogInfo(<span class="enscript-string">&quot;mDNS_FinalExit&quot;</span>);
+                mDNS_FinalExit(&amp;mDNSStorage);
+                usleep(1000);       <span class="enscript-comment">// Little 1ms pause before exiting, so we don't lose our final syslog messages
+</span>                exit(0);
+            }
+            <span class="enscript-keyword">if</span> (nextTimerEvent - m-&gt;ShutdownTime &gt;= 0)
+                nextTimerEvent = m-&gt;ShutdownTime;
+        }
+
+        <span class="enscript-keyword">if</span> (m-&gt;SleepLimit)
+            <span class="enscript-keyword">if</span> (!AllowSleepNow(now))
+                <span class="enscript-keyword">if</span> (nextTimerEvent - m-&gt;SleepLimit &gt;= 0)
+                    nextTimerEvent = m-&gt;SleepLimit;
+
+        <span class="enscript-comment">// Convert absolute wakeup time to a relative time from now
+</span>        mDNSs32 ticks = nextTimerEvent - now;
+        <span class="enscript-keyword">if</span> (ticks &lt; 1) ticks = 1;
+
+        <span class="enscript-type">static</span> mDNSs32 RepeatedBusy = 0;    <span class="enscript-comment">// Debugging sanity check, to guard against CPU spins
+</span>        <span class="enscript-keyword">if</span> (ticks &gt; 1)
+            RepeatedBusy = 0;
+        <span class="enscript-keyword">else</span>
+        {
+            ticks = 1;
+            <span class="enscript-keyword">if</span> (++RepeatedBusy &gt;= mDNSPlatformOneSecond) { ShowTaskSchedulingError(&amp;mDNSStorage); RepeatedBusy = 0; }
+        }
+
+        verbosedebugf(<span class="enscript-string">&quot;KQueueLoop: Handled %d events; now sleeping for %d ticks&quot;</span>, numevents, ticks);
+        numevents = 0;
+
+        <span class="enscript-comment">// Release the lock, and sleep until:
+</span>        <span class="enscript-comment">// 1. Something interesting happens like a packet arriving, or
+</span>        <span class="enscript-comment">// 2. The other thread writes a byte to WakeKQueueLoopFD to poke us and make us wake up, or
+</span>        <span class="enscript-comment">// 3. The timeout expires
+</span>        pthread_mutex_unlock(&amp;PlatformStorage.BigMutex);
+
+        <span class="enscript-comment">// If we woke up to receive a multicast, set low-water mark to dampen excessive wakeup rate
+</span>        <span class="enscript-keyword">if</span> (m-&gt;p-&gt;num_mcasts)
+        {
+            SetLowWater(&amp;m-&gt;p-&gt;permanentsockets, 0x10000);
+            <span class="enscript-keyword">if</span> (ticks &gt; mDNSPlatformOneSecond / 8) ticks = mDNSPlatformOneSecond / 8;
+        }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">USE_SELECT_WITH_KQUEUEFD</span>
+        <span class="enscript-type">struct</span> timeval timeout;
+        timeout.tv_sec = ticks / mDNSPlatformOneSecond;
+        timeout.tv_usec = (ticks % mDNSPlatformOneSecond) * multiplier;
+        FD_SET(KQueueFD, &amp;readfds);
+        <span class="enscript-keyword">if</span> (select(KQueueFD+1, &amp;readfds, NULL, NULL, &amp;timeout) &lt; 0)
+        { LogMsg(<span class="enscript-string">&quot;select(%d) failed errno %d (%s)&quot;</span>, KQueueFD, errno, strerror(errno)); sleep(1); }
+#<span class="enscript-reference">else</span>
+        <span class="enscript-type">struct</span> timespec timeout;
+        timeout.tv_sec = ticks / mDNSPlatformOneSecond;
+        timeout.tv_nsec = (ticks % mDNSPlatformOneSecond) * multiplier;
+        <span class="enscript-comment">// In my opinion, you ought to be able to call kevent() with nevents set to zero,
+</span>        <span class="enscript-comment">// and have it work similarly to the way it does with nevents non-zero --
+</span>        <span class="enscript-comment">// i.e. it waits until either an event happens or the timeout expires, and then wakes up.
+</span>        <span class="enscript-comment">// In fact, what happens if you do this is that it just returns immediately. So, we have
+</span>        <span class="enscript-comment">// to pass nevents set to one, and then we just ignore the event it gives back to us. -- SC
+</span>        <span class="enscript-keyword">if</span> (kevent(KQueueFD, NULL, 0, new_events, 1, &amp;timeout) &lt; 0)
+        { LogMsg(<span class="enscript-string">&quot;kevent(%d) failed errno %d (%s)&quot;</span>, KQueueFD, errno, strerror(errno)); sleep(1); }
+#<span class="enscript-reference">endif</span>
+
+        pthread_mutex_lock(&amp;PlatformStorage.BigMutex);
+        <span class="enscript-comment">// We have to ignore the event we may have been told about above, because that
+</span>        <span class="enscript-comment">// was done without holding the lock, and between the time we woke up and the
+</span>        <span class="enscript-comment">// time we reclaimed the lock the other thread could have done something that
+</span>        <span class="enscript-comment">// makes the event no longer valid. Now we have the lock, we call kevent again
+</span>        <span class="enscript-comment">// and this time we can safely process the events it tells us about.
+</span>
+        <span class="enscript-comment">// If we changed UDP socket low-water mark, restore it, so we will be told about every packet
+</span>        <span class="enscript-keyword">if</span> (m-&gt;p-&gt;num_mcasts)
+        {
+            SetLowWater(&amp;m-&gt;p-&gt;permanentsockets, 1);
+            m-&gt;p-&gt;num_mcasts = 0;
+        }
+
+        <span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">struct</span> timespec zero_timeout = { 0, 0 };
+        <span class="enscript-type">int</span> events_found;
+        <span class="enscript-keyword">while</span> ((events_found = kevent(KQueueFD, NULL, 0, new_events, kEventsToReadAtOnce, &amp;zero_timeout)) != 0)
+        {
+            <span class="enscript-keyword">if</span> (events_found &gt; kEventsToReadAtOnce || (events_found &lt; 0 &amp;&amp; errno != EINTR))
+            {
+                <span class="enscript-type">const</span> <span class="enscript-type">int</span> kevent_errno = errno;
+                <span class="enscript-comment">// Not sure what to do here, our kqueue has failed us - this isn't ideal
+</span>                LogMsg(<span class="enscript-string">&quot;ERROR: KQueueLoop - kevent failed errno %d (%s)&quot;</span>, kevent_errno, strerror(kevent_errno));
+                exit(kevent_errno);
+            }
+
+            numevents += events_found;
+
+            <span class="enscript-type">int</span> i;
+            <span class="enscript-keyword">for</span> (i = 0; i &lt; events_found; i++)
+            {
+                <span class="enscript-type">const</span> KQueueEntry *<span class="enscript-type">const</span> kqentry = new_events[i].udata;
+                mDNSs32 stime = mDNSPlatformRawTime();
+                <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> KQtask = kqentry-&gt;KQtask; <span class="enscript-comment">// Grab a copy in case KQcallback deletes the task
+</span>                kqentry-&gt;KQcallback(new_events[i].ident, new_events[i].filter, kqentry-&gt;KQcontext, (new_events[i].flags &amp; EV_EOF) != 0);
+                mDNSs32 etime = mDNSPlatformRawTime();
+                <span class="enscript-keyword">if</span> (etime - stime &gt;= WatchDogReportingThreshold)
+                {
+                    LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_WARNING, 
+                        <span class="enscript-string">&quot;WARNING: &quot;</span> PUB_S <span class="enscript-string">&quot; took %d ms to complete&quot;</span>, KQtask, etime - stime);
+                }
+            }
+        }
+    }
+
+    <span class="enscript-keyword">return</span> NULL;
+}
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+mDNSlocal size_t <span class="enscript-function-name">LaunchdCheckin</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-comment">// Ask launchd for our socket
+</span>    <span class="enscript-type">int</span> result = launch_activate_socket(<span class="enscript-string">&quot;Listeners&quot;</span>, &amp;launchd_fds, &amp;launchd_fds_count);
+    <span class="enscript-keyword">if</span> (result != 0) { LogMsg(<span class="enscript-string">&quot;launch_activate_socket() failed error %d (%s)&quot;</span>, result, strerror(result)); }
+    <span class="enscript-keyword">return</span> launchd_fds_count;
+}
+
+
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> <span class="enscript-function-name">sandbox_init</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *profile, uint64_t flags, <span class="enscript-type">char</span> **errorbuf) __attribute__((weak_import));
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span>
+mDNSlocal mDNSBool <span class="enscript-function-name">PreferencesGetValueBool</span>(CFStringRef key, mDNSBool defaultValue)
+{
+    CFBooleanRef boolean;
+    mDNSBool result = defaultValue;
+
+    boolean = CFPreferencesCopyAppValue(key, kProgramArguments);
+    <span class="enscript-keyword">if</span> (boolean != NULL)
+    {
+        <span class="enscript-keyword">if</span> (CFGetTypeID(boolean) == CFBooleanGetTypeID())
+            result = CFBooleanGetValue(boolean) ? mDNStrue : mDNSfalse;
+        CFRelease(boolean);
+    }
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">PreferencesGetValueInt</span>(CFStringRef key, <span class="enscript-type">int</span> defaultValue)
+{
+    CFNumberRef number;
+    <span class="enscript-type">int</span> numberValue;
+    <span class="enscript-type">int</span> result = defaultValue;
+
+    number = CFPreferencesCopyAppValue(key, kProgramArguments);
+    <span class="enscript-keyword">if</span> (number != NULL)
+    {
+        <span class="enscript-keyword">if</span> ((CFGetTypeID(number) == CFNumberGetTypeID()) &amp;&amp; CFNumberGetValue(number, kCFNumberIntType, &amp;numberValue))
+            result = numberValue;
+        CFRelease(number);
+    }
+
+    <span class="enscript-keyword">return</span> result;
+}
+#<span class="enscript-reference">endif</span>
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">SandboxProcess</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-comment">// Invoke sandbox profile /usr/share/sandbox/mDNSResponder.sb
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_NO_SANDBOX</span>
+    LogMsg(<span class="enscript-string">&quot;Note: Compiled without Apple Sandbox support&quot;</span>);
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">MDNS_NO_SANDBOX</span>
+    <span class="enscript-keyword">if</span> (!sandbox_init)
+        LogMsg(<span class="enscript-string">&quot;Note: Running without Apple Sandbox support (not available on this OS)&quot;</span>);
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-type">char</span> *sandbox_msg;
+        uint64_t sandbox_flags = SANDBOX_NAMED;
+
+        (<span class="enscript-type">void</span>)confstr(_CS_DARWIN_USER_CACHE_DIR, NULL, 0);
+
+        <span class="enscript-type">int</span> sandbox_err = sandbox_init(<span class="enscript-string">&quot;mDNSResponder&quot;</span>, sandbox_flags, &amp;sandbox_msg);
+        <span class="enscript-keyword">if</span> (sandbox_err)
+        {
+            LogMsg(<span class="enscript-string">&quot;WARNING: sandbox_init error %s&quot;</span>, sandbox_msg);
+            <span class="enscript-comment">// If we have errors in the sandbox during development, to prevent
+</span>            <span class="enscript-comment">// exiting, uncomment the following line.
+</span>            <span class="enscript-comment">//sandbox_free_error(sandbox_msg);
+</span>            
+            errx(EX_OSERR, <span class="enscript-string">&quot;sandbox_init() failed: %s&quot;</span>, sandbox_msg);
+        }
+        <span class="enscript-keyword">else</span> LogInfo(<span class="enscript-string">&quot;Now running under Apple Sandbox restrictions&quot;</span>);
+    }
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNS_NO_SANDBOX</span>
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">OS_LOG</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">MDNS_OS_LOG_CATEGORY_INIT</span>(NAME) \
+    do\
+    { \
+        mDNSLogCategory_ ## NAME = os_log_create(<span class="enscript-string">&quot;com.apple.mDNSResponder&quot;</span>, # NAME ); \
+        if (!mDNSLogCategory_ ## NAME ) \
+        { \
+            os_log_error(OS_LOG_DEFAULT, <span class="enscript-string">&quot;Could NOT create the &quot;</span> # NAME <span class="enscript-string">&quot; log handle in mDNSResponder&quot;</span>); \
+            mDNSLogCategory_ ## NAME = OS_LOG_DEFAULT; \
+        } \
+    } \
+    while (0)
+
+os_log_t mDNSLogCategory_Default = NULL;
+os_log_t mDNSLogCategory_mDNS    = NULL;
+os_log_t mDNSLogCategory_uDNS    = NULL;
+os_log_t mDNSLogCategory_SPS     = NULL;
+os_log_t mDNSLogCategory_XPC     = NULL;
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">init_logging</span>(<span class="enscript-type">void</span>)
+{
+    MDNS_OS_LOG_CATEGORY_INIT(Default);
+    MDNS_OS_LOG_CATEGORY_INIT(mDNS);
+    MDNS_OS_LOG_CATEGORY_INIT(uDNS);
+    MDNS_OS_LOG_CATEGORY_INIT(SPS);
+    MDNS_OS_LOG_CATEGORY_INIT(XPC);
+}
+#<span class="enscript-reference">endif</span>
+
+mDNSexport <span class="enscript-type">int</span> <span class="enscript-function-name">main</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+{
+    <span class="enscript-type">int</span> i;
+    kern_return_t status;
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">DEBUG</span>
+    bool useDebugSocket = mDNSfalse;
+    bool useSandbox = mDNStrue;
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">OS_LOG</span>)
+    init_logging();
+#<span class="enscript-reference">endif</span>
+
+    mDNSMacOSXSystemBuildNumber(NULL);
+    LogMsg(<span class="enscript-string">&quot;%s starting %s %d&quot;</span>, mDNSResponderVersionString, OSXVers ? <span class="enscript-string">&quot;OSXVers&quot;</span> : <span class="enscript-string">&quot;iOSVers&quot;</span>, OSXVers ? OSXVers : iOSVers);
+
+#<span class="enscript-reference">if</span> 0
+    LogMsg(<span class="enscript-string">&quot;CacheRecord         %5d&quot;</span>, <span class="enscript-keyword">sizeof</span>(CacheRecord));
+    LogMsg(<span class="enscript-string">&quot;CacheGroup          %5d&quot;</span>, <span class="enscript-keyword">sizeof</span>(CacheGroup));
+    LogMsg(<span class="enscript-string">&quot;ResourceRecord      %5d&quot;</span>, <span class="enscript-keyword">sizeof</span>(ResourceRecord));
+    LogMsg(<span class="enscript-string">&quot;RData_small         %5d&quot;</span>, <span class="enscript-keyword">sizeof</span>(RData_small));
+
+    LogMsg(<span class="enscript-string">&quot;sizeof(CacheEntity) %5d&quot;</span>, <span class="enscript-keyword">sizeof</span>(CacheEntity));
+    LogMsg(<span class="enscript-string">&quot;RR_CACHE_SIZE       %5d&quot;</span>, RR_CACHE_SIZE);
+    LogMsg(<span class="enscript-string">&quot;block bytes used    %5d&quot;</span>,           <span class="enscript-keyword">sizeof</span>(CacheEntity) * RR_CACHE_SIZE);
+    LogMsg(<span class="enscript-string">&quot;block bytes wasted  %5d&quot;</span>, 32*1024 - <span class="enscript-keyword">sizeof</span>(CacheEntity) * RR_CACHE_SIZE);
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (0 == geteuid())
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSResponder cannot be run as root !! Exiting..&quot;</span>);
+        <span class="enscript-keyword">return</span> -1;
+    }
+
+    <span class="enscript-keyword">for</span> (i=1; i&lt;argc; i++)
+    {
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-d&quot;</span>                        )) mDNS_DebugMode            = mDNStrue;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-NoMulticastAdvertisements&quot;</span>)) NoMulticastAdvertisements = mDNStrue;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-DisableSleepProxyClient&quot;</span>  )) DisableSleepProxyClient   = mDNStrue;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-DebugLogging&quot;</span>             )) mDNS_LoggingEnabled       = mDNStrue;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-UnicastPacketLogging&quot;</span>     )) mDNS_PacketLoggingEnabled = mDNStrue;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-OfferSleepProxyService&quot;</span>   ))
+            OfferSleepProxyService = (i+1 &lt; argc &amp;&amp; mDNSIsDigit(argv[i+1][0]) &amp;&amp; mDNSIsDigit(argv[i+1][1]) &amp;&amp; argv[i+1][2]==0) ? atoi(argv[++i]) : 100;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-UseInternalSleepProxy&quot;</span>    ))
+            UseInternalSleepProxy = (i+1&lt;argc &amp;&amp; mDNSIsDigit(argv[i+1][0]) &amp;&amp; argv[i+1][1]==0) ? atoi(argv[++i]) : 1;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-StrictUnicastOrdering&quot;</span>    )) StrictUnicastOrdering     = mDNStrue;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-AlwaysAppendSearchDomains&quot;</span>)) AlwaysAppendSearchDomains = mDNStrue;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-DisableAllowExpired&quot;</span>      )) EnableAllowExpired        = mDNSfalse;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">DEBUG</span>
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-UseDebugSocket&quot;</span>))            useDebugSocket = mDNStrue;
+        <span class="enscript-keyword">if</span> (!strcasecmp(argv[i], <span class="enscript-string">&quot;-NoSandbox&quot;</span>))                 useSandbox = mDNSfalse;
+#<span class="enscript-reference">endif</span>    
+    }
+
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span>
+<span class="enscript-comment">/* Reads the external user's program arguments for mDNSResponder starting 10.11.x(El Capitan) on OSX. The options for external user are: 
+   DebugLogging, UnicastPacketLogging, NoMulticastAdvertisements, StrictUnicastOrdering and AlwaysAppendSearchDomains
+
+   To turn ON the particular option, here is what the user should do (as an example of setting two options)
+   1] sudo defaults write /Library/Preferences/com.apple.mDNSResponder.plist AlwaysAppendSearchDomains -bool YES
+   2] sudo defaults write /Library/Preferences/com.apple.mDNSResponder.plist NoMulticastAdvertisements -bool YES
+   3] sudo reboot
+
+   To turn OFF all options, here is what the user should do
+   1] sudo defaults delete /Library/Preferences/com.apple.mDNSResponder.plist
+   2] sudo reboot
+
+   To view the current options set, here is what the user should do
+   1] plutil -p /Library/Preferences/com.apple.mDNSResponder.plist
+   OR
+   1] sudo defaults read /Library/Preferences/com.apple.mDNSResponder.plist
+   
+*/</span>
+    
+<span class="enscript-comment">// Currently on Fuji/Whitetail releases we are keeping the logging always enabled.
+</span><span class="enscript-comment">// Hence mDNS_LoggingEnabled and mDNS_PacketLoggingEnabled is set to true below by default.
+</span>#<span class="enscript-reference">if</span> 0
+    mDNS_LoggingEnabled       = PreferencesGetValueBool(kPreferencesKey_DebugLogging,              mDNS_LoggingEnabled);
+    mDNS_PacketLoggingEnabled = PreferencesGetValueBool(kPreferencesKey_UnicastPacketLogging,      mDNS_PacketLoggingEnabled);
+#<span class="enscript-reference">endif</span>
+    
+    mDNS_LoggingEnabled       = mDNStrue;
+    mDNS_PacketLoggingEnabled = mDNStrue;
+
+    NoMulticastAdvertisements = PreferencesGetValueBool(kPreferencesKey_NoMulticastAdvertisements, NoMulticastAdvertisements);
+    StrictUnicastOrdering     = PreferencesGetValueBool(kPreferencesKey_StrictUnicastOrdering,     StrictUnicastOrdering);
+    AlwaysAppendSearchDomains = PreferencesGetValueBool(kPreferencesKey_AlwaysAppendSearchDomains, AlwaysAppendSearchDomains);
+    EnableAllowExpired        = PreferencesGetValueBool(kPreferencesKey_EnableAllowExpired,        EnableAllowExpired);
+    OfferSleepProxyService    = PreferencesGetValueInt(kPreferencesKey_OfferSleepProxyService,     OfferSleepProxyService);
+    UseInternalSleepProxy     = PreferencesGetValueInt(kPreferencesKey_UseInternalSleepProxy,      UseInternalSleepProxy);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">ENABLE_BLE_TRIGGERED_BONJOUR</span>
+    EnableBLEBasedDiscovery   = PreferencesGetValueBool(kPreferencesKey_EnableBLEBasedDiscovery,   EnableBLEBasedDiscovery);
+    DefaultToBLETriggered     = PreferencesGetValueBool(kPreferencesKey_DefaultToBLETriggered,     DefaultToBLETriggered);
+#<span class="enscript-reference">endif</span>  // <span class="enscript-variable-name">ENABLE_BLE_TRIGGERED_BONJOUR</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">PREALLOCATED_CACHE</span>)
+    PreallocateCacheMemory    = PreferencesGetValueBool(kPreferencesKey_PreallocateCacheMemory,    PreallocateCacheMemory);
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-comment">// Note that mDNSPlatformInit will set DivertMulticastAdvertisements in the mDNS structure
+</span>    <span class="enscript-keyword">if</span> (NoMulticastAdvertisements)
+        LogMsg(<span class="enscript-string">&quot;-NoMulticastAdvertisements is set: Administratively prohibiting multicast advertisements&quot;</span>);
+    <span class="enscript-keyword">if</span> (AlwaysAppendSearchDomains)
+        LogMsg(<span class="enscript-string">&quot;-AlwaysAppendSearchDomains is set&quot;</span>);    
+    <span class="enscript-keyword">if</span> (StrictUnicastOrdering)
+        LogMsg(<span class="enscript-string">&quot;-StrictUnicastOrdering is set&quot;</span>);
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+    signal(SIGHUP,  HandleSIG);     <span class="enscript-comment">// (Debugging) Purge the cache to check for cache handling bugs
+</span>    signal(SIGINT,  HandleSIG);     <span class="enscript-comment">// Ctrl-C: Detach from Mach BootstrapService and exit cleanly
+</span>    signal(SIGPIPE,   SIG_IGN);     <span class="enscript-comment">// Don't want SIGPIPE signals -- we'll handle EPIPE errors directly
+</span>    signal(SIGTERM, HandleSIG);     <span class="enscript-comment">// Machine shutting down: Detach from and exit cleanly like Ctrl-C
+</span>    signal(SIGINFO, HandleSIG);     <span class="enscript-comment">// (Debugging) Write state snapshot to syslog
+</span>    signal(SIGUSR1, HandleSIG);     <span class="enscript-comment">// (Debugging) Enable Logging
+</span>    signal(SIGUSR2, HandleSIG);     <span class="enscript-comment">// (Debugging) Enable Packet Logging
+</span>    signal(SIGPROF, HandleSIG);     <span class="enscript-comment">// (Debugging) Toggle Multicast Logging
+</span>    signal(SIGTSTP, HandleSIG);     <span class="enscript-comment">// (Debugging) Disable all Debug Logging (USR1/USR2/PROF)
+</span>
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+    mDNSStorage.p = &amp;PlatformStorage;   <span class="enscript-comment">// Make sure mDNSStorage.p is set up, because validatelists uses it
+</span>
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+    <span class="enscript-comment">// Create the kqueue, mutex and thread to support KQSockets
+</span>    KQueueFD = kqueue();
+    <span class="enscript-keyword">if</span> (KQueueFD == -1)
+    {
+        <span class="enscript-type">const</span> <span class="enscript-type">int</span> kqueue_errno = errno;
+        LogMsg(<span class="enscript-string">&quot;kqueue() failed errno %d (%s)&quot;</span>, kqueue_errno, strerror(kqueue_errno));
+        status = kqueue_errno;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    i = pthread_mutex_init(&amp;PlatformStorage.BigMutex, NULL);
+    <span class="enscript-keyword">if</span> (i != 0) { LogMsg(<span class="enscript-string">&quot;pthread_mutex_init() failed error %d (%s)&quot;</span>, i, strerror(i)); status = i; <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>; }
+
+    <span class="enscript-type">int</span> fdpair[2] = {0, 0};
+    i = socketpair(AF_UNIX, SOCK_STREAM, 0, fdpair);
+    <span class="enscript-keyword">if</span> (i == -1)
+    {
+        <span class="enscript-type">const</span> <span class="enscript-type">int</span> socketpair_errno = errno;
+        LogMsg(<span class="enscript-string">&quot;socketpair() failed errno %d (%s)&quot;</span>, socketpair_errno, strerror(socketpair_errno));
+        status = socketpair_errno;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    <span class="enscript-comment">// Socket pair returned us two identical sockets connected to each other
+</span>    <span class="enscript-comment">// We will use the first socket to send the second socket. The second socket
+</span>    <span class="enscript-comment">// will be added to the kqueue so it will wake when data is sent.
+</span>    <span class="enscript-type">static</span> <span class="enscript-type">const</span> KQueueEntry wakeKQEntry = { KQWokenFlushBytes, NULL, <span class="enscript-string">&quot;kqueue wakeup after CFRunLoop event&quot;</span> };
+
+    PlatformStorage.WakeKQueueLoopFD = fdpair[0];
+    KQueueSet(fdpair[1], EV_ADD, EVFILT_READ, &amp;wakeKQEntry);
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">DEBUG</span>
+    <span class="enscript-keyword">if</span> (useSandbox)
+#<span class="enscript-reference">endif</span>
+    SandboxProcess();
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">METRICS</span>)
+    status = MetricsInit();
+    <span class="enscript-keyword">if</span> (status) { LogMsg(<span class="enscript-string">&quot;Daemon start: MetricsInit failed (%d)&quot;</span>, status); }
+#<span class="enscript-reference">endif</span>
+
+    status = mDNSDaemonInitialize();
+    <span class="enscript-keyword">if</span> (status) { LogMsg(<span class="enscript-string">&quot;Daemon start: mDNSDaemonInitialize failed&quot;</span>); <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>; }
+
+    <span class="enscript-comment">// Need to Start XPC Server Before LaunchdCheckin() (Reason: radar:11023750)
+</span>    xpc_server_init();
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">DNSSD_XPC_SERVICE</span>)
+    dnssd_server_init();
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">DEBUG</span>
+    <span class="enscript-keyword">if</span> (!useDebugSocket) {
+        <span class="enscript-keyword">if</span> (LaunchdCheckin() == 0)
+            useDebugSocket = mDNStrue;
+    }
+    <span class="enscript-keyword">if</span> (useDebugSocket)
+        SetDebugBoundPath();
+#<span class="enscript-reference">else</span>
+    LaunchdCheckin();
+#<span class="enscript-reference">endif</span>
+
+    status = udsserver_init(launchd_fds, launchd_fds_count);
+    <span class="enscript-keyword">if</span> (status) { LogMsg(<span class="enscript-string">&quot;Daemon start: udsserver_init failed&quot;</span>); <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>; }
+
+    mDNSMacOSXNetworkChanged();
+    UpdateDebugState();
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+    LogInfo(<span class="enscript-string">&quot;Daemon Start: Using LibDispatch&quot;</span>);
+    <span class="enscript-comment">// CFRunLoopRun runs both CFRunLoop sources and dispatch sources
+</span>    CFRunLoopRun();
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+      <span class="enscript-comment">// Start the kqueue thread
+</span>    pthread_t KQueueThread;
+    i = pthread_create(&amp;KQueueThread, NULL, KQueueLoop, &amp;mDNSStorage);
+    <span class="enscript-keyword">if</span> (i != 0) { LogMsg(<span class="enscript-string">&quot;pthread_create() failed error %d (%s)&quot;</span>, i, strerror(i)); status = i; <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>; }
+    <span class="enscript-keyword">if</span> (status == 0)
+    {
+        CFRunLoopRun();
+        LogMsg(<span class="enscript-string">&quot;ERROR: CFRunLoopRun Exiting.&quot;</span>);
+        mDNS_Close(&amp;mDNSStorage);
+    }
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+    LogMsg(<span class="enscript-string">&quot;%s exiting&quot;</span>, mDNSResponderVersionString);
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">return</span>(status);
+}
+
+<span class="enscript-comment">// uds_daemon.c support routines /////////////////////////////////////////////
+</span>
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">kqUDSEventCallback</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">short</span> filter, <span class="enscript-type">void</span> *context, mDNSBool encounteredEOF)
+{
+    <span class="enscript-type">const</span> KQSocketEventSource *<span class="enscript-type">const</span> source = context;
+    (<span class="enscript-type">void</span>)filter; <span class="enscript-comment">// unused
+</span>    (<span class="enscript-type">void</span>)encounteredEOF; <span class="enscript-comment">// unused
+</span>    
+    source-&gt;callback(fd, source-&gt;context);
+}
+
+<span class="enscript-comment">// Arrange things so that when data appears on fd, callback is called with context
+</span>mDNSexport mStatus <span class="enscript-function-name">udsSupportAddFDToEventLoop</span>(<span class="enscript-type">int</span> fd, udsEventCallback callback, <span class="enscript-type">void</span> *context, <span class="enscript-type">void</span> **platform_data)
+{
+    KQSocketEventSource **p = &amp;gEventSources;
+    (<span class="enscript-type">void</span>) platform_data;
+    <span class="enscript-keyword">while</span> (*p &amp;&amp; (*p)-&gt;fd != fd) p = &amp;(*p)-&gt;next;
+    <span class="enscript-keyword">if</span> (*p) { LogMsg(<span class="enscript-string">&quot;udsSupportAddFDToEventLoop: ERROR fd %d already has EventLoop source entry&quot;</span>, fd); <span class="enscript-keyword">return</span> mStatus_AlreadyRegistered; }
+
+    KQSocketEventSource *newSource = (KQSocketEventSource*) callocL(<span class="enscript-string">&quot;KQSocketEventSource&quot;</span>, <span class="enscript-keyword">sizeof</span>(*newSource));
+    <span class="enscript-keyword">if</span> (!newSource) <span class="enscript-keyword">return</span> mStatus_NoMemoryErr;
+
+    newSource-&gt;next           = mDNSNULL;
+    newSource-&gt;fd             = fd;
+    newSource-&gt;callback       = callback;
+    newSource-&gt;context        = context;
+    newSource-&gt;kqs.KQcallback = kqUDSEventCallback;
+    newSource-&gt;kqs.KQcontext  = newSource;
+    newSource-&gt;kqs.KQtask     = <span class="enscript-string">&quot;UDS client&quot;</span>;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+    newSource-&gt;kqs.readSource  = mDNSNULL;
+    newSource-&gt;kqs.writeSource = mDNSNULL;
+    newSource-&gt;kqs.fdClosed    = mDNSfalse;
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+
+    <span class="enscript-keyword">if</span> (KQueueSet(fd, EV_ADD, EVFILT_READ, &amp;newSource-&gt;kqs) == 0)
+    {
+        *p = newSource;
+        <span class="enscript-keyword">return</span> mStatus_NoError;
+    }
+
+    LogMsg(<span class="enscript-string">&quot;KQueueSet failed for fd %d errno %d (%s)&quot;</span>, fd, errno, strerror(errno));
+    freeL(<span class="enscript-string">&quot;KQSocketEventSource&quot;</span>, newSource);
+    <span class="enscript-keyword">return</span> mStatus_BadParamErr;
+}
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">udsSupportReadFD</span>(dnssd_sock_t fd, <span class="enscript-type">char</span> *buf, <span class="enscript-type">int</span> len, <span class="enscript-type">int</span> flags, <span class="enscript-type">void</span> *platform_data)
+{
+    (<span class="enscript-type">void</span>) platform_data;
+    <span class="enscript-keyword">return</span> recv(fd, buf, len, flags);
+}
+
+mDNSexport mStatus <span class="enscript-function-name">udsSupportRemoveFDFromEventLoop</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">void</span> *platform_data)     <span class="enscript-comment">// Note: This also CLOSES the file descriptor
+</span>{
+    KQSocketEventSource **p = &amp;gEventSources;
+    (<span class="enscript-type">void</span>) platform_data;
+    <span class="enscript-keyword">while</span> (*p &amp;&amp; (*p)-&gt;fd != fd) p = &amp;(*p)-&gt;next;
+    <span class="enscript-keyword">if</span> (*p)
+    {
+        KQSocketEventSource *s = *p;
+        *p = (*p)-&gt;next;
+        <span class="enscript-comment">// We don't have to explicitly do a kqueue EV_DELETE here because closing the fd
+</span>        <span class="enscript-comment">// causes the kernel to automatically remove any associated kevents
+</span>        mDNSPlatformCloseFD(&amp;s-&gt;kqs, s-&gt;fd);
+        freeL(<span class="enscript-string">&quot;KQSocketEventSource&quot;</span>, s);
+        <span class="enscript-keyword">return</span> mStatus_NoError;
+    }
+    LogMsg(<span class="enscript-string">&quot;udsSupportRemoveFDFromEventLoop: ERROR fd %d not found in EventLoop source list&quot;</span>, fd);
+    <span class="enscript-keyword">return</span> mStatus_NoSuchNameErr;
+}
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">UNIT_TEST</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;../unittests/daemon_ut.c&quot;</span>
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">UNIT_TEST</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_BUILDING_XCODE_PROJECT_</span>
+<span class="enscript-comment">// If mDNSResponder crashes, then this string will be magically included in the automatically-generated crash log
+</span><span class="enscript-type">const</span> <span class="enscript-type">char</span> *__crashreporter_info__ = mDNSResponderVersionString;
+<span class="enscript-function-name">asm</span> (<span class="enscript-string">&quot;.desc ___crashreporter_info__, 0x10&quot;</span>);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// For convenience when using the &quot;strings&quot; command, this is the last thing in the file
+</span><span class="enscript-comment">// The &quot;@(#) &quot; pattern is a special prefix the &quot;what&quot; command looks for
+</span>mDNSexport <span class="enscript-type">const</span> <span class="enscript-type">char</span> mDNSResponderVersionString_SCCS[] = <span class="enscript-string">&quot;@(#) mDNSResponder &quot;</span> STRINGIFY(mDNSResponderVersion) <span class="enscript-string">&quot; (&quot;</span> __DATE__ <span class="enscript-string">&quot; &quot;</span> __TIME__ <span class="enscript-string">&quot;)&quot;</span>;
+</pre>
+<hr />
+</body></html>

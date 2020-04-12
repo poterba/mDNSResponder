@@ -1,0 +1,1604 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>DebugServices.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">DebugServices.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="DebugServices.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 1997-2004 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@header		DebugServices
+
+    Debugging Library
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__DEBUG_SERVICES__</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__DEBUG_SERVICES__</span>
+
+#<span class="enscript-reference">include</span>    <span class="enscript-string">&lt;stdarg.h&gt;</span>
+
+#<span class="enscript-reference">include</span>    <span class="enscript-string">&quot;CommonServices.h&quot;</span>
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Settings</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//	Settings
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+<span class="enscript-comment">// General
+</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> DEBUG </span>) )
+    #define DEBUG       0
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> NDEBUG </span>) &amp;&amp; <span class="enscript-variable-name">DEBUG</span> )
+    #error NDEBUG defined and DEBUG is also enabled...they need to be in-sync
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// AssertMacros.h/Debugging.h overrides.
+</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> DEBUG_OVERRIDE_APPLE_MACROS </span>) )
+    #define DEBUG_OVERRIDE_APPLE_MACROS     1
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Routine name. Uses ISO __func__ where possible. Otherwise, uses the best thing that is available (if anything).
+</span>
+#<span class="enscript-reference">if</span> ( <span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> __MWERKS__ </span>) || ( <span class="enscript-variable-name">__GNUC__</span> &gt; 2 ) || ( ( <span class="enscript-variable-name">__GNUC__</span> == 2 ) &amp;&amp; ( <span class="enscript-variable-name">__GNUC_MINOR__</span> &gt;= 9 ) ) )
+    #define __ROUTINE__                 __func__
+#<span class="enscript-reference">elif</span> ( <span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> __GNUC__ </span>) )
+    #define __ROUTINE__                 __PRETTY_FUNCTION__
+#<span class="enscript-reference">elif</span> ( <span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> _MSC_VER </span>) &amp;&amp; !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> _WIN32_WCE </span>) )
+    #define __ROUTINE__                 __FUNCTION__
+#<span class="enscript-reference">else</span>
+    #define __ROUTINE__                 <span class="enscript-string">&quot;&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Variable argument macro support. Use ANSI C99 __VA_ARGS__ where possible. Otherwise, use the next best thing.
+</span>
+#<span class="enscript-reference">if</span> ( <span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> __GNUC__ </span>) )
+    #<span class="enscript-keyword">if</span> ( ( __GNUC__ &gt; 3 ) || ( ( __GNUC__ == 3 ) &amp;&amp; ( __GNUC_MINOR__ &gt;= 3) ) )
+        #define DEBUG_C99_VA_ARGS       1
+        #define DEBUG_GNU_VA_ARGS       0
+    #<span class="enscript-keyword">else</span>
+        #define DEBUG_C99_VA_ARGS       0
+        #define DEBUG_GNU_VA_ARGS       1
+    #endif
+#<span class="enscript-reference">elif</span> ( <span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> __MWERKS__ </span>) )
+    #define DEBUG_C99_VA_ARGS           1
+    #define DEBUG_GNU_VA_ARGS           0
+#<span class="enscript-reference">else</span>
+    #define DEBUG_C99_VA_ARGS           0
+    #define DEBUG_GNU_VA_ARGS           0
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Output</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_FPRINTF_ENABLED
+
+    @abstract	Enables ANSI C fprintf output.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> DEBUG_FPRINTF_ENABLED </span>) )
+    #<span class="enscript-keyword">if</span> ( !TARGET_API_MAC_OSX_KERNEL &amp;&amp; !TARGET_OS_WINDOWS_CE )
+        #define DEBUG_FPRINTF_ENABLED           1
+    #<span class="enscript-keyword">else</span>
+        #define DEBUG_FPRINTF_ENABLED           0
+    #endif
+#<span class="enscript-reference">else</span>
+    #<span class="enscript-keyword">if</span> ( TARGET_API_MAC_OSX_KERNEL || TARGET_OS_WINDOWS_CE )
+        #error fprintf enabled, but not supported on Mac OS X kernel or Windows CE
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_MAC_OS_X_IOLOG_ENABLED
+
+    @abstract	Enables IOLog (Mac OS X Kernel) output.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> DEBUG_MAC_OS_X_IOLOG_ENABLED </span>) )
+    #define DEBUG_MAC_OS_X_IOLOG_ENABLED        TARGET_API_MAC_OSX_KERNEL
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_KPRINTF_ENABLED
+
+    @abstract	Enables kprintf (Mac OS X Kernel) output.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> DEBUG_KPRINTF_ENABLED </span>) )
+    #define DEBUG_KPRINTF_ENABLED               TARGET_API_MAC_OSX_KERNEL
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_IDEBUG_ENABLED
+
+    @abstract	Enables iDebug (Mac OS X user and Kernel) output.
+
+    @discussion
+
+    For Mac OS X kernel development, iDebug is enabled by default because we can dynamically check for the presence
+    of iDebug via some exported IOKit symbols. Mac OS X app usage doesn't allow dynamic detection because it relies
+    on statically linking to the iDebugServices.cp file so for Mac OS X app usage, you have to manually enable iDebug.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> DEBUG_IDEBUG_ENABLED </span>) )
+    #define DEBUG_IDEBUG_ENABLED                TARGET_API_MAC_OSX_KERNEL
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_CORE_SERVICE_ASSERTS_ENABLED
+
+    @abstract	Controls whether Core Services assert handling is enabled. Enabling requires CoreServices framework.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> DEBUG_CORE_SERVICE_ASSERTS_ENABLED </span>) )
+    #<span class="enscript-keyword">if</span> ( defined( __DEBUGGING__ ) )
+        #define DEBUG_CORE_SERVICE_ASSERTS_ENABLED      1
+    #<span class="enscript-keyword">else</span>
+        #define DEBUG_CORE_SERVICE_ASSERTS_ENABLED      0
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@typedef	DebugOutputType
+
+    @abstract	Type of debug output (i.e. where the output goes).
+ */</span>
+
+<span class="enscript-type">typedef</span> uint32_t DebugOutputType;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeNone</span>                0x6E6F6E65U // 'none' - no params
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeCustom</span>              0x63757374U // 'cust' - 1st param = function ptr, 2nd param = context
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeFPrintF</span>             0x66707269U // 'fpri' - 1st param = DebugOutputTypeFlags [, 2nd param = filename]
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeiDebug</span>              0x69646267U // 'idbg' - no params
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeKPrintF</span>             0x6B707266U // 'kprf' - no params
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeMacOSXIOLog</span>         0x696C6F67U // 'ilog' - no params
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeMacOSXLog</span>           0x786C6F67U // 'xlog' - no params
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeWindowsDebugger</span>     0x77696E64U // 'wind' - no params
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeWindowsEventLog</span>     0x7765766CU // 'wevl' - 1st param = C-string name, 2nd param = HMODULE or NULL.
+
+<span class="enscript-comment">// Console meta output kind - Any kind of Console output (in horizontal order of preference):
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// Mac OS X			= ANSI printf (viewable in Console.app)
+</span><span class="enscript-comment">// Mac OS X Kernel	= IOLog (/var/log/system.log) or kprintf (serial).
+</span><span class="enscript-comment">// Windows			= ANSI printf (Console window) or OutputDebugString (debugger).
+</span><span class="enscript-comment">// Other			= ANSI printf (viewer varies).
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeMetaConsole</span>         0x434F4E53U // 'CONS' - no params
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@typedef	DebugOutputTypeFlags
+
+    @abstract	Flags controlling how the output type is configured.
+
+    @constant	kDebugOutputTypeFlagsTypeMask	Bit mask for the output type (e.g. stdout, stderr, file, etc.).
+    @constant	kDebugOutputTypeFlagsStdOut		fprintf should go to stdout.
+    @constant	kDebugOutputTypeFlagsStdErr		fprintf should go to stderr.
+    @constant	kDebugOutputTypeFlagsFile		fprintf should go to a specific file (filename passed as va_arg).
+ */</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> DebugOutputTypeFlags;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeFlagsTypeMask</span>   0xF
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeFlagsStdOut</span>     1
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeFlagsStdErr</span>     2
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugOutputTypeFlagsFile</span>       10
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@typedef	DebugOutputFunctionPtr
+
+    @abstract	Function ptr for a custom callback to print debug output.
+ */</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> ( *DebugOutputFunctionPtr )( <span class="enscript-type">char</span> *inData, size_t inSize, <span class="enscript-type">void</span> *inContext );
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//	Constants
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Flags</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@typedef	DebugFlags
+
+    @abstract	Flags controlling how output is printed.
+ */</span>
+
+<span class="enscript-type">typedef</span> uint32_t DebugFlags;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlagsNone</span>                 0
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlagsNoAddress</span>            ( 1 &lt;&lt; 0 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlagsNoOffset</span>             ( 1 &lt;&lt; 1 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlags32BitOffset</span>          ( 1 &lt;&lt; 2 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlagsNoASCII</span>              ( 1 &lt;&lt; 3 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlagsNoNewLine</span>            ( 1 &lt;&lt; 4 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlags8BitSeparator</span>        ( 1 &lt;&lt; 5 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlags16BitSeparator</span>       ( 1 &lt;&lt; 6 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlagsNo32BitSeparator</span>     ( 1 &lt;&lt; 7 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlagsNo16ByteHexPad</span>       ( 1 &lt;&lt; 8 )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugFlagsNoByteCount</span>          ( 1 &lt;&lt; 9 )
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@enum		DebugTaskLevelFlags
+
+    @abstract	Flags indicating the task level.
+ */</span>
+
+<span class="enscript-type">enum</span>
+{
+    kDebugInterruptLevelShift               = 0,
+    kDebugInterruptLevelMask                = 0x00000007,
+    kDebugInVBLTaskMask                     = 0x00000010,
+    kDebugInDeferredTaskMask                = 0x00000020,
+    kDebugInSecondaryInterruptHandlerMask   = 0x00000040,
+    kDebugPageFaultFatalMask                = 0x00000100,   <span class="enscript-comment">// There should be a &quot;kPageFaultFatalMask&quot; in Debugging.h.
+</span>    kDebugMPTaskLevelMask                   = 0x00000200,   <span class="enscript-comment">// There should be a &quot;kMPTaskLevelMask&quot; in Debugging.h.
+</span>    kDebugInterruptDepthShift               = 16,
+    kDebugInterruptDepthMask                = 0x00FF0000
+};
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DebugExtractTaskLevelInterruptLevel</span>( LEVEL )    \
+    ( ( ( LEVEL ) &amp;kDebugInterruptLevelMask ) &gt;&gt; kDebugInterruptLevelShift )
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DebugExtractTaskLevelInterruptDepth</span>( LEVEL )    \
+    ( ( ( LEVEL ) &amp;kDebugInterruptDepthMask ) &gt;&gt; kDebugInterruptDepthShift )
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Levels</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//	Constants &amp; Types - Levels
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@typedef	DebugLevel
+
+    @abstract	Level used to control debug logging.
+ */</span>
+
+<span class="enscript-type">typedef</span> int32_t DebugLevel;
+
+<span class="enscript-comment">// Levels
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelMask</span>                 0x0000FFFF
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelChatty</span>               100
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelVerbose</span>              500
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelTrace</span>                800
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelInfo</span>                 1000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelNotice</span>               3000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelWarning</span>              5000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelAssert</span>               6000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelRequire</span>              7000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelError</span>                8000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelCritical</span>             9000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelAlert</span>                10000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelEmergency</span>            11000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelTragic</span>               12000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelMax</span>                  0x0000FFFF
+
+<span class="enscript-comment">// Level Flags
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelFlagMask</span>             0xFFFF0000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelFlagStackTrace</span>       0x00010000
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugLevelFlagDebugBreak</span>       0x00020000
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@typedef	LogLevel
+
+    @abstract	Level used to control which events are logged.
+ */</span>
+
+<span class="enscript-type">typedef</span> int32_t LogLevel;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelUninitialized</span>      -1L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelAll</span>                0L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelChatty</span>             100L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelVerbose</span>            500L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelTrace</span>              800L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelInfo</span>               1000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelNotice</span>             3000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelWarning</span>            4000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelAssert</span>             6000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelRequire</span>            7000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelError</span>              8000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelCritical</span>           9000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelAlert</span>              10000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelEmergency</span>          11000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelTragic</span>             12000L
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kLogLevelOff</span>                0x0000FFFEL
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Properties</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@typedef	DebugPropertyTag
+
+    @abstract	Tag for properties.
+ */</span>
+
+<span class="enscript-type">typedef</span> uint32_t DebugPropertyTag;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugPropertyTagPrintLevelMin</span>      0x6D696E70U     // 'minp'	Get: 1st param = DebugLevel *
+                                                            <span class="enscript-comment">//			Set: 1st param = DebugLevel
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugPropertyTagPrintLevel</span>         kDebugPropertyTagPrintLevelMin
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugPropertyTagPrintLevelMax</span>      0x706D786CU     // 'maxp'	Get: 1st param = DebugLevel *
+                                                            <span class="enscript-comment">//			Set: 1st param = DebugLevel
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDebugPropertyTagBreakLevel</span>         0x62726B6CU     // 'brkl'	Get: 1st param = DebugLevel *
+                                                            <span class="enscript-comment">//			Set: 1st param = DebugLevel
+</span>#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">General</span> <span class="enscript-variable-name">macros</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_UNUSED
+
+    @abstract	Macro to mark a paramter as unused to avoid unused parameter warnings.
+
+    @discussion
+
+    There is no universally supported pragma/attribute for indicating a variable is unused. DEBUG_UNUSED lets us
+    indicate a variable is unused in a manner that is supported by most compilers.
+ */</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DEBUG_UNUSED</span>( X )           (void)( X )
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_USE_ONLY
+
+    @abstract	Macro to mark a variable as used only when debugging is enabled.
+
+    @discussion
+
+    Variables are sometimes needed only for debugging. When debugging is turned off, these debug-only variables generate
+    compiler warnings about unused variables. To eliminate these warnings, use these macros to indicate variables that
+    are only used for debugging.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define DEBUG_USE_ONLY( X )
+#<span class="enscript-reference">else</span>
+    #define DEBUG_USE_ONLY( X )     (<span class="enscript-type">void</span>)( X )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_LOCAL
+
+    @abstract	Macros to make variables and functions static when debugging is off, but extern when debugging is on.
+
+    @discussion
+
+    Rather than using &quot;static&quot; directly, using this macros allows you to access these variables external while
+    debugging without being penalized for production builds.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define DEBUG_LOCAL
+#<span class="enscript-reference">else</span>
+    #define DEBUG_LOCAL         <span class="enscript-type">static</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_STATIC
+
+    @abstract	Macros to make variables and functions static when debugging is off, but extern when debugging is on.
+
+    @discussion
+
+    Rather than using &quot;static&quot; directly, using this macros allows you to access these variables external while
+    debugging without being penalized for production builds.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define DEBUG_STATIC
+#<span class="enscript-reference">else</span>
+    #define DEBUG_STATIC    <span class="enscript-type">static</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DEBUG_EXPORT
+
+    @abstract	Macros to export variables.
+
+    @discussion
+
+    &quot;__private_extern__&quot; is a hack for IOKit to allow symbols to be exported from compilation units, but
+    // not exported outside a driver (IOKit uses a lame global namespace for symbols). This still does not
+    // solve the problem of multiple drivers in the same dependency chain since they share symbols.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">TARGET_API_MAC_OSX_KERNEL</span> )
+    #define DEBUG_EXPORT        __private_extern__
+#<span class="enscript-reference">else</span>
+    #define DEBUG_EXPORT        <span class="enscript-type">extern</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	debug_add
+
+    @abstract	Macro to add (or subtract if negative) a value when debugging is on. Does nothing if debugging is off.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define debug_add( A, B )       ( A ) += ( B )
+#<span class="enscript-reference">else</span>
+    #define debug_add( A, B )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	debug_perform
+
+    @abstract	Macro to perform something in debug-only builds.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define debug_perform( X )      <span class="enscript-keyword">do</span> { X; } <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">else</span>
+    #define debug_perform( X )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	translate_errno
+
+    @abstract	Returns 0 if the test success. If the test fails, returns errno if non-zero and othewise the alternate error.
+ */</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">translate_errno</span>( TEST, ERRNO, ALTERNATE_ERROR )     ( ( TEST ) ? 0 : ( ERRNO ) ? ( ERRNO ) : ( ALTERNATE_ERROR ) )
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Compile</span> <span class="enscript-variable-name">Time</span> <span class="enscript-variable-name">macros</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	check_compile_time
+
+    @abstract	Performs a compile-time check of something such as the size of an int.
+
+    @discussion
+
+    This declares an array with a size that is determined by a compile-time expression. If the expression evaluates
+    to 0, the array has a size of -1, which is illegal and generates a compile-time error.
+
+    For example:
+
+    check_compile_time( sizeof( int ) == 4 );
+
+    Note: This only works with compile-time expressions.
+    Note: This only works in places where extern declarations are allowed (e.g. global scope).
+
+    References:
+
+    &lt;<a href="http://www.jaggersoft.com/pubs/CVu11_3.html">http://www.jaggersoft.com/pubs/CVu11_3.html</a>&gt;
+    &lt;<a href="http://www.jaggersoft.com/pubs/CVu11_5.html">http://www.jaggersoft.com/pubs/CVu11_5.html</a>&gt;
+
+    Note: The following macros differ from the macros on the www.jaggersoft.com web site because those versions do not
+    work with GCC due to GCC allow a zero-length array. Using a -1 condition turned out to be more portable.
+ */</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">check_compile_time</span>( X )     extern int debug_compile_time_name[ ( X ) ? 1 : -1 ]
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	check_compile_time_code
+
+    @abstract	Perform a compile-time check, suitable for placement in code, of something such as the size of an int.
+
+    @discussion
+
+    This creates a switch statement with an existing case for 0 and an additional case using the result of a
+    compile-time expression. A switch statement cannot have two case labels with the same constant so if the
+    compile-time expression evaluates to 0, it is illegal and generates a compile-time error. If the compile-time
+    expression does not evaluate to 0, the resulting value is used as the case label and it compiles without error.
+
+    For example:
+
+    check_compile_time_code( sizeof( int ) == 4 );
+
+    Note: This only works with compile-time expressions.
+    Note: This does not work in a global scope so it must be inside a function.
+
+    References:
+
+    &lt;<a href="http://www.jaggersoft.com/pubs/CVu11_3.html">http://www.jaggersoft.com/pubs/CVu11_3.html</a>&gt;
+    &lt;<a href="http://www.jaggersoft.com/pubs/CVu11_5.html">http://www.jaggersoft.com/pubs/CVu11_5.html</a>&gt;
+ */</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">check_compile_time_code</span>( X )    switch( 0 ) { case 0: case X:; }
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">check</span> <span class="enscript-variable-name">macros</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	check
+
+    @abstract	Check that an expression is true (non-zero).
+
+    @discussion
+
+    If expression evalulates to false, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) using the default debugging output method.
+
+    Code inside check() statements is not compiled into production builds.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef check
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> check </span>) )
+    #<span class="enscript-keyword">if</span> ( DEBUG )
+        #define check( X )                                                                                  \
+    <span class="enscript-keyword">do</span>                                                                                              \
+    {                                                                                               \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                \
+        {                                                                                           \
+            debug_print_assert( 0, # X, NULL, __FILE__, __LINE__, __ROUTINE__ );                     \
+        }                                                                                           \
+    } <span class="enscript-keyword">while</span>( 0 )
+    #<span class="enscript-keyword">else</span>
+        #define check( X )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	check_string
+
+    @abstract	Check that an expression is true (non-zero) with an explanation.
+
+    @discussion
+
+    If expression evalulates to false, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) and a custom explanation string using the default debugging output method.
+
+    Code inside check_string() statements is not compiled into production builds.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef check_string
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> check_string </span>) )
+    #<span class="enscript-keyword">if</span> ( DEBUG )
+        #define check_string( X, STR )                                                                      \
+    <span class="enscript-keyword">do</span>                                                                                              \
+    {                                                                                               \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                \
+        {                                                                                           \
+            debug_print_assert( 0, # X, STR, __FILE__, __LINE__, __ROUTINE__ );                      \
+        }                                                                                           \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+    #<span class="enscript-keyword">else</span>
+        #define check_string( X, STR )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	check_noerr
+
+    @abstract	Check that an error code is noErr (0).
+
+    @discussion
+
+    If the error code is non-0, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) using the default debugging output method.
+
+    Code inside check_noerr() statements is not compiled into production builds.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef check_noerr
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> check_noerr </span>) )
+    #<span class="enscript-keyword">if</span> ( DEBUG )
+        #define check_noerr( ERR )                                                                          \
+    <span class="enscript-keyword">do</span>                                                                                              \
+    {                                                                                               \
+        int_least32_t localErr;                                                               \
+                                                                                                            \
+        localErr = (int_least32_t)( ERR );                                                          \
+        <span class="enscript-keyword">if</span>( localErr != 0 )                                                                         \
+        {                                                                                           \
+            debug_print_assert( localErr, NULL, NULL, __FILE__, __LINE__, __ROUTINE__ );            \
+        }                                                                                           \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+    #<span class="enscript-keyword">else</span>
+        #define check_noerr( ERR )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	check_noerr_string
+
+    @abstract	Check that an error code is noErr (0) with an explanation.
+
+    @discussion
+
+    If the error code is non-0, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) and a custom explanation string using the default debugging output method.
+
+    Code inside check_noerr_string() statements is not compiled into production builds.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef check_noerr_string
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> check_noerr_string </span>) )
+    #<span class="enscript-keyword">if</span> ( DEBUG )
+        #define check_noerr_string( ERR, STR )                                                              \
+    <span class="enscript-keyword">do</span>                                                                                              \
+    {                                                                                               \
+        int_least32_t localErr;                                                               \
+                                                                                                            \
+        localErr = (int_least32_t)( ERR );                                                          \
+        <span class="enscript-keyword">if</span>( localErr != 0 )                                                                         \
+        {                                                                                           \
+            debug_print_assert( localErr, NULL, STR, __FILE__, __LINE__, __ROUTINE__ );             \
+        }                                                                                           \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+    #<span class="enscript-keyword">else</span>
+        #define check_noerr_string( ERR, STR )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	check_translated_errno
+
+    @abstract	Check a condition and prints errno (if non-zero) to the log.
+
+    @discussion
+
+    Code inside check_translated_errno() statements is not compiled into production builds.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> check_translated_errno </span>) )
+    #<span class="enscript-keyword">if</span> ( DEBUG )
+        #define check_translated_errno( TEST, ERRNO, ALTERNATE_ERROR )                                      \
+    <span class="enscript-keyword">do</span>                                                                                              \
+    {                                                                                               \
+        <span class="enscript-keyword">if</span>( !( TEST ) )                                                                             \
+        {                                                                                           \
+            int_least32_t localErr;                                                           \
+                                                                                                            \
+            localErr = (int_least32_t)( ERRNO );                                                    \
+            localErr = ( localErr != 0 ) ? localErr : (int_least32_t)( ALTERNATE_ERROR );           \
+            debug_print_assert( localErr, # TEST, NULL, __FILE__, __LINE__, __ROUTINE__ );           \
+        }                                                                                           \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+    #<span class="enscript-keyword">else</span>
+        #define check_translated_errno( TEST, ERRNO, ALTERNATE_ERROR )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	check_ptr_overlap
+
+    @abstract	Checks that two ptrs do not overlap.
+ */</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">check_ptr_overlap</span>( P1, P1_SIZE, P2, P2_SIZE )                                       \
+    do                                                                                      \
+    {                                                                                       \
+        check( !( ( (uintptr_t)( P1 ) &gt;=     (uintptr_t)( P2 ) ) &amp;&amp;                         \
+                  ( (uintptr_t)( P1 ) &lt;  ( ( (uintptr_t)( P2 ) ) + ( P2_SIZE ) ) ) ) );     \
+        check( !( ( (uintptr_t)( P2 ) &gt;=     (uintptr_t)( P1 ) ) &amp;&amp;                         \
+                  ( (uintptr_t)( P2 ) &lt;  ( ( (uintptr_t)( P1 ) ) + ( P1_SIZE ) ) ) ) );     \
+                                                                                            \
+    }   while( 0 )
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">require</span> <span class="enscript-variable-name">macros</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require
+
+    @abstract	Requires that an expression evaluate to true.
+
+    @discussion
+
+    If expression evalulates to false, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) using the default debugging output method then jumps to a label.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require </span>) )
+    #define require( X, LABEL )                                                                             \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                    \
+        {                                                                                               \
+            debug_print_assert( 0, # X, NULL, __FILE__, __LINE__, __ROUTINE__ );                         \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_string
+
+    @abstract	Requires that an expression evaluate to true with an explanation.
+
+    @discussion
+
+    If expression evalulates to false, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) and a custom explanation string using the default debugging output method then jumps to a label.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_string
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_string </span>) )
+    #define require_string( X, LABEL, STR )                                                                 \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                    \
+        {                                                                                               \
+            debug_print_assert( 0, # X, STR, __FILE__, __LINE__, __ROUTINE__ );                          \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_quiet
+
+    @abstract	Requires that an expression evaluate to true.
+
+    @discussion
+
+    If expression evalulates to false, this jumps to a label. No debugging information is printed.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_quiet
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_quiet </span>) )
+    #define require_quiet( X, LABEL )                                                                       \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                    \
+        {                                                                                               \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_noerr
+
+    @abstract	Require that an error code is noErr (0).
+
+    @discussion
+
+    If the error code is non-0, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) using the default debugging output method then jumps to a label.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_noerr
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_noerr </span>) )
+    #define require_noerr( ERR, LABEL )                                                                     \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        int_least32_t localErr;                                                                   \
+                                                                                                            \
+        localErr = (int_least32_t)( ERR );                                                              \
+        <span class="enscript-keyword">if</span>( localErr != 0 )                                                                             \
+        {                                                                                               \
+            debug_print_assert( localErr, NULL, NULL, __FILE__, __LINE__, __ROUTINE__ );                \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_noerr_string
+
+    @abstract	Require that an error code is noErr (0).
+
+    @discussion
+
+    If the error code is non-0, this prints debugging information (actual expression string, file, line number,
+    function name, etc.), and a custom explanation string using the default debugging output method using the
+    default debugging output method then jumps to a label.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_noerr_string
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_noerr_string </span>) )
+    #define require_noerr_string( ERR, LABEL, STR )                                                         \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        int_least32_t localErr;                                                                   \
+                                                                                                            \
+        localErr = (int_least32_t)( ERR );                                                              \
+        <span class="enscript-keyword">if</span>( localErr != 0 )                                                                             \
+        {                                                                                               \
+            debug_print_assert( localErr, NULL, STR, __FILE__, __LINE__, __ROUTINE__ );                 \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_noerr_action_string
+
+    @abstract	Require that an error code is noErr (0).
+
+    @discussion
+
+    If the error code is non-0, this prints debugging information (actual expression string, file, line number,
+    function name, etc.), and a custom explanation string using the default debugging output method using the
+    default debugging output method then executes an action and jumps to a label.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_noerr_action_string
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_noerr_action_string </span>) )
+    #define require_noerr_action_string( ERR, LABEL, ACTION, STR )                                          \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        int_least32_t localErr;                                                                   \
+                                                                                                            \
+        localErr = (int_least32_t)( ERR );                                                              \
+        <span class="enscript-keyword">if</span>( localErr != 0 )                                                                             \
+        {                                                                                               \
+            debug_print_assert( localErr, NULL, STR, __FILE__, __LINE__, __ROUTINE__ );                 \
+            { ACTION; }                                                                                 \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_noerr_quiet
+
+    @abstract	Require that an error code is noErr (0).
+
+    @discussion
+
+    If the error code is non-0, this jumps to a label. No debugging information is printed.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_noerr_quiet
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_noerr_quiet </span>) )
+    #define require_noerr_quiet( ERR, LABEL )                                                               \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( ( ERR ) != 0 )                                                                              \
+        {                                                                                               \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_noerr_action
+
+    @abstract	Require that an error code is noErr (0) with an action to execute otherwise.
+
+    @discussion
+
+    If the error code is non-0, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) using the default debugging output method then executes an action and jumps to a label.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_noerr_action
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_noerr_action </span>) )
+    #define require_noerr_action( ERR, LABEL, ACTION )                                                      \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        int_least32_t localErr;                                                                   \
+                                                                                                            \
+        localErr = (int_least32_t)( ERR );                                                              \
+        <span class="enscript-keyword">if</span>( localErr != 0 )                                                                             \
+        {                                                                                               \
+            debug_print_assert( localErr, NULL, NULL, __FILE__, __LINE__, __ROUTINE__ );                \
+            { ACTION; }                                                                                 \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_noerr_action_quiet
+
+    @abstract	Require that an error code is noErr (0) with an action to execute otherwise.
+
+    @discussion
+
+    If the error code is non-0, this executes an action and jumps to a label. No debugging information is printed.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_noerr_action_quiet
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_noerr_action_quiet </span>) )
+    #define require_noerr_action_quiet( ERR, LABEL, ACTION )                                                \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( ( ERR ) != 0 )                                                                              \
+        {                                                                                               \
+            { ACTION; }                                                                                 \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_action
+
+    @abstract	Requires that an expression evaluate to true with an action to execute otherwise.
+
+    @discussion
+
+    If expression evalulates to false, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) using the default debugging output method then executes an action and jumps to a label.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_action
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_action </span>) )
+    #define require_action( X, LABEL, ACTION )                                                              \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                    \
+        {                                                                                               \
+            debug_print_assert( 0, # X, NULL, __FILE__, __LINE__, __ROUTINE__ );                         \
+            { ACTION; }                                                                                 \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_action_quiet
+
+    @abstract	Requires that an expression evaluate to true with an action to execute otherwise.
+
+    @discussion
+
+    If expression evalulates to false, this executes an action and jumps to a label. No debugging information is printed.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_action_quiet
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_action_quiet </span>) )
+    #define require_action_quiet( X, LABEL, ACTION )                                                        \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                    \
+        {                                                                                               \
+            { ACTION; }                                                                                 \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_action_string
+
+    @abstract	Requires that an expression evaluate to true with an explanation and action to execute otherwise.
+
+    @discussion
+
+    If expression evalulates to false, this prints debugging information (actual expression string, file, line number,
+    function name, etc.) and a custom explanation string using the default debugging output method then executes an
+    action and jumps to a label.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef require_action_string
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> require_action_string </span>) )
+    #define require_action_string( X, LABEL, ACTION, STR )                                                  \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                    \
+        {                                                                                               \
+            debug_print_assert( 0, # X, STR, __FILE__, __LINE__, __ROUTINE__ );                      \
+            { ACTION; }                                                                                 \
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">LABEL</span>;                                                                                 \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	require_throw
+
+    @abstract	Requires that an expression evaluates to true or an exception is thrown.
+
+    @discussion
+
+    If the expression evaluates to false, this prints debugging information (actual expression string, file,
+    line number, function name, etc.) using the default debugging output method then throws an exception.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> __cplusplus </span>) )
+    #define require_throw( X )                                                                              \
+    <span class="enscript-keyword">do</span>                                                                                                  \
+    {                                                                                                   \
+        <span class="enscript-keyword">if</span>( !( X ) )                                                                                    \
+        {                                                                                               \
+            debug_print_assert( 0, # X, NULL, __FILE__, __LINE__, __ROUTINE__ );                         \
+            throw kUnknownErr;                                                                          \
+        }                                                                                               \
+                                                                                                            \
+    }   <span class="enscript-keyword">while</span>( 0 )
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Design</span>-<span class="enscript-variable-name">By</span>-<span class="enscript-variable-name">Contract</span> <span class="enscript-variable-name">macros</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//	Design-By-Contract macros
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ensure</span>( X )                                                 check( X )
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ensure_string</span>( X, STR )                                     check_string( X, STR )
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ensure_noerr</span>( ERR )                                         check_noerr( ERR )
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ensure_noerr_string</span>( ERR, STR )                             check_noerr_string( ERR, STR )
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ensure_translated_errno</span>( TEST, ERRNO, ALTERNATE_ERROR )     check_translated_errno( TEST, ERRNO, ALTERNATE_ERROR )
+
+<span class="enscript-comment">// Note: Design-By-Contract &quot;require&quot; macros are already defined elsewhere.
+</span>
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Expect</span> <span class="enscript-variable-name">macros</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//	Expect macros
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+<span class="enscript-comment">// Expect macros allow code to include runtime checking of things that should not happen in shipping code (e.g. internal
+</span><span class="enscript-comment">// programmer errors, such as a NULL parameter where it is not allowed). Once the code has been verified to work correctly
+</span><span class="enscript-comment">// without asserting, the DEBUG_EXPECT_VERIFIED conditional can be set to eliminate the error checking entirely. It can
+</span><span class="enscript-comment">// also be useful to measure the cost of error checking code by profiling with it enable and with it disabled.
+</span>
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_EXPECT_VERIFIED</span> )
+    #define require_expect
+    #define require_string_expect
+    #define require_quiet_expect
+    #define require_noerr_expect
+    #define require_noerr_string_expect
+    #define require_noerr_action_string_expect
+    #define require_noerr_quiet_expect
+    #define require_noerr_action_expect
+    #define require_noerr_action_quiet_expect
+    #define require_action_expect
+    #define require_action_quiet_expect
+    #define require_action_string_expect
+#<span class="enscript-reference">else</span>
+    #define require_expect                          require
+    #define require_string_expect                   require_string
+    #define require_quiet_expect                    require_quiet
+    #define require_noerr_expect                    require_noerr
+    #define require_noerr_string_expect             require_noerr_string
+    #define require_noerr_action_string_expect      require_noerr_action_string
+    #define require_noerr_quiet_expect              require_noerr_quiet
+    #define require_noerr_action_expect             require_noerr_action
+    #define require_noerr_action_quiet_expect       require_noerr_action_quiet
+    #define require_action_expect                   require_action
+    #define require_action_quiet_expect             require_action_quiet
+    #define require_action_string_expect            require_action_string
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Output</span> <span class="enscript-variable-name">macros</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	debug_string
+
+    @abstract	Prints a debugging C string.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG_OVERRIDE_APPLE_MACROS</span> )
+    #undef debug_string
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> ( !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name"> debug_string </span>) )
+    #<span class="enscript-keyword">if</span> ( DEBUG )
+        #define debug_string( STR )                                                                     \
+    <span class="enscript-keyword">do</span>                                                                                          \
+    {                                                                                           \
+        debug_print_assert( 0, NULL, STR, __FILE__, __LINE__, __ROUTINE__ );                    \
+                                                                                                        \
+    }   <span class="enscript-keyword">while</span>( 0 )
+    #<span class="enscript-keyword">else</span>
+        #define debug_string( STR )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	debug_print_assert
+
+    @abstract	Prints an assertion.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define debug_print_assert( ERROR_CODE, ASSERT_STRING, MESSAGE, FILENAME, LINE_NUMBER, FUNCTION )   \
+    DebugPrintAssert( ERROR_CODE, ASSERT_STRING, MESSAGE, FILENAME, LINE_NUMBER, FUNCTION )
+#<span class="enscript-reference">else</span>
+    #define debug_print_assert( ERROR_CODE, ASSERT_STRING, MESSAGE, FILENAME, LINE_NUMBER, FUNCTION )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	dlog
+
+    @abstract	Prints a debug-only message.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define dlog(... )         DebugPrintF( __VA_ARGS__ )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define dlog( ARGS... )     DebugPrintF( ## ARGS )
+    #<span class="enscript-keyword">else</span>
+        #define dlog                DebugPrintF
+    #endif
+#<span class="enscript-reference">else</span>
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define dlog(... )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define dlog( ARGS... )
+    #<span class="enscript-keyword">else</span>
+        #define dlog                <span class="enscript-keyword">while</span>( 0 )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	dlogv
+
+    @abstract	Prints a debug-only message.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define dlogv( LEVEL, FORMAT, LIST )        DebugPrintFVAList( ( LEVEL ), ( FORMAT ), ( LIST ) )
+#<span class="enscript-reference">else</span>
+    #define dlogv( LEVEL, FORMAT, LIST )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	dlogmem
+
+    @abstract	Prints a debug-only dump of memory.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define dlogmem( LEVEL, PTR, SIZE )     \
+    DebugHexDump( ( LEVEL ), 0, NULL, 0, 0, NULL, 0, ( PTR ), ( PTR ), ( SIZE ), kDebugFlagsNone, NULL, 0 )
+#<span class="enscript-reference">else</span>
+    #define dlogmem( LEVEL, PTR, SIZE )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@defined	DebugNSLog
+
+    @abstract	Debug-only macro for the Cocoa NSLog function.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define DebugNSLog(... )           NSLog( __VA_ARGS__ )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define DebugNSLog( ARGS... )       NSLog( ## ARGS )
+    #<span class="enscript-keyword">else</span>
+        #define DebugNSLog                  NSLog
+    #endif
+#<span class="enscript-reference">else</span>
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define DebugNSLog(... )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define DebugNSLog( ARGS... )
+    #<span class="enscript-keyword">else</span>
+        #define DebugNSLog                  <span class="enscript-keyword">while</span>( 0 )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Routines</span> - <span class="enscript-variable-name">General</span> ==
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifdef</span>  <span class="enscript-variable-name">__cplusplus</span>
+<span class="enscript-type">extern</span> <span class="enscript-string">&quot;C&quot;</span> {
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugInitialize
+
+    @abstract	Initializes the debugging library for a specific kind of output.
+
+    @param		inType
+    @param		varArg		Variable number parameters, controlled by the &quot;inType&quot; parameter.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT OSStatus   <span class="enscript-function-name">DebugInitialize</span>( DebugOutputType inType, ... );
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define debug_initialize(... )         DebugInitialize( __VA_ARGS__ )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define debug_initialize( ARGS... )     DebugInitialize( ## ARGS )
+    #<span class="enscript-keyword">else</span>
+        #define debug_initialize                DebugInitialize
+    #endif
+#<span class="enscript-reference">else</span>
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define debug_initialize(... )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define debug_initialize( ARGS... )
+    #<span class="enscript-keyword">else</span>
+        #define debug_initialize                <span class="enscript-keyword">while</span>( 0 )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugFinalize
+
+    @abstract	Releases any resources used by the debugging library
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT <span class="enscript-type">void</span>       <span class="enscript-function-name">DebugFinalize</span>( <span class="enscript-type">void</span> );
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define debug_terminate()   DebugFinalize()
+#<span class="enscript-reference">else</span>
+    #define debug_terminate()
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugGetProperty
+
+    @abstract	Gets the specified property from the debugging library.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT OSStatus   <span class="enscript-function-name">DebugGetProperty</span>( DebugPropertyTag inTag, ... );
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define debug_get_property(... )           DebugGetProperty( __VA_ARGS__ )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define debug_get_property( ARGS... )       DebugGetProperty( ## ARGS )
+    #<span class="enscript-keyword">else</span>
+        #define debug_get_property                  DebugGetProperty
+    #endif
+#<span class="enscript-reference">else</span>
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define debug_get_property(... )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define debug_get_property( ARGS... )
+    #<span class="enscript-keyword">else</span>
+        #define debug_get_property                  <span class="enscript-keyword">while</span>( 0 )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugSetProperty
+
+    @abstract	Sets the specified property from the debugging library.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT OSStatus   <span class="enscript-function-name">DebugSetProperty</span>( DebugPropertyTag inTag, ... );
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define debug_set_property(... )           DebugSetProperty( __VA_ARGS__ )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define debug_set_property( ARGS... )       DebugSetProperty( ## ARGS )
+    #<span class="enscript-keyword">else</span>
+        #define debug_set_property                  DebugSetProperty
+    #endif
+#<span class="enscript-reference">else</span>
+    #<span class="enscript-keyword">if</span> ( DEBUG_C99_VA_ARGS )
+        #define debug_set_property(... )
+    #elif ( DEBUG_GNU_VA_ARGS )
+        #define debug_set_property( ARGS... )
+    #<span class="enscript-keyword">else</span>
+        #define debug_set_property                  <span class="enscript-keyword">while</span>( 0 )
+    #endif
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Routines</span> - <span class="enscript-variable-name">Debugging</span> <span class="enscript-variable-name">Output</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugPrintF
+
+    @abstract	Prints a debug message with printf-style formatting.
+
+    @param		inLevel	Error that generated this assert or noErr.
+
+    @param		inFormatString
+                    C string containing assertion text.
+
+    @param		VAR_ARG
+                    Variable number of arguments depending on the format string.
+
+    @result		Number of bytes printed or -1 on error.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT size_t     <span class="enscript-function-name">DebugPrintF</span>( DebugLevel inLevel, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *inFormat, ... );
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugPrintFVAList
+
+    @abstract	va_list version of DebugPrintF. See DebugPrintF for more info.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT size_t     <span class="enscript-function-name">DebugPrintFVAList</span>( DebugLevel inLevel, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *inFormat, va_list inArgs );
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugPrintAssert
+
+    @abstract	Prints a message describing the reason the (e.g. an assert failed), an optional error message,
+                an optional source filename, an optional source line number.
+
+    @param		inErrorCode			Error that generated this assert or noErr.
+    @param		inAssertString		C string containing assertion text.
+    @param		inMessage			C string containing a message about the assert.
+    @param		inFileName			C string containing path of file where the error occurred.
+    @param		inLineNumber		Line number in source file where the error occurred.
+    @param		inFunction			C string containing name of function where assert occurred.
+
+    @discussion
+
+    Example output:
+
+    [ASSERT] assert: &quot;dataPtr != NULL&quot; allocate memory for object failed
+    [ASSERT] where:  &quot;MyFile.c&quot;, line 123, (&quot;MyFunction&quot;)
+
+    OR
+
+    [ASSERT] error:  -6728 (kNoMemoryErr)
+    [ASSERT] where:  &quot;MyFile.c&quot;, line 123, (&quot;MyFunction&quot;)
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT <span class="enscript-type">void</span>
+<span class="enscript-function-name">DebugPrintAssert</span>(
+    int_least32_t inErrorCode,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *    inAssertString,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *    inMessage,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *    inFilename,
+    int_least32_t inLineNumber,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *    inFunction );
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> 0
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> == <span class="enscript-variable-name">Routines</span> - <span class="enscript-variable-name">Utilities</span> ==
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugSNPrintF
+
+    @abstract	Debugging versions of standard C snprintf with extra features.
+
+    @param		sbuffer		Buffer to receive result. Null terminated unless the buffer size is 0.
+    @param		buflen		Size of the buffer including space for the null terminator.
+    @param		fmt			printf-style format string.
+    @param		VAR_ARG		Variable number of arguments depending on the format string.
+
+    @result		Number of characters written (minus the null terminator).
+
+    @discussion
+
+    Extra features over the standard C snprintf:
+    &lt;pre&gt;
+        64-bit support for %d (%lld), %i (%lli), %u (%llu), %o (%llo), %x (%llx), and %b (%llb).
+        %@   - Cocoa/CoreFoundation object. Param is the object. Strings are used directly. Others use CFCopyDescription.
+        %a   - Network Address: %.4a=IPv4, %.6a=Ethernet, %.8a Fibre Channel, %.16a=IPv6. Arg=ptr to network address.
+        %#a  - IPv4 or IPv6 mDNSAddr. Arg=ptr to mDNSAddr.
+        %##a - IPv4 (if AF_INET defined) or IPv6 (if AF_INET6 defined) sockaddr. Arg=ptr to sockaddr.
+        %b   - Binary representation of integer (e.g. 01101011). Modifiers and arg=the same as %d, %x, etc.
+        %C   - Mac-style FourCharCode (e.g. 'APPL'). Arg=32-bit value to print as a Mac-style FourCharCode.
+        %H   - Hex Dump (e.g. &quot;\x6b\xa7&quot; -&gt; &quot;6B A7&quot;). 1st arg=ptr, 2nd arg=size, 3rd arg=max size.
+        %#H  - Hex Dump &amp; ASCII (e.g. &quot;\x41\x62&quot; -&gt; &quot;6B A7 'Ab'&quot;). 1st arg=ptr, 2nd arg=size, 3rd arg=max size.
+        %m   - Error Message (e.g. 0 -&gt; &quot;kNoErr&quot;). Modifiers and error code arg=the same as %d, %x, etc.
+        %#s  - Pascal-style length-prefixed string. Arg=ptr to string.
+        %##s - DNS label-sequence name. Arg=ptr to name.
+        %S   - UTF-16 string, 0x0000 terminated. Host order if no BOM. Precision is UTF-16 count. Precision includes BOM.
+        %#S  - Big Endian UTF-16 string (unless BOM overrides). Otherwise, the same as %S.
+        %##S - Little Endian UTF-16 string (unless BOM overrides). Otherwise, the same as %S.
+        %U   - Universally Unique Identifier (UUID) (e.g. 6ba7b810-9dad-11d1-80b4-00c04fd430c8). Arg=ptr to 16-byte UUID.
+    &lt;/pre&gt;
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT size_t <span class="enscript-function-name">DebugSNPrintF</span>(<span class="enscript-type">char</span> *sbuffer, size_t buflen, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *fmt, ...);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugSNPrintFVAList
+
+    @abstract	va_list version of DebugSNPrintF. See DebugSNPrintF for more info.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT size_t <span class="enscript-function-name">DebugSNPrintFVAList</span>(<span class="enscript-type">char</span> *sbuffer, size_t buflen, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *fmt, va_list arg);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugGetErrorString
+
+    @abstract	Gets an error string from an error code.
+
+    @param		inStatus		Error code to get the string for.
+    @param		inBuffer		Optional buffer to copy the string to for non-static strings. May be null.
+    @param		inBufferSize	Size of optional buffer. May be 0.
+
+    @result		C string containing error string for the error code. Guaranteed to be a valid, static string. If a
+                buffer is supplied, the return value will always be a pointer to the supplied buffer, which will
+                contain the best available description of the error code. If a buffer is not supplied, the return
+                value will be the best available description of the error code that can be represented as a static
+                string. This allows code that cannot use a temporary buffer to hold the result to still get a useful
+                error string in most cases, but also allows code that can use a temporary buffer to get the best
+                available description.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT <span class="enscript-type">const</span> <span class="enscript-type">char</span> *   <span class="enscript-function-name">DebugGetErrorString</span>( int_least32_t inErrorCode, <span class="enscript-type">char</span> *inBuffer, size_t inBufferSize );
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugHexDump
+
+    @abstract	Hex dumps data to a string or to the output device.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT size_t
+<span class="enscript-function-name">DebugHexDump</span>(
+    DebugLevel inLevel,
+    <span class="enscript-type">int</span> inIndent,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *    inLabel,
+    size_t inLabelSize,
+    <span class="enscript-type">int</span> inLabelMinWidth,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *    inType,
+    size_t inTypeSize,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span> *    inDataStart,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span> *    inData,
+    size_t inDataSize,
+    DebugFlags inFlags,
+    <span class="enscript-type">char</span> *          outBuffer,
+    size_t inBufferSize );
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+    #define dloghex( LEVEL, INDENT, LABEL, LABEL_SIZE, LABEL_MIN_SIZE, TYPE, TYPE_SIZE, DATA_START, DATA, DATA_SIZE, FLAGS, BUFFER, BUFFER_SIZE )   \
+    DebugHexDump( ( LEVEL ), (INDENT), ( LABEL ), ( LABEL_SIZE ), ( LABEL_MIN_SIZE ), ( TYPE ), ( TYPE_SIZE ),                              \
+                  ( DATA_START ), ( DATA ), ( DATA_SIZE ), ( FLAGS ), ( BUFFER ), ( BUFFER_SIZE ) )
+#<span class="enscript-reference">else</span>
+    #define dloghex( LEVEL, INDENT, LABEL, LABEL_SIZE, LABEL_MIN_SIZE, TYPE, TYPE_SIZE, DATA_START, DATA, DATA_SIZE, FLAGS, BUFFER, BUFFER_SIZE )
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugTaskLevel
+
+    @abstract	Returns the current task level.
+
+    @result		Current task level
+
+    @discussion
+
+    Bit masks to isolate portions of the result (note that some masks may also need bit shifts to right justify):
+    &lt;pre&gt;
+        kDebugInterruptLevelMask				- Indicates the current interrupt level (&gt; 0 means interrupt time).
+        kDebugInVBLTaskMask						- Indicates if a VBL task is currently being executed.
+        kDebugInDeferredTaskMask				- Indicates if a Deferred Task is currently being executed.
+        kDebugInSecondaryInterruptHandlerMask	- Indicates if a Secondary Interrupt Handler is currently being executed.
+        kDebugPageFaultFatalMask				- Indicates if it is unsafe to cause a page fault (worse than interrupt time).
+        kDebugMPTaskLevelMask					- Indicates if being called from an MP task.
+        kDebugInterruptDepthMask				- 0 means task level, 1 means in interrupt, &gt; 1 means in nested interrupt.
+    &lt;/pre&gt;
+
+    Helpers:
+    &lt;pre&gt;
+        DebugExtractTaskLevelInterruptDepth()   - Macro to extract interrupt depth from task level value.
+    &lt;/pre&gt;
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT uint32_t   <span class="enscript-function-name">DebugTaskLevel</span>( <span class="enscript-type">void</span> );
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//---------------------------------------------------------------------------------------------------------------------------
+</span><span class="enscript-comment">/*!	@function	DebugServicesTest
+
+    @abstract	Unit test.
+ */</span>
+
+#<span class="enscript-reference">if</span> ( <span class="enscript-variable-name">DEBUG</span> )
+DEBUG_EXPORT OSStatus   <span class="enscript-function-name">DebugServicesTest</span>( <span class="enscript-type">void</span> );
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">ifdef</span>  <span class="enscript-variable-name">__cplusplus</span>
+}
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">endif</span>  // <span class="enscript-variable-name">__DEBUG_SERVICES__</span>
+</pre>
+<hr />
+</body></html>

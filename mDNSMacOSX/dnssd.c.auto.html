@@ -1,0 +1,1375 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnssd.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnssd.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnssd.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssd_private.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssd_object.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssd_xpc.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;CoreUtils/CoreUtils.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;os/object_private.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;xpc/private.h&gt;</span>
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Declarations</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DNSSD_STRUCT</span>(NAME)	struct dnssd_ ## NAME ## _s
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DNSSD_TYPE</span>(NAME)	dnssd_ ## NAME ## _t
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DNSSD_KIND_DECLARE</span>(NAME)																\
+	static DNSSD_TYPE(NAME)																		\
+	_dnssd_ ## NAME ## _alloc(void);															\
+																								\
+	static char *																				\
+	_dnssd_ ## NAME ## _copy_description(DNSSD_TYPE(NAME) object, bool debug, bool privacy);	\
+																								\
+	static void																					\
+	_dnssd_ ## NAME ## _finalize(DNSSD_TYPE(NAME) object)
+
+<span class="enscript-comment">// Note: The last check checks if the base's type is equal to that of the superkind. If it's not, then the pointer
+</span><span class="enscript-comment">// comparison used as the argument to sizeof will cause a &quot;comparison of distinct pointer types&quot; warning, so long as
+</span><span class="enscript-comment">// the warning hasn't been disabled.
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DNSSD_BASE_CHECK</span>(NAME, SUPER)																	\
+	check_compile_time(offsetof(DNSSD_STRUCT(NAME), base) == 0);										\
+	check_compile_time(sizeof_field(DNSSD_STRUCT(NAME), base) == sizeof(DNSSD_STRUCT(SUPER)));			\
+	extern int _dnssd_base_type_check[sizeof(&amp;(((DNSSD_TYPE(NAME))0)-&gt;base) == ((DNSSD_TYPE(SUPER))0))]
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DNSSD_KIND_DEFINE</span>(NAME, SUPER) 											\
+	static const struct dnssd_kind_s _dnssd_ ## NAME ## _kind = {				\
+		&amp;_dnssd_ ## SUPER ## _kind,												\
+		# NAME,																	\
+		_dnssd_ ## NAME ## _copy_description,									\
+		_dnssd_ ## NAME ## _finalize,											\
+	};																			\
+																				\
+	static DNSSD_TYPE(NAME)														\
+	_dnssd_ ## NAME ## _alloc(void)												\
+	{																			\
+		DNSSD_TYPE(NAME) obj = dnssd_object_ ## NAME ## _alloc(sizeof(*obj));	\
+		require_quiet(obj, exit);												\
+																				\
+		const dnssd_object_t base = (dnssd_object_t)obj;						\
+		base-&gt;kind = &amp;_dnssd_ ## NAME ## _kind;									\
+																				\
+	exit:																		\
+		return obj;																\
+	}																			\
+	DNSSD_BASE_CHECK(NAME, SUPER)
+
+<span class="enscript-function-name">DNSSD_KIND_DECLARE</span>(getaddrinfo);
+<span class="enscript-function-name">DNSSD_KIND_DECLARE</span>(getaddrinfo_result);
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">char</span> *	(*dnssd_copy_description_f)(dnssd_any_t object, bool debug, bool privacy);
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span>	(*dnssd_finalize_f)(dnssd_any_t object);
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">const</span> <span class="enscript-type">struct</span> dnssd_kind_s *	dnssd_kind_t;
+<span class="enscript-type">struct</span> dnssd_kind_s {
+	dnssd_kind_t				superkind;			<span class="enscript-comment">// This kind's superkind.
+</span>	<span class="enscript-type">const</span> <span class="enscript-type">char</span> *				name;				<span class="enscript-comment">// Name of this kind.
+</span>	dnssd_copy_description_f	copy_description;	<span class="enscript-comment">// Creates a textual description of object.
+</span>	dnssd_finalize_f			finalize;			<span class="enscript-comment">// Releases object's resources right before the object is freed.
+</span>};
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_object</span> <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Definition</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">struct</span> dnssd_object_s {
+	_OS_OBJECT_HEADER(<span class="enscript-type">const</span> <span class="enscript-type">void</span> *_os_obj_isa, _os_obj_refcnt, _os_obj_xref_cnt);
+	dnssd_kind_t	kind;	<span class="enscript-comment">// Pointer to an object's kind.
+</span>};
+
+<span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">struct</span> dnssd_kind_s _dnssd_object_kind = {
+	NULL,		<span class="enscript-comment">// No superkind.
+</span>	<span class="enscript-string">&quot;object&quot;</span>,
+	NULL,		<span class="enscript-comment">// No copy_description method.
+</span>	NULL,		<span class="enscript-comment">// No finalize method.
+</span>};
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_getaddrinfo</span> <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Definition</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span> {
+	dnssd_getaddrinfo_state_nascent		= 0,
+	dnssd_getaddrinfo_state_starting	= 1,
+	dnssd_getaddrinfo_state_started		= 2,
+	dnssd_getaddrinfo_state_failed		= 3,
+	dnssd_getaddrinfo_state_invalidated	= 4,
+} dnssd_getaddrinfo_state_t;
+
+<span class="enscript-type">struct</span> dnssd_getaddrinfo_s {
+	<span class="enscript-type">struct</span> dnssd_object_s				base;			<span class="enscript-comment">// Object base.
+</span>	dnssd_getaddrinfo_t					next;			<span class="enscript-comment">// Next getaddrinfo object in list.
+</span>	uint64_t							command_id;		<span class="enscript-comment">// Command ID.
+</span>	dispatch_queue_t					user_queue;		<span class="enscript-comment">// User's dispatch queue for invoking result and event handlers.
+</span>	dispatch_queue_t					mutex_queue;	<span class="enscript-comment">// Mutex for accessing result_list from different queues.
+</span>	xpc_object_t						params;			<span class="enscript-comment">// Parameters dictionary for getaddrinfo command.
+</span>	xpc_object_t						hostname;		<span class="enscript-comment">// Reference to hostname from parameters dictionary.
+</span>	dispatch_source_t					event_source;	<span class="enscript-comment">// Data source for triggering result and event handlers.
+</span>	dnssd_getaddrinfo_result_t			result_list;	<span class="enscript-comment">// List of getaddrinfo results.
+</span>	dnssd_getaddrinfo_result_handler_t	result_handler;	<span class="enscript-comment">// User's result handler.
+</span>	dnssd_event_handler_t				event_handler;	<span class="enscript-comment">// User's event handler.
+</span>	dnssd_getaddrinfo_state_t			state;			<span class="enscript-comment">// Internal state.
+</span>	OSStatus							error;			<span class="enscript-comment">// Pending error.
+</span>	bool								user_activated;	<span class="enscript-comment">// True if the object has been activated by user.
+</span>};
+
+<span class="enscript-function-name">DNSSD_KIND_DEFINE</span>(getaddrinfo, object);
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_getaddrinfo_result</span> <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Definition</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">struct</span> dnssd_getaddrinfo_result_s {
+	<span class="enscript-type">struct</span> dnssd_object_s			base;				<span class="enscript-comment">// Object base.
+</span>	sockaddr_ip						addr;				<span class="enscript-comment">// IPv4 or IPv6 address of hostname.
+</span>	xpc_object_t					hostname;			<span class="enscript-comment">// Requested hostname to resolve.
+</span>	xpc_object_t					actual_hostname;	<span class="enscript-comment">// The actual/canonical hostname of the requested hostname.
+</span>	xpc_object_t					auth_tag;			<span class="enscript-comment">// Authentication tag.
+</span>	uint32_t						interface_index;	<span class="enscript-comment">// Interface index to which the result pertains.
+</span>	dnssd_getaddrinfo_result_type_t	type;				<span class="enscript-comment">// Type of getaddrinfo result.
+</span>	dnssd_getaddrinfo_result_t		next;				<span class="enscript-comment">// Next getaddrinfo result in list.
+</span>};
+
+<span class="enscript-function-name">DNSSD_KIND_DEFINE</span>(getaddrinfo_result, object);
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Constants</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_EVENT_HAVE_RESULTS</span>	(1U &lt;&lt; 0)	// Results are available.
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_EVENT_REMOVE_ALL</span>		(1U &lt;&lt; 1)	// Previously delivered results are no longer valid.
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_EVENT_ERROR</span>			(1U &lt;&lt; 2)	// An error was encountered.
+
+<span class="enscript-comment">// Strings for redacted description items.
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_REDACTED_HOSTNAME_STR</span>			<span class="enscript-string">&quot;&lt;redacted hostname&gt;&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_REDACTED_ACTUAL_HOSTNAME_STR</span>	<span class="enscript-string">&quot;&lt;redacted actual hostname&gt;&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_REDACTED_IPv4_ADDRESS_STR</span>		<span class="enscript-string">&quot;&lt;redacted IPv4 address&gt;&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_REDACTED_IPv6_ADDRESS_STR</span>		<span class="enscript-string">&quot;&lt;redacted IPv6 address&gt;&quot;</span>
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Local</span> <span class="enscript-variable-name">Prototypes</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> dispatch_queue_t
+<span class="enscript-function-name">_dnssd_client_queue</span>(<span class="enscript-type">void</span>);
+
+<span class="enscript-type">static</span> xpc_connection_t
+<span class="enscript-function-name">_dnssd_client_connection</span>(<span class="enscript-type">void</span>);
+
+<span class="enscript-type">static</span> uint64_t
+<span class="enscript-function-name">_dnssd_client_get_new_id</span>(<span class="enscript-type">void</span>);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_activate_getaddrinfo_async</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_register_getaddrinfo</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_deregister_getaddrinfo</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> OSStatus
+<span class="enscript-function-name">_dnssd_client_send_getaddrinfo_command</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_fail_getaddrinfo</span>(dnssd_getaddrinfo_t gai, OSStatus error);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_append_results</span>(dnssd_getaddrinfo_t gai, dnssd_getaddrinfo_result_t result_list);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_remove_all_results</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> dnssd_getaddrinfo_result_t
+<span class="enscript-function-name">_dnssd_getaddrinfo_take_results</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_post_error_event</span>(dnssd_getaddrinfo_t gai, OSStatus error);
+
+<span class="enscript-type">static</span> dnssd_getaddrinfo_result_t
+<span class="enscript-function-name">_dnssd_getaddrinfo_result_create_from_dictionary</span>(xpc_object_t hostname, xpc_object_t result_dict, OSStatus *out_error);
+
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dnssd_osstatus_to_dns_service_error</span>(OSStatus status);
+
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">dnssd_release_null_safe</span>)
+	#define dnssd_release_null_safe(X)	\
+		<span class="enscript-keyword">do</span> {							\
+			<span class="enscript-keyword">if</span> (X) {					\
+				dnssd_release(X);		\
+			}							\
+		} <span class="enscript-keyword">while</span>(0)
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">dnssd_forget</span>)
+	#define dnssd_forget(X)	ForgetCustom(X, dnssd_release)
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_object</span> <span class="enscript-variable-name">Public</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_retain</span>(dnssd_any_t object)
+{
+	os_retain(object.base);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_release</span>(dnssd_any_t object)
+{
+	os_release(object.base);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">char</span> *
+<span class="enscript-function-name">dnssd_copy_description</span>(dnssd_any_t object)
+{
+	<span class="enscript-keyword">return</span> dnssd_object_copy_description(object, false, false);
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_object</span> <span class="enscript-variable-name">Private</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">char</span> *
+<span class="enscript-function-name">dnssd_object_copy_description</span>(dnssd_any_t object, bool debug, bool privacy)
+{
+	<span class="enscript-keyword">for</span> (dnssd_kind_t kind = object.base-&gt;kind; kind; kind = kind-&gt;superkind) {
+		<span class="enscript-keyword">if</span> (kind-&gt;copy_description) {
+			<span class="enscript-type">char</span> *desc = kind-&gt;copy_description(object, debug, privacy);
+			<span class="enscript-keyword">return</span> desc;
+		}
+	}
+	<span class="enscript-keyword">return</span> NULL;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_object_finalize</span>(dnssd_any_t object)
+{
+	<span class="enscript-keyword">for</span> (dnssd_kind_t kind = object.base-&gt;kind; kind; kind = kind-&gt;superkind) {
+		<span class="enscript-keyword">if</span> (kind-&gt;finalize) {
+			kind-&gt;finalize(object);
+		}
+	}
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_getaddrinfo</span> <span class="enscript-variable-name">Public</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+dnssd_getaddrinfo_t
+<span class="enscript-function-name">dnssd_getaddrinfo_create</span>(<span class="enscript-type">void</span>)
+{
+	dnssd_getaddrinfo_t	gai = NULL;
+	dnssd_getaddrinfo_t	obj = _dnssd_getaddrinfo_alloc();
+	require_quiet(obj, exit);
+
+	obj-&gt;params = xpc_dictionary_create(NULL, NULL, 0);
+	require_quiet(obj-&gt;params, exit);
+
+	obj-&gt;mutex_queue = dispatch_queue_create(<span class="enscript-string">&quot;com.apple.dnssd.getaddrinfo.mutex&quot;</span>, DISPATCH_QUEUE_SERIAL);
+	require_quiet(obj-&gt;mutex_queue, exit);
+
+	gai = obj;
+	obj = NULL;
+
+<span class="enscript-reference">exit</span>:
+	dnssd_release_null_safe(obj);
+	<span class="enscript-keyword">return</span> gai;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_queue</span>(dnssd_getaddrinfo_t me, dispatch_queue_t queue)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		dispatch_retain(queue);
+		dispatch_release_null_safe(me-&gt;user_queue);
+		me-&gt;user_queue = queue;
+	} <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!me-&gt;user_queue) {
+		me-&gt;user_queue = queue;
+		dispatch_retain(me-&gt;user_queue);
+		_dnssd_client_activate_getaddrinfo_async(me);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_flags</span>(dnssd_getaddrinfo_t me, DNSServiceFlags flags)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		dnssd_xpc_parameters_set_flags(me-&gt;params, flags);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_hostname</span>(dnssd_getaddrinfo_t me, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *hostname)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		dnssd_xpc_parameters_set_hostname(me-&gt;params, hostname);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_interface_index</span>(dnssd_getaddrinfo_t me, uint32_t interface_index)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		dnssd_xpc_parameters_set_interface_index(me-&gt;params, interface_index);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_protocols</span>(dnssd_getaddrinfo_t me, DNSServiceProtocol protocols)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		dnssd_xpc_parameters_set_protocols(me-&gt;params, protocols);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_delegate_pid</span>(dnssd_getaddrinfo_t me, pid_t pid)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		dnssd_xpc_parameters_set_delegate_pid(me-&gt;params, pid);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_delegate_uuid</span>(dnssd_getaddrinfo_t me, uuid_t uuid)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		dnssd_xpc_parameters_set_delegate_uuid(me-&gt;params, uuid);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_result_handler</span>(dnssd_getaddrinfo_t me, dnssd_getaddrinfo_result_handler_t handler)
+{
+	dnssd_getaddrinfo_result_handler_t <span class="enscript-type">const</span> new_handler = handler ? Block_copy(handler) : NULL;
+	<span class="enscript-keyword">if</span> (me-&gt;result_handler) {
+		Block_release(me-&gt;result_handler);
+	}
+	me-&gt;result_handler = new_handler;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_event_handler</span>(dnssd_getaddrinfo_t me, dnssd_event_handler_t handler)
+{
+	dnssd_event_handler_t <span class="enscript-type">const</span> new_handler = handler ? Block_copy(handler) : NULL;
+	<span class="enscript-keyword">if</span> (me-&gt;event_handler) {
+		Block_release(me-&gt;event_handler);
+	}
+	me-&gt;event_handler = new_handler;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_set_need_authenticated_results</span>(dnssd_getaddrinfo_t me, bool need)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		dnssd_xpc_parameters_set_need_authentication_tags(me-&gt;params, need);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_activate</span>(dnssd_getaddrinfo_t me)
+{
+	<span class="enscript-keyword">if</span> (!me-&gt;user_activated) {
+		<span class="enscript-keyword">if</span> (me-&gt;user_queue) {
+			_dnssd_client_activate_getaddrinfo_async(me);
+		}
+		me-&gt;user_activated = true;
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_invalidate_getaddrinfo</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_invalidate</span>(dnssd_getaddrinfo_t me);
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_getaddrinfo_invalidate</span>(dnssd_getaddrinfo_t me)
+{
+	dnssd_retain(me);
+	dispatch_async(_dnssd_client_queue(),
+	^{
+		_dnssd_client_invalidate_getaddrinfo(me);
+		dnssd_release(me);
+	});
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_invalidate_getaddrinfo</span>(dnssd_getaddrinfo_t gai)
+{
+	require_quiet(gai-&gt;state != dnssd_getaddrinfo_state_invalidated, exit);
+
+	_dnssd_client_deregister_getaddrinfo(gai);
+	<span class="enscript-keyword">if</span> ((gai-&gt;state == dnssd_getaddrinfo_state_starting) || (gai-&gt;state == dnssd_getaddrinfo_state_started)) {
+		xpc_object_t <span class="enscript-type">const</span> msg = xpc_dictionary_create(NULL, NULL, 0);
+		<span class="enscript-keyword">if</span> (msg) {
+			dnssd_xpc_message_set_id(msg, gai-&gt;command_id);
+			dnssd_xpc_message_set_command(msg, DNSSD_COMMAND_STOP);
+			xpc_connection_send_message_with_reply(_dnssd_client_connection(), msg, _dnssd_client_queue(),
+			^(xpc_object_t reply)
+			{
+				(<span class="enscript-type">void</span>)reply;
+			});
+			xpc_release(msg);
+		}
+	}
+	_dnssd_getaddrinfo_invalidate(gai);
+	gai-&gt;state = dnssd_getaddrinfo_state_invalidated;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span>;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_invalidate</span>(dnssd_getaddrinfo_t me)
+{
+	dispatch_source_forget(&amp;me-&gt;event_source);
+	_dnssd_getaddrinfo_remove_all_results(me);
+
+	<span class="enscript-keyword">if</span> (me-&gt;user_queue) {
+		dnssd_retain(me);
+		dispatch_async(me-&gt;user_queue,
+		^{
+			<span class="enscript-keyword">if</span> (me-&gt;event_handler) {
+				me-&gt;event_handler(dnssd_event_invalidated, kDNSServiceErr_NoError);
+			}
+			dnssd_release(me);
+		});
+	}
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_getaddrinfo</span> <span class="enscript-variable-name">Private</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">char</span> *
+<span class="enscript-function-name">_dnssd_getaddrinfo_copy_description</span>(dnssd_getaddrinfo_t me, <span class="enscript-type">const</span> bool debug, <span class="enscript-type">const</span> bool privacy)
+{
+	<span class="enscript-type">const</span> <span class="enscript-type">char</span> *hostname;
+	<span class="enscript-keyword">if</span> (me-&gt;hostname) {
+		hostname = xpc_string_get_string_ptr(me-&gt;hostname);
+		<span class="enscript-keyword">if</span> (privacy &amp;&amp; hostname) {
+			hostname = DNSSD_REDACTED_HOSTNAME_STR;
+		}
+	} <span class="enscript-keyword">else</span> {
+		hostname = NULL;
+	}
+
+	<span class="enscript-type">char</span> *	desc	= NULL;
+	<span class="enscript-type">char</span> *	buf_ptr	= NULL;
+	size_t	buf_len	= 0;
+	<span class="enscript-keyword">for</span> (;;)
+	{
+		size_t			need	= 0;
+		<span class="enscript-type">char</span> *			dst		= buf_ptr;
+		<span class="enscript-type">char</span> * <span class="enscript-type">const</span>	end		= &amp;buf_ptr[buf_len];
+		<span class="enscript-type">int</span>				n;
+
+		<span class="enscript-keyword">if</span> (debug) {
+			<span class="enscript-type">const</span> size_t len = (size_t)(end - dst);
+			n = snprintf(dst, len, <span class="enscript-string">&quot;dnssd_%s (%p): &quot;</span>, me-&gt;base.kind-&gt;name, (<span class="enscript-type">void</span> *)me);
+			require_quiet(n &gt;= 0, exit);
+
+			<span class="enscript-keyword">if</span> (buf_ptr) {
+				dst = (((size_t)n) &lt; len) ? &amp;dst[n] : end;
+			} <span class="enscript-keyword">else</span> {
+				need += (size_t)n;
+			}
+		}
+		n = snprintf(dst, (size_t)(end - dst), <span class="enscript-string">&quot;hostname = %s&quot;</span>, hostname ? hostname : <span class="enscript-string">&quot;&lt;NO HOSTNAME&gt;&quot;</span>);
+		require_quiet(n &gt;= 0, exit);
+
+		<span class="enscript-keyword">if</span> (!buf_ptr) {
+			need += (size_t)n;
+			buf_len = need + 1;
+			buf_ptr = malloc(buf_len);
+			require_quiet(buf_ptr, exit);
+		} <span class="enscript-keyword">else</span> {
+			<span class="enscript-keyword">break</span>;
+		}
+	}
+	desc	= buf_ptr;
+	buf_ptr	= NULL;
+
+<span class="enscript-reference">exit</span>:
+	FreeNullSafe(buf_ptr);
+	<span class="enscript-keyword">return</span> desc;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_finalize</span>(dnssd_getaddrinfo_t me)
+{
+	dispatch_forget(&amp;me-&gt;user_queue);
+	dispatch_forget(&amp;me-&gt;mutex_queue);
+	xpc_forget(&amp;me-&gt;params);
+	xpc_forget(&amp;me-&gt;hostname);
+	BlockForget(&amp;me-&gt;result_handler);
+	BlockForget(&amp;me-&gt;event_handler);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_append_results</span>(dnssd_getaddrinfo_t me, dnssd_getaddrinfo_result_t result_list)
+{
+	dispatch_sync(me-&gt;mutex_queue,
+	^{
+		dnssd_getaddrinfo_result_t *ptr = &amp;me-&gt;result_list;
+		<span class="enscript-keyword">while</span> (*ptr) {
+			ptr = &amp;(*ptr)-&gt;next;
+		}
+		*ptr = result_list;
+	});
+	dispatch_source_merge_data(me-&gt;event_source, DNSSD_EVENT_HAVE_RESULTS);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_remove_all_results</span>(dnssd_getaddrinfo_t me)
+{
+	dnssd_getaddrinfo_result_t result_list = _dnssd_getaddrinfo_take_results(me);
+	<span class="enscript-keyword">if</span> (me-&gt;event_source) {
+		dispatch_source_merge_data(me-&gt;event_source, DNSSD_EVENT_REMOVE_ALL);
+	}
+
+	dnssd_getaddrinfo_result_t result;
+	<span class="enscript-keyword">while</span> ((result = result_list) != NULL) {
+		result_list = result-&gt;next;
+		dnssd_release(result);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> dnssd_getaddrinfo_result_t
+<span class="enscript-function-name">_dnssd_getaddrinfo_take_results</span>(dnssd_getaddrinfo_t me)
+{
+	__block dnssd_getaddrinfo_result_t list;
+	dispatch_sync(me-&gt;mutex_queue,
+	^{
+		list = me-&gt;result_list;
+		me-&gt;result_list = NULL;
+	});
+	<span class="enscript-keyword">return</span> list;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_post_error_event</span>(dnssd_getaddrinfo_t me, OSStatus error)
+{
+	dispatch_sync(me-&gt;mutex_queue,
+	^{
+		me-&gt;error = error;
+	});
+	dispatch_source_merge_data(me-&gt;event_source, DNSSD_EVENT_ERROR);
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_getaddrinfo_result</span> <span class="enscript-variable-name">Public</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+dnssd_getaddrinfo_result_type_t
+<span class="enscript-function-name">dnssd_getaddrinfo_result_get_type</span>(dnssd_getaddrinfo_result_t me)
+{
+	<span class="enscript-keyword">return</span> me-&gt;type;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> *
+<span class="enscript-function-name">dnssd_getaddrinfo_result_get_actual_hostname</span>(dnssd_getaddrinfo_result_t me)
+{
+	<span class="enscript-keyword">return</span> xpc_string_get_string_ptr(me-&gt;actual_hostname);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">const</span> <span class="enscript-type">struct</span> sockaddr *
+<span class="enscript-function-name">dnssd_getaddrinfo_result_get_address</span>(dnssd_getaddrinfo_result_t me)
+{
+	<span class="enscript-keyword">return</span> &amp;me-&gt;addr.sa;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> *
+<span class="enscript-function-name">dnssd_getaddrinfo_result_get_hostname</span>(dnssd_getaddrinfo_result_t me)
+{
+	<span class="enscript-keyword">return</span> xpc_string_get_string_ptr(me-&gt;hostname);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+uint32_t
+<span class="enscript-function-name">dnssd_getaddrinfo_result_get_interface_index</span>(dnssd_getaddrinfo_result_t me)
+{
+	<span class="enscript-keyword">return</span> me-&gt;interface_index;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">const</span> <span class="enscript-type">void</span> *
+<span class="enscript-function-name">dnssd_getaddrinfo_result_get_authentication_tag</span>(dnssd_getaddrinfo_result_t me, size_t *out_length)
+{
+	<span class="enscript-type">const</span> <span class="enscript-type">void</span> *	auth_tag_ptr;
+	size_t			auth_tag_len;
+
+	<span class="enscript-keyword">if</span> (me-&gt;auth_tag) {
+		auth_tag_ptr = xpc_data_get_bytes_ptr(me-&gt;auth_tag);
+		auth_tag_len = xpc_data_get_length(me-&gt;auth_tag);
+	} <span class="enscript-keyword">else</span> {
+		auth_tag_ptr = NULL;
+		auth_tag_len = 0;
+	}
+	<span class="enscript-keyword">if</span> (out_length) {
+		*out_length = auth_tag_len;
+	}
+	<span class="enscript-keyword">return</span> auth_tag_ptr;
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd_getaddrinfo_result</span> <span class="enscript-variable-name">Private</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">char</span> *
+<span class="enscript-function-name">_dnssd_getaddrinfo_result_copy_description</span>(dnssd_getaddrinfo_result_t me, <span class="enscript-type">const</span> bool debug, <span class="enscript-type">const</span> bool privacy)
+{
+	<span class="enscript-type">const</span> <span class="enscript-type">char</span> *hostname;
+	<span class="enscript-keyword">if</span> (me-&gt;hostname) {
+		hostname = xpc_string_get_string_ptr(me-&gt;hostname);
+		<span class="enscript-keyword">if</span> (privacy &amp;&amp; hostname) {
+			hostname = DNSSD_REDACTED_HOSTNAME_STR;
+		}
+	} <span class="enscript-keyword">else</span> {
+		hostname = NULL;
+	}
+
+	<span class="enscript-type">const</span> <span class="enscript-type">char</span> *actual_hostname;
+	<span class="enscript-keyword">if</span> (me-&gt;actual_hostname) {
+		actual_hostname = xpc_string_get_string_ptr(me-&gt;actual_hostname);
+		<span class="enscript-keyword">if</span> (privacy &amp;&amp; actual_hostname) {
+			actual_hostname = DNSSD_REDACTED_ACTUAL_HOSTNAME_STR;
+		}
+	} <span class="enscript-keyword">else</span> {
+		actual_hostname = NULL;
+	}
+	<span class="enscript-type">char</span> addr_buf[INET6_ADDRSTRLEN];
+	check_compile_time_code(<span class="enscript-keyword">sizeof</span>(addr_buf) &gt;= INET_ADDRSTRLEN);
+	check_compile_time_code(<span class="enscript-keyword">sizeof</span>(addr_buf) &gt;= INET6_ADDRSTRLEN);
+
+	<span class="enscript-type">const</span> <span class="enscript-type">char</span> *addr;
+	<span class="enscript-keyword">if</span> (me-&gt;addr.sa.sa_family == AF_INET) {
+		<span class="enscript-keyword">if</span> (privacy) {
+			addr = DNSSD_REDACTED_IPv4_ADDRESS_STR;
+		} <span class="enscript-keyword">else</span> {
+			addr = inet_ntop(AF_INET, &amp;me-&gt;addr.v4.sin_addr.s_addr, addr_buf, (socklen_t)<span class="enscript-keyword">sizeof</span>(addr_buf));
+		}
+	} <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (me-&gt;addr.sa.sa_family == AF_INET6) {
+		<span class="enscript-keyword">if</span> (privacy) {
+			addr = DNSSD_REDACTED_IPv6_ADDRESS_STR;
+		} <span class="enscript-keyword">else</span> {
+			addr = inet_ntop(AF_INET6, me-&gt;addr.v6.sin6_addr.s6_addr, addr_buf, (socklen_t)<span class="enscript-keyword">sizeof</span>(addr_buf));
+		}
+	} <span class="enscript-keyword">else</span> {
+		addr = NULL;
+	}
+
+	<span class="enscript-type">char</span> *	desc	= NULL;
+	<span class="enscript-type">char</span> *	buf_ptr	= NULL;
+	size_t	buf_len	= 0;
+	<span class="enscript-keyword">for</span> (;;)
+	{
+		<span class="enscript-type">char</span> *			dst		= buf_ptr;
+		<span class="enscript-type">char</span> * <span class="enscript-type">const</span>	end		= &amp;buf_ptr[buf_len];
+		size_t			need	= 0;
+		<span class="enscript-type">int</span>				n;
+
+		<span class="enscript-keyword">if</span> (debug) {
+			<span class="enscript-type">const</span> size_t len = (size_t)(end - dst);
+			n = snprintf(dst, len, <span class="enscript-string">&quot;dnssd_%s (%p): &quot;</span>, me-&gt;base.kind-&gt;name, (<span class="enscript-type">void</span> *)me);
+			require_quiet(n &gt;= 0, exit);
+
+			<span class="enscript-keyword">if</span> (buf_ptr) {
+				dst = (((size_t)n) &lt; len) ? &amp;dst[n] : end;
+			} <span class="enscript-keyword">else</span> {
+				need += (size_t)n;
+			}
+		}
+		n = snprintf(dst, (size_t)(end - dst), <span class="enscript-string">&quot;[%s] %s (%s) -&gt; %s (interface index %lu)&quot;</span>,
+			dnssd_getaddrinfo_result_type_to_string(me-&gt;type), hostname ? hostname : <span class="enscript-string">&quot;&lt;NO HOSTNAME&gt;&quot;</span>,
+			actual_hostname ? actual_hostname : <span class="enscript-string">&quot;&lt;NO ACTUAL HOSTNAME&gt;&quot;</span>, addr ? addr : <span class="enscript-string">&quot;&lt;NO IP ADDRESS&gt;&quot;</span>,
+			(<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)me-&gt;interface_index);
+		require_quiet(n &gt;= 0, exit);
+
+		<span class="enscript-keyword">if</span> (!buf_ptr) {
+			need += (size_t)n;
+			buf_len = need + 1;
+			buf_ptr = malloc(buf_len);
+			require_quiet(buf_ptr, exit);
+		} <span class="enscript-keyword">else</span> {
+			<span class="enscript-keyword">break</span>;
+		}
+	}
+	desc	= buf_ptr;
+	buf_ptr	= NULL;
+
+<span class="enscript-reference">exit</span>:
+	FreeNullSafe(buf_ptr);
+	<span class="enscript-keyword">return</span> desc;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_result_finalize</span>(dnssd_getaddrinfo_result_t me)
+{
+	xpc_forget(&amp;me-&gt;hostname);
+	xpc_forget(&amp;me-&gt;actual_hostname);
+	xpc_forget(&amp;me-&gt;auth_tag);
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">dnssd</span> <span class="enscript-variable-name">Client</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> dnssd_getaddrinfo_t g_gai_list = NULL;
+
+<span class="enscript-type">static</span> dispatch_queue_t
+<span class="enscript-function-name">_dnssd_client_queue</span>(<span class="enscript-type">void</span>)
+{
+	<span class="enscript-type">static</span> dispatch_once_t	once	= 0;
+	<span class="enscript-type">static</span> dispatch_queue_t	queue	= NULL;
+
+	dispatch_once(&amp;once,
+	^{
+		dispatch_queue_attr_t <span class="enscript-type">const</span> attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
+			QOS_CLASS_UTILITY, 0);
+		queue = dispatch_queue_create(<span class="enscript-string">&quot;com.apple.dnssd.client&quot;</span>, attr);
+	});
+	<span class="enscript-keyword">return</span> queue;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_handle_message</span>(xpc_object_t msg);
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_handle_interruption</span>(<span class="enscript-type">void</span>);
+
+<span class="enscript-type">static</span> xpc_connection_t
+<span class="enscript-function-name">_dnssd_client_connection</span>(<span class="enscript-type">void</span>)
+{
+	<span class="enscript-type">static</span> dispatch_once_t	once		= 0;
+	<span class="enscript-type">static</span> xpc_connection_t	connection	= NULL;
+
+	dispatch_once(&amp;once,
+	^{
+		connection = xpc_connection_create_mach_service(DNSSD_MACH_SERVICE_NAME, _dnssd_client_queue(),
+			XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
+		xpc_connection_set_event_handler(connection,
+		^(xpc_object_t event)
+		{
+			<span class="enscript-keyword">if</span> (xpc_get_type(event) == XPC_TYPE_DICTIONARY) {
+				_dnssd_client_handle_message(event);
+			} <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (event == XPC_ERROR_CONNECTION_INTERRUPTED) {
+				_dnssd_client_handle_interruption();
+			}
+		});
+		xpc_connection_activate(connection);
+	});
+	<span class="enscript-keyword">return</span> connection;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_handle_message</span>(xpc_object_t msg)
+{
+	<span class="enscript-type">const</span> uint64_t command_id = dnssd_xpc_message_get_id(msg, NULL);
+	dnssd_getaddrinfo_t gai;
+	<span class="enscript-keyword">for</span> (gai = g_gai_list; gai; gai = gai-&gt;next) {
+		<span class="enscript-keyword">if</span> (gai-&gt;command_id == command_id) {
+			<span class="enscript-keyword">break</span>;
+		}
+	}
+	require_quiet(gai, exit);
+
+	<span class="enscript-type">const</span> OSStatus error = dnssd_xpc_message_get_error(msg, NULL);
+	<span class="enscript-keyword">if</span> (!error) {
+		xpc_object_t <span class="enscript-type">const</span> result_array = dnssd_xpc_message_get_results(msg);
+		require_quiet(result_array, exit);
+
+		dnssd_getaddrinfo_result_t				result_list	= NULL;
+		__block dnssd_getaddrinfo_result_t *	result_ptr	= &amp;result_list;
+		xpc_array_apply(result_array,
+		^bool(__unused size_t index, xpc_object_t result_dict)
+		{
+			dnssd_getaddrinfo_result_t result = _dnssd_getaddrinfo_result_create_from_dictionary(gai-&gt;hostname,
+				result_dict, NULL);
+			<span class="enscript-keyword">if</span> (result) {
+				*result_ptr	= result;
+				result_ptr	= &amp;result-&gt;next;
+			}
+			<span class="enscript-keyword">return</span> true;
+		});
+		require_quiet(result_list, exit);
+
+		_dnssd_getaddrinfo_append_results(gai, result_list);
+		result_list = NULL;
+	} <span class="enscript-keyword">else</span> {
+		_dnssd_client_fail_getaddrinfo(gai, error);
+	}
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span>;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_handle_interruption</span>(<span class="enscript-type">void</span>)
+{
+	dnssd_getaddrinfo_t next_gai;
+	<span class="enscript-keyword">for</span> (dnssd_getaddrinfo_t gai = g_gai_list; gai; gai = next_gai) {
+		next_gai = gai-&gt;next;
+		gai-&gt;state = dnssd_getaddrinfo_state_starting;
+		<span class="enscript-type">const</span> OSStatus err = _dnssd_client_send_getaddrinfo_command(gai);
+		<span class="enscript-keyword">if</span> (!err) {
+			_dnssd_getaddrinfo_remove_all_results(gai);
+		} <span class="enscript-keyword">else</span> {
+			_dnssd_client_fail_getaddrinfo(gai, err);
+		}
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> uint64_t
+<span class="enscript-function-name">_dnssd_client_get_new_id</span>(<span class="enscript-type">void</span>)
+{
+	<span class="enscript-type">static</span> uint64_t last_id = 0;
+	<span class="enscript-keyword">return</span> ++last_id;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_activate_getaddrinfo</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> OSStatus
+<span class="enscript-function-name">_dnssd_getaddrinfo_activate</span>(dnssd_getaddrinfo_t gai);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_activate_getaddrinfo_async</span>(dnssd_getaddrinfo_t gai)
+{
+	dnssd_retain(gai);
+	dispatch_async(_dnssd_client_queue(),
+	^{
+		_dnssd_client_activate_getaddrinfo(gai);
+		dnssd_release(gai);
+	});
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_activate_getaddrinfo</span>(dnssd_getaddrinfo_t gai)
+{
+	OSStatus err;
+	require_action_quiet(gai-&gt;state == dnssd_getaddrinfo_state_nascent, exit, err = kNoErr);
+
+	err = _dnssd_getaddrinfo_activate(gai);
+	<span class="enscript-keyword">if</span> (err) {
+		gai-&gt;state = dnssd_getaddrinfo_state_failed;
+		<span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+	}
+
+	gai-&gt;command_id = _dnssd_client_get_new_id();
+	gai-&gt;state = dnssd_getaddrinfo_state_starting;
+
+	_dnssd_client_register_getaddrinfo(gai);
+
+	err = _dnssd_client_send_getaddrinfo_command(gai);
+	<span class="enscript-keyword">if</span> (err) {
+		_dnssd_client_fail_getaddrinfo(gai, err);
+	}
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span>;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_process_events</span>(dnssd_getaddrinfo_t gai, <span class="enscript-type">unsigned</span> <span class="enscript-type">long</span> events);
+
+<span class="enscript-type">static</span> OSStatus
+<span class="enscript-function-name">_dnssd_getaddrinfo_activate</span>(dnssd_getaddrinfo_t me)
+{
+	OSStatus err;
+	xpc_object_t <span class="enscript-type">const</span> hostname = dnssd_xpc_parameters_get_hostname_object(me-&gt;params);
+	require_action_quiet(hostname, exit, err = kParamErr);
+
+	me-&gt;hostname = xpc_copy(hostname);
+	require_action_quiet(me-&gt;hostname, exit, err = kNoResourcesErr);
+
+	me-&gt;event_source = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_OR, 0, 0, me-&gt;user_queue);
+	require_action_quiet(me-&gt;event_source, exit, err = kNoResourcesErr);
+
+	dnssd_retain(me);
+	dispatch_source_t <span class="enscript-type">const</span> event_source = me-&gt;event_source;
+	dispatch_source_set_event_handler(me-&gt;event_source,
+	^{
+		_dnssd_getaddrinfo_process_events(me, dispatch_source_get_data(event_source));
+	});
+	dispatch_source_set_cancel_handler(me-&gt;event_source,
+	^{
+		dnssd_release(me);
+	});
+	dispatch_activate(me-&gt;event_source);
+	err = kNoErr;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">if</span> (err) {
+		dnssd_retain(me);
+		dispatch_async(me-&gt;user_queue,
+		^{
+			<span class="enscript-keyword">if</span> (me-&gt;event_handler) {
+				me-&gt;event_handler(dnssd_event_error, _dnssd_osstatus_to_dns_service_error(err));
+			}
+			dnssd_release(me);
+		});
+	}
+	<span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_getaddrinfo_process_events</span>(dnssd_getaddrinfo_t me, <span class="enscript-type">unsigned</span> <span class="enscript-type">long</span> events)
+{
+	<span class="enscript-keyword">if</span> (events &amp; DNSSD_EVENT_REMOVE_ALL) {
+		<span class="enscript-keyword">if</span> (me-&gt;event_handler) {
+			me-&gt;event_handler(dnssd_event_remove_all, kDNSServiceErr_NoError);
+		}
+	}
+
+	<span class="enscript-keyword">if</span> (events &amp; DNSSD_EVENT_HAVE_RESULTS) {
+		dnssd_getaddrinfo_result_t result;
+		dnssd_getaddrinfo_result_t result_array[32];
+		dnssd_getaddrinfo_result_t result_list = _dnssd_getaddrinfo_take_results(me);
+
+		size_t result_count = 0;
+		<span class="enscript-keyword">while</span> ((result = result_list) != NULL) {
+			result_list		= result-&gt;next;
+			result-&gt;next	= NULL;
+			result_array[result_count++] = result;
+
+			<span class="enscript-keyword">if</span> ((result_count == countof(result_array)) || !result_list) {
+				<span class="enscript-keyword">if</span> (me-&gt;result_handler) {
+					me-&gt;result_handler(result_array, result_count);
+				}
+				<span class="enscript-keyword">for</span> (size_t i = 0; i &lt; result_count; ++i) {
+					dnssd_release(result_array[i]);
+				}
+				result_count = 0;
+			}
+		}
+	}
+
+	<span class="enscript-keyword">if</span> (events &amp; DNSSD_EVENT_ERROR) {
+		__block OSStatus error;
+		dispatch_sync(me-&gt;mutex_queue,
+		^{
+			error = me-&gt;error;
+			me-&gt;error = kNoErr;
+		});
+		<span class="enscript-keyword">if</span> (me-&gt;event_handler &amp;&amp; error) {
+			me-&gt;event_handler(dnssd_event_error, _dnssd_osstatus_to_dns_service_error(error));
+		}
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_register_getaddrinfo</span>(dnssd_getaddrinfo_t gai)
+{
+	gai-&gt;next	= g_gai_list;
+	g_gai_list	= gai;
+	dnssd_retain(gai);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_deregister_getaddrinfo</span>(dnssd_getaddrinfo_t gai)
+{
+	dnssd_getaddrinfo_t *ptr;
+	<span class="enscript-keyword">for</span> (ptr = &amp;g_gai_list; *ptr; ptr = &amp;(*ptr)-&gt;next)
+	{
+		<span class="enscript-keyword">if</span> (*ptr == gai) {
+			<span class="enscript-keyword">break</span>;
+		}
+	}
+	<span class="enscript-keyword">if</span> (*ptr) {
+		*ptr = gai-&gt;next;
+		gai-&gt;next = NULL;
+		dnssd_release(gai);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_handle_getaddrinfo_reply</span>(dnssd_getaddrinfo_t gai, xpc_object_t reply);
+
+<span class="enscript-type">static</span> OSStatus
+<span class="enscript-function-name">_dnssd_client_send_getaddrinfo_command</span>(dnssd_getaddrinfo_t gai)
+{
+	OSStatus err;
+	xpc_object_t <span class="enscript-type">const</span> msg = xpc_dictionary_create(NULL, NULL, 0);
+	require_action_quiet(msg, exit, err = kNoResourcesErr);
+
+	dnssd_xpc_message_set_id(msg, gai-&gt;command_id);
+	dnssd_xpc_message_set_command(msg, DNSSD_COMMAND_GETADDRINFO);
+	dnssd_xpc_message_set_parameters(msg, gai-&gt;params);
+
+	dnssd_retain(gai);
+	xpc_connection_send_message_with_reply(_dnssd_client_connection(), msg, _dnssd_client_queue(),
+	^(xpc_object_t reply)
+	{
+		_dnssd_client_handle_getaddrinfo_reply(gai, reply);
+		dnssd_release(gai);
+	});
+	xpc_release(msg);
+	err = kNoErr;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_handle_getaddrinfo_reply</span>(dnssd_getaddrinfo_t gai, xpc_object_t reply)
+{
+	require_quiet(gai-&gt;state == dnssd_getaddrinfo_state_starting, exit);
+
+	<span class="enscript-keyword">if</span> (xpc_get_type(reply) == XPC_TYPE_DICTIONARY) {
+		<span class="enscript-type">const</span> OSStatus error = dnssd_xpc_message_get_error(reply, NULL);
+		<span class="enscript-keyword">if</span> (error) {
+			_dnssd_client_fail_getaddrinfo(gai, error);
+		} <span class="enscript-keyword">else</span> {
+			gai-&gt;state = dnssd_getaddrinfo_state_started;
+		}
+	} <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (reply != XPC_ERROR_CONNECTION_INTERRUPTED) {
+		OSStatus error;
+		<span class="enscript-keyword">if</span> (reply == XPC_ERROR_CONNECTION_INVALID) {
+			error = kDNSServiceErr_ServiceNotRunning;
+		} <span class="enscript-keyword">else</span> {
+			error = kDNSServiceErr_Unknown;
+		}
+		_dnssd_client_fail_getaddrinfo(gai, error);
+	}
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span>;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dnssd_client_fail_getaddrinfo</span>(dnssd_getaddrinfo_t gai, OSStatus error)
+{
+	_dnssd_client_deregister_getaddrinfo(gai);
+	gai-&gt;state = dnssd_getaddrinfo_state_failed;
+	_dnssd_getaddrinfo_post_error_event(gai, error);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span><span class="enscript-comment">//	_dnssd_getaddrinfo_result_create_from_dictionary
+</span><span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> bool
+<span class="enscript-function-name">_dnssd_extract_result_dict_values</span>(xpc_object_t result, xpc_object_t *out_hostname, DNSServiceErrorType *out_error,
+	DNSServiceFlags *out_flags, uint32_t *out_interface_index, uint16_t *out_type, uint16_t *out_class,
+	xpc_object_t *out_rdata, xpc_object_t *out_auth_tag);
+
+<span class="enscript-type">static</span> dnssd_getaddrinfo_result_t
+<span class="enscript-function-name">_dnssd_getaddrinfo_result_create</span>(dnssd_getaddrinfo_result_type_t type, xpc_object_t hostname,
+	xpc_object_t actual_hostname, <span class="enscript-type">int</span> addr_family, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *addr_data, uint32_t interface_index,
+	xpc_object_t auth_tag, OSStatus *out_error);
+
+<span class="enscript-type">static</span> dnssd_getaddrinfo_result_t
+<span class="enscript-function-name">_dnssd_getaddrinfo_result_create_from_dictionary</span>(xpc_object_t hostname, xpc_object_t result_dict, OSStatus *out_error)
+{
+	OSStatus					err;
+	xpc_object_t				actual_hostname, rdata, auth_tag;
+	DNSServiceErrorType			error;
+	DNSServiceFlags				flags;
+	uint32_t					interface_index;
+	uint16_t					rtype;
+	dnssd_getaddrinfo_result_t	result = NULL;
+
+	<span class="enscript-type">const</span> bool success = _dnssd_extract_result_dict_values(result_dict, &amp;actual_hostname, &amp;error, &amp;flags,
+		&amp;interface_index, &amp;rtype, NULL, &amp;rdata, &amp;auth_tag);
+	require_action_quiet(success, exit, err = kMalformedErr);
+
+	<span class="enscript-keyword">if</span> ((error != kDNSServiceErr_NoError) &amp;&amp;
+		(error != kDNSServiceErr_NoSuchRecord)) {
+		err = kUnexpectedErr;
+		<span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+	}
+	require_action_quiet((rtype == kDNSServiceType_A) || (rtype == kDNSServiceType_AAAA), exit, err = kTypeErr);
+
+	dnssd_getaddrinfo_result_type_t result_type;
+	<span class="enscript-keyword">if</span> (error == kDNSServiceErr_NoSuchRecord) {
+		result_type = dnssd_getaddrinfo_result_type_no_address;
+	} <span class="enscript-keyword">else</span> {
+		<span class="enscript-keyword">if</span> (flags &amp; kDNSServiceFlagsAdd) {
+			<span class="enscript-keyword">if</span> (flags &amp; kDNSServiceFlagsExpiredAnswer) {
+				result_type = dnssd_getaddrinfo_result_type_expired;
+			} <span class="enscript-keyword">else</span> {
+				result_type = dnssd_getaddrinfo_result_type_add;
+			}
+		} <span class="enscript-keyword">else</span> {
+			result_type = dnssd_getaddrinfo_result_type_remove;
+		}
+		<span class="enscript-keyword">if</span> (rtype == kDNSServiceType_A) {
+			require_action_quiet(xpc_data_get_length(rdata) == 4, exit, err = kMalformedErr);
+		} <span class="enscript-keyword">else</span> {
+			require_action_quiet(xpc_data_get_length(rdata) == 16, exit, err = kMalformedErr);
+		}
+	}
+	<span class="enscript-type">const</span> <span class="enscript-type">int</span> addr_family = (rtype == kDNSServiceType_A) ? AF_INET : AF_INET6;
+	result = _dnssd_getaddrinfo_result_create(result_type, hostname, actual_hostname, addr_family,
+		xpc_data_get_bytes_ptr(rdata), interface_index, auth_tag, &amp;err);
+	require_noerr_quiet(err, exit);
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">if</span> (err) {
+		dnssd_forget(&amp;result);
+	}
+	<span class="enscript-keyword">if</span> (out_error) {
+		*out_error = err;
+	}
+	<span class="enscript-keyword">return</span> result;
+}
+
+<span class="enscript-type">static</span> bool
+<span class="enscript-function-name">_dnssd_extract_result_dict_values</span>(xpc_object_t result, xpc_object_t *out_hostname, DNSServiceErrorType *out_error,
+	DNSServiceFlags *out_flags, uint32_t *out_interface_index, uint16_t *out_type, uint16_t *out_class,
+	xpc_object_t *out_rdata, xpc_object_t *out_auth_tag)
+{
+	bool result_is_valid = false;
+	xpc_object_t <span class="enscript-type">const</span> hostname = dnssd_xpc_result_get_record_name_object(result);
+	require_quiet(hostname, exit);
+
+	xpc_object_t <span class="enscript-type">const</span> rdata = dnssd_xpc_result_get_record_data_object(result);
+	require_quiet(rdata, exit);
+
+	<span class="enscript-keyword">if</span> (out_hostname) {
+		*out_hostname = hostname;
+	}
+	<span class="enscript-keyword">if</span> (out_error) {
+		*out_error = dnssd_xpc_result_get_error(result, NULL);
+	}
+	<span class="enscript-keyword">if</span> (out_flags) {
+		*out_flags = dnssd_xpc_result_get_flags(result, NULL);
+	}
+	<span class="enscript-keyword">if</span> (out_interface_index) {
+		*out_interface_index = dnssd_xpc_result_get_interface_index(result, NULL);
+	}
+	<span class="enscript-keyword">if</span> (out_type) {
+		*out_type = dnssd_xpc_result_get_record_type(result, NULL);
+	}
+	<span class="enscript-keyword">if</span> (out_class) {
+		*out_class = dnssd_xpc_result_get_record_class(result, NULL);
+	}
+	<span class="enscript-keyword">if</span> (out_rdata) {
+		*out_rdata = rdata;
+	}
+	<span class="enscript-keyword">if</span> (out_auth_tag) {
+		*out_auth_tag = dnssd_xpc_result_get_authentication_tag_object(result);
+	}
+	result_is_valid = true;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span> result_is_valid;
+}
+
+<span class="enscript-type">static</span> dnssd_getaddrinfo_result_t
+<span class="enscript-function-name">_dnssd_getaddrinfo_result_create</span>(dnssd_getaddrinfo_result_type_t type, xpc_object_t hostname,
+	xpc_object_t actual_hostname, <span class="enscript-type">int</span> addr_family, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *addr_data, uint32_t interface_index,
+	xpc_object_t auth_tag, OSStatus *out_error)
+{
+	OSStatus err;
+	dnssd_getaddrinfo_result_t result = NULL;
+	dnssd_getaddrinfo_result_t obj = _dnssd_getaddrinfo_result_alloc();
+	require_action_quiet(obj, exit, err = kNoMemoryErr);
+
+	<span class="enscript-keyword">switch</span> (type) {
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">dnssd_getaddrinfo_result_type_add</span>:
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">dnssd_getaddrinfo_result_type_remove</span>:
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">dnssd_getaddrinfo_result_type_no_address</span>:
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">dnssd_getaddrinfo_result_type_expired</span>:
+			<span class="enscript-keyword">break</span>;
+
+		<span class="enscript-reference">default</span>:
+			err = kTypeErr;
+			<span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+	}
+	obj-&gt;type				= type;
+	obj-&gt;interface_index	= interface_index;
+
+	require_action_quiet(xpc_get_type(hostname) == XPC_TYPE_STRING, exit, err = kTypeErr);
+
+	obj-&gt;hostname = xpc_copy(hostname);
+	require_action_quiet(obj-&gt;hostname, exit, err = kNoResourcesErr);
+
+	require_action_quiet(xpc_get_type(actual_hostname) == XPC_TYPE_STRING, exit, err = kTypeErr);
+
+	obj-&gt;actual_hostname = xpc_copy(actual_hostname);
+	require_action_quiet(obj-&gt;actual_hostname, exit, err = kNoResourcesErr);
+
+	require_action_quiet((addr_family == AF_INET) || (addr_family == AF_INET6), exit, err = kTypeErr);
+
+	<span class="enscript-keyword">if</span> (addr_family == AF_INET) {
+		obj-&gt;addr.sa.sa_family	= AF_INET;
+		obj-&gt;addr.v4.sin_len	= <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> sockaddr_in);
+		<span class="enscript-keyword">if</span> (obj-&gt;type != dnssd_getaddrinfo_result_type_no_address) {
+			memcpy(&amp;obj-&gt;addr.v4.sin_addr.s_addr, addr_data, 4);
+		}
+	} <span class="enscript-keyword">else</span> {
+		obj-&gt;addr.sa.sa_family	= AF_INET6;
+		obj-&gt;addr.v6.sin6_len	= <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> sockaddr_in6);
+		<span class="enscript-keyword">if</span> (obj-&gt;type != dnssd_getaddrinfo_result_type_no_address) {
+			memcpy(&amp;obj-&gt;addr.v6.sin6_addr.s6_addr, addr_data, 16);
+		}
+	}
+
+	<span class="enscript-keyword">if</span> (auth_tag) {
+		require_action_quiet(xpc_get_type(auth_tag) == XPC_TYPE_DATA, exit, err = kTypeErr);
+
+		obj-&gt;auth_tag = xpc_copy(auth_tag);
+		require_action_quiet(obj-&gt;auth_tag, exit, err = kNoResourcesErr);
+	}
+	result	= obj;
+	obj		= NULL;
+	err = kNoErr;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">if</span> (out_error) {
+		*out_error = err;
+	}
+	dnssd_release_null_safe(obj);
+	<span class="enscript-keyword">return</span> result;
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Misc</span>. <span class="enscript-variable-name">Helpers</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dnssd_osstatus_to_dns_service_error</span>(OSStatus error)
+{
+	<span class="enscript-keyword">switch</span> (error) {
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">kNoMemoryErr</span>:
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">kNoResourcesErr</span>:
+			error = kDNSServiceErr_NoMemory;
+			<span class="enscript-keyword">break</span>;
+
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">kParamErr</span>:
+			error = kDNSServiceErr_BadParam;
+			<span class="enscript-keyword">break</span>;
+
+		<span class="enscript-reference">default</span>:
+			<span class="enscript-keyword">if</span> ((error &gt;= kGenericErrorBase) &amp;&amp; (error &lt;= kGenericErrorEnd)) {
+				error = kDNSServiceErr_Unknown;
+			}
+			<span class="enscript-keyword">break</span>;
+	}
+	<span class="enscript-keyword">return</span> error;
+}
+</pre>
+<hr />
+</body></html>

@@ -1,0 +1,911 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>ClientRequests.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">ClientRequests.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="ClientRequests.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2018-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;ClientRequests.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;uDNS.h&quot;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">D2D</span>)
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;D2D.h&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">REACHABILITY_TRIGGER</span>)
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNREADY_INTERFACES</span>)
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;dispatch/dispatch.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/if.h&gt;</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">WEB_CONTENT_FILTER</span>)
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;WebFilterDNS/WebFilterDNS.h&gt;</span>
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">WCFIsServerRunning</span>(WCFConnection *conn) __attribute__((weak_import));
+<span class="enscript-type">int</span> <span class="enscript-function-name">WCFNameResolvesToAddr</span>(WCFConnection *conn, <span class="enscript-type">char</span>* domainName, <span class="enscript-type">struct</span> sockaddr* address, uid_t userid) __attribute__((weak_import));
+<span class="enscript-type">int</span> <span class="enscript-function-name">WCFNameResolvesToName</span>(WCFConnection *conn, <span class="enscript-type">char</span>* fromName, <span class="enscript-type">char</span>* toName, uid_t userid) __attribute__((weak_import));
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">RecordTypeIsAddress</span>(TYPE)   (((TYPE) == kDNSType_A) || ((TYPE) == kDNSType_AAAA))
+
+<span class="enscript-type">extern</span> mDNS mDNSStorage;
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNICAST_DOTLOCAL</span>)
+<span class="enscript-type">extern</span> domainname ActiveDirectoryPrimaryDomain;
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Normally we append search domains only for queries with a single label that are not fully qualified. This can be
+</span><span class="enscript-comment">// overridden to apply search domains for queries (that are not fully qualified) with any number of labels e.g., moon,
+</span><span class="enscript-comment">// moon.cs, moon.cs.be, etc. - Mohan
+</span>mDNSBool AlwaysAppendSearchDomains = mDNSfalse;
+
+<span class="enscript-comment">// Control enabling optimistic DNS - Phil
+</span>mDNSBool EnableAllowExpired = mDNStrue;
+
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpCreate</span>(QueryRecordOp **outOp);
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordOpFree</span>(QueryRecordOp *operation);
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpStart</span>(QueryRecordOp *inOp, mDNSu32 inReqID, <span class="enscript-type">const</span> domainname *inQName, mDNSu16 inQType,
+    mDNSu16 inQClass, mDNSInterfaceID inInterfaceID, mDNSs32 inServiceID, mDNSu32 inFlags, mDNSBool inAppendSearchDomains,
+    mDNSs32 inPID, <span class="enscript-type">const</span> mDNSu8 inUUID[UUID_SIZE], mDNSu32 inUID, QueryRecordResultHandler inResultHandler,
+    <span class="enscript-type">void</span> *inResultContext);
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordOpStop</span>(QueryRecordOp *op);
+mDNSlocal mDNSBool <span class="enscript-function-name">QueryRecordOpIsMulticast</span>(<span class="enscript-type">const</span> QueryRecordOp *op);
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordOpCallback</span>(mDNS *m, DNSQuestion *inQuestion, <span class="enscript-type">const</span> ResourceRecord *inAnswer,
+    QC_result inAddRecord);
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordOpResetHandler</span>(DNSQuestion *inQuestion);
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpStartQuestion</span>(QueryRecordOp *inOp, DNSQuestion *inQuestion);
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpStopQuestion</span>(DNSQuestion *inQuestion);
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpRestartUnicastQuestion</span>(QueryRecordOp *inOp, DNSQuestion *inQuestion,
+    <span class="enscript-type">const</span> domainname *inSearchDomain);
+mDNSlocal mStatus <span class="enscript-function-name">InterfaceIndexToInterfaceID</span>(mDNSu32 inInterfaceIndex, mDNSInterfaceID *outInterfaceID);
+mDNSlocal mDNSBool <span class="enscript-function-name">DomainNameIsSingleLabel</span>(<span class="enscript-type">const</span> domainname *inName);
+mDNSlocal mDNSBool <span class="enscript-function-name">StringEndsWithDot</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *inString);
+mDNSlocal <span class="enscript-type">const</span> domainname * <span class="enscript-function-name">NextSearchDomain</span>(QueryRecordOp *inOp);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNICAST_DOTLOCAL</span>)
+mDNSlocal mDNSBool <span class="enscript-function-name">DomainNameIsInSearchList</span>(<span class="enscript-type">const</span> domainname *domain, mDNSBool inExcludeLocal);
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">WEB_CONTENT_FILTER</span>)
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">NotifyWebContentFilter</span>(<span class="enscript-type">const</span> ResourceRecord *inAnswer, uid_t inUID);
+#<span class="enscript-reference">endif</span>
+
+mDNSexport mStatus <span class="enscript-function-name">GetAddrInfoClientRequestStart</span>(GetAddrInfoClientRequest *inRequest, mDNSu32 inReqID,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *inHostnameStr, mDNSu32 inInterfaceIndex, DNSServiceFlags inFlags, mDNSu32 inProtocols, mDNSs32 inPID,
+	<span class="enscript-type">const</span> mDNSu8 inUUID[UUID_SIZE], mDNSu32 inUID, QueryRecordResultHandler inResultHandler,
+    <span class="enscript-type">void</span> *inResultContext)
+{
+    mStatus             err;
+    domainname          hostname;
+    mDNSBool            appendSearchDomains;
+    mDNSInterfaceID     interfaceID;
+    DNSServiceFlags     flags;
+	mDNSs32				serviceID;
+
+    <span class="enscript-keyword">if</span> (!MakeDomainNameFromDNSNameString(&amp;hostname, inHostnameStr))
+    {
+        LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_DEFAULT,
+               <span class="enscript-string">&quot;[R%u] ERROR: bad hostname '&quot;</span> PRI_S <span class="enscript-string">&quot;'&quot;</span>, inReqID, inHostnameStr);
+        err = mStatus_BadParamErr;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (inProtocols &amp; ~(kDNSServiceProtocol_IPv4|kDNSServiceProtocol_IPv6))
+    {
+        err = mStatus_BadParamErr;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    flags = inFlags;
+    <span class="enscript-keyword">if</span> (!inProtocols)
+    {
+        flags |= kDNSServiceFlagsSuppressUnusable;
+        inRequest-&gt;protocols = kDNSServiceProtocol_IPv4 | kDNSServiceProtocol_IPv6;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        inRequest-&gt;protocols = inProtocols;
+    }
+
+    <span class="enscript-keyword">if</span> (flags &amp; kDNSServiceFlagsServiceIndex)
+    {
+        <span class="enscript-comment">// NOTE: kDNSServiceFlagsServiceIndex flag can only be set for DNSServiceGetAddrInfo()
+</span>        LogInfo(<span class="enscript-string">&quot;GetAddrInfoClientRequestStart: kDNSServiceFlagsServiceIndex is SET by the client&quot;</span>);
+
+        <span class="enscript-comment">// If kDNSServiceFlagsServiceIndex is SET, interpret the interfaceID as the serviceId and set the interfaceID to 0.
+</span>        serviceID	= (mDNSs32)inInterfaceIndex;
+        interfaceID	= mDNSNULL;
+    }
+	<span class="enscript-keyword">else</span>
+	{
+		serviceID = -1;
+        err = InterfaceIndexToInterfaceID(inInterfaceIndex, &amp;interfaceID);
+        <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+	}
+    inRequest-&gt;interfaceID = interfaceID;
+
+    <span class="enscript-keyword">if</span> (!StringEndsWithDot(inHostnameStr) &amp;&amp; (AlwaysAppendSearchDomains || DomainNameIsSingleLabel(&amp;hostname)))
+    {
+        appendSearchDomains = mDNStrue;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        appendSearchDomains = mDNSfalse;
+    }
+
+    <span class="enscript-keyword">if</span> (inRequest-&gt;protocols &amp; kDNSServiceProtocol_IPv6)
+    {
+        err = QueryRecordOpCreate(&amp;inRequest-&gt;op6);
+        <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+        err = QueryRecordOpStart(inRequest-&gt;op6, inReqID, &amp;hostname, kDNSType_AAAA, kDNSServiceClass_IN,
+            inRequest-&gt;interfaceID, serviceID, flags, appendSearchDomains, inPID, inUUID, inUID, inResultHandler,
+            inResultContext);
+        <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (inRequest-&gt;protocols &amp; kDNSServiceProtocol_IPv4)
+    {
+        err = QueryRecordOpCreate(&amp;inRequest-&gt;op4);
+        <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+        err = QueryRecordOpStart(inRequest-&gt;op4, inReqID, &amp;hostname, kDNSType_A, kDNSServiceClass_IN,
+            inRequest-&gt;interfaceID, serviceID, flags, appendSearchDomains, inPID, inUUID, inUID, inResultHandler,
+            inResultContext);
+        <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+    err = mStatus_NoError;
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">if</span> (err) GetAddrInfoClientRequestStop(inRequest);
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">GetAddrInfoClientRequestStop</span>(GetAddrInfoClientRequest *inRequest)
+{
+    <span class="enscript-keyword">if</span> (inRequest-&gt;op4) QueryRecordOpStop(inRequest-&gt;op4);
+    <span class="enscript-keyword">if</span> (inRequest-&gt;op6) QueryRecordOpStop(inRequest-&gt;op6);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">REACHABILITY_TRIGGER</span>)
+    {
+        <span class="enscript-type">const</span> QueryRecordOp * <span class="enscript-type">const</span>     op4 = inRequest-&gt;op4;
+        <span class="enscript-type">const</span> QueryRecordOp * <span class="enscript-type">const</span>     op6 = inRequest-&gt;op6;
+        <span class="enscript-type">const</span> DNSQuestion *             q4  = mDNSNULL;
+        <span class="enscript-type">const</span> DNSQuestion *             q6  = mDNSNULL;
+
+        <span class="enscript-keyword">if</span> (op4)
+        {
+            <span class="enscript-keyword">if</span> (op4-&gt;answered)
+            {
+                <span class="enscript-comment">// If we have a v4 answer and if we timed out prematurely before, provide a trigger to the upper layer so
+</span>                <span class="enscript-comment">// that it can retry questions if needed. - Mohan
+</span>                q4 = &amp;op4-&gt;q;
+            }
+            <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (op4-&gt;q.TimeoutQuestion)
+            {
+                <span class="enscript-comment">// If we are not delivering answers, we may be timing out prematurely. Note down the current state so that
+</span>                <span class="enscript-comment">// we know to retry when we see a valid response again. - Mohan
+</span>                mDNSPlatformUpdateDNSStatus(&amp;op4-&gt;q);
+            }
+        }
+        <span class="enscript-keyword">if</span> (op6)
+        {
+            <span class="enscript-keyword">if</span> (op6-&gt;answered)
+            {
+                q6 = &amp;op6-&gt;q;
+            }
+            <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (op6-&gt;q.TimeoutQuestion)
+            {
+                mDNSPlatformUpdateDNSStatus(&amp;op6-&gt;q);
+            }
+        }
+        mDNSPlatformTriggerDNSRetry(q4, q6);
+    }
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (inRequest-&gt;op4)
+    {
+        QueryRecordOpFree(inRequest-&gt;op4);
+        inRequest-&gt;op4 = mDNSNULL;
+    }
+    <span class="enscript-keyword">if</span> (inRequest-&gt;op6)
+    {
+        QueryRecordOpFree(inRequest-&gt;op6);
+        inRequest-&gt;op6 = mDNSNULL;
+    }
+}
+
+mDNSexport <span class="enscript-type">const</span> domainname * <span class="enscript-function-name">GetAddrInfoClientRequestGetQName</span>(<span class="enscript-type">const</span> GetAddrInfoClientRequest *inRequest)
+{
+    <span class="enscript-keyword">if</span> (inRequest-&gt;op4) <span class="enscript-keyword">return</span> &amp;inRequest-&gt;op4-&gt;q.qname;
+    <span class="enscript-keyword">if</span> (inRequest-&gt;op6) <span class="enscript-keyword">return</span> &amp;inRequest-&gt;op6-&gt;q.qname;
+    <span class="enscript-keyword">return</span> (<span class="enscript-type">const</span> domainname *)<span class="enscript-string">&quot;&quot;</span>;
+}
+
+mDNSexport mDNSBool <span class="enscript-function-name">GetAddrInfoClientRequestIsMulticast</span>(<span class="enscript-type">const</span> GetAddrInfoClientRequest *inRequest)
+{
+    <span class="enscript-keyword">if</span> ((inRequest-&gt;op4 &amp;&amp; QueryRecordOpIsMulticast(inRequest-&gt;op4)) ||
+        (inRequest-&gt;op6 &amp;&amp; QueryRecordOpIsMulticast(inRequest-&gt;op6)))
+    {
+        <span class="enscript-keyword">return</span> mDNStrue;
+    }
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">QueryRecordClientRequestStart</span>(QueryRecordClientRequest *inRequest, mDNSu32 inReqID,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *inQNameStr, mDNSu32 inInterfaceIndex, DNSServiceFlags inFlags, mDNSu16 inQType, mDNSu16 inQClass,
+    mDNSs32 inPID, mDNSu8 inUUID[UUID_SIZE], mDNSu32 inUID, QueryRecordResultHandler inResultHandler, <span class="enscript-type">void</span> *inResultContext)
+{
+    mStatus             err;
+    domainname          qname;
+    mDNSInterfaceID     interfaceID;
+    mDNSBool            appendSearchDomains;
+
+    err = InterfaceIndexToInterfaceID(inInterfaceIndex, &amp;interfaceID);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+    <span class="enscript-keyword">if</span> (!MakeDomainNameFromDNSNameString(&amp;qname, inQNameStr))
+    {
+        LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_DEFAULT,
+               <span class="enscript-string">&quot;[R%u] ERROR: bad domain name '&quot;</span> PRI_S <span class="enscript-string">&quot;'&quot;</span>, inReqID, inQNameStr);
+        err = mStatus_BadParamErr;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (RecordTypeIsAddress(inQType) &amp;&amp; !StringEndsWithDot(inQNameStr) &amp;&amp;
+        (AlwaysAppendSearchDomains || DomainNameIsSingleLabel(&amp;qname)))
+    {
+        appendSearchDomains = mDNStrue;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        appendSearchDomains = mDNSfalse;
+    }
+
+    err = QueryRecordOpStart(&amp;inRequest-&gt;op, inReqID, &amp;qname, inQType, inQClass, interfaceID, -1, inFlags,
+        appendSearchDomains, inPID, inUUID, inUID, inResultHandler, inResultContext);
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">if</span> (err) QueryRecordClientRequestStop(inRequest);
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordClientRequestStop</span>(QueryRecordClientRequest *inRequest)
+{
+    QueryRecordOpStop(&amp;inRequest-&gt;op);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">REACHABILITY_TRIGGER</span>)
+    <span class="enscript-keyword">if</span> (inRequest-&gt;op.answered)
+    {
+        DNSQuestion *v4q, *v6q;
+        <span class="enscript-comment">// If we are receiving positive answers, provide the hint to the upper layer. - Mohan
+</span>        v4q = (inRequest-&gt;op.q.qtype == kDNSType_A)    ? &amp;inRequest-&gt;op.q : mDNSNULL;
+        v6q = (inRequest-&gt;op.q.qtype == kDNSType_AAAA) ? &amp;inRequest-&gt;op.q : mDNSNULL;
+        mDNSPlatformTriggerDNSRetry(v4q, v6q);
+    }
+#<span class="enscript-reference">endif</span>
+}
+
+mDNSexport <span class="enscript-type">const</span> domainname * <span class="enscript-function-name">QueryRecordClientRequestGetQName</span>(<span class="enscript-type">const</span> QueryRecordClientRequest *inRequest)
+{
+    <span class="enscript-keyword">return</span> &amp;inRequest-&gt;op.q.qname;
+}
+
+mDNSexport mDNSu16 <span class="enscript-function-name">QueryRecordClientRequestGetType</span>(<span class="enscript-type">const</span> QueryRecordClientRequest *inRequest)
+{
+    <span class="enscript-keyword">return</span> inRequest-&gt;op.q.qtype;
+}
+
+mDNSexport mDNSBool <span class="enscript-function-name">QueryRecordClientRequestIsMulticast</span>(QueryRecordClientRequest *inRequest)
+{
+    <span class="enscript-keyword">return</span> (QueryRecordOpIsMulticast(&amp;inRequest-&gt;op) ? mDNStrue : mDNSfalse);
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpCreate</span>(QueryRecordOp **outOp)
+{
+    mStatus err;
+    QueryRecordOp *op;
+
+    op = (QueryRecordOp *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*op));
+    <span class="enscript-keyword">if</span> (!op)
+    {
+        err = mStatus_NoMemoryErr;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+    *outOp = op;
+    err = mStatus_NoError;
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordOpFree</span>(QueryRecordOp *operation)
+{
+    mDNSPlatformMemFree(operation);
+}
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">VALID_MSAD_SRV_TRANSPORT</span>(T) \
+    (SameDomainLabel((T)-&gt;c, (const mDNSu8 *)<span class="enscript-string">&quot;\x4_tcp&quot;</span>) || SameDomainLabel((T)-&gt;c, (const mDNSu8 *)<span class="enscript-string">&quot;\x4_udp&quot;</span>))
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">VALID_MSAD_SRV</span>(Q) ((Q)-&gt;qtype == kDNSType_SRV &amp;&amp; VALID_MSAD_SRV_TRANSPORT(SecondLabel(&amp;(Q)-&gt;qname)))
+
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpStart</span>(QueryRecordOp *inOp, mDNSu32 inReqID, <span class="enscript-type">const</span> domainname *inQName, mDNSu16 inQType,
+    mDNSu16 inQClass, mDNSInterfaceID inInterfaceID, mDNSs32 inServiceID, mDNSu32 inFlags, mDNSBool inAppendSearchDomains,
+    mDNSs32 inPID, <span class="enscript-type">const</span> mDNSu8 inUUID[UUID_SIZE], mDNSu32 inUID, QueryRecordResultHandler inResultHandler,
+    <span class="enscript-type">void</span> *inResultContext)
+{
+    mStatus                 err;
+    DNSQuestion * <span class="enscript-type">const</span>     q = &amp;inOp-&gt;q;
+    mDNSu32                 len;
+
+    <span class="enscript-comment">// Save the original qname.
+</span>
+    len = DomainNameLength(inQName);
+    inOp-&gt;qname = (domainname *) mDNSPlatformMemAllocate(len);
+    <span class="enscript-keyword">if</span> (!inOp-&gt;qname)
+    {
+        err = mStatus_NoMemoryErr;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+    mDNSPlatformMemCopy(inOp-&gt;qname, inQName, len);
+
+    inOp-&gt;interfaceID   = inInterfaceID;
+    inOp-&gt;reqID         = inReqID;
+    inOp-&gt;resultHandler = inResultHandler;
+    inOp-&gt;resultContext = inResultContext;
+
+    <span class="enscript-comment">// Set up DNSQuestion.
+</span>
+    <span class="enscript-keyword">if</span> (EnableAllowExpired &amp;&amp; (inFlags &amp; kDNSServiceFlagsAllowExpiredAnswers))
+    {
+        q-&gt;allowExpired = AllowExpired_AllowExpiredAnswers;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        q-&gt;allowExpired = AllowExpired_None;
+    }
+    q-&gt;ServiceID            = inServiceID;
+    q-&gt;InterfaceID          = inInterfaceID;
+    q-&gt;flags                = inFlags;
+    AssignDomainName(&amp;q-&gt;qname, inQName);
+    q-&gt;qtype                = inQType;
+    q-&gt;qclass               = inQClass;
+    q-&gt;LongLived            = (inFlags &amp; kDNSServiceFlagsLongLivedQuery)            ? mDNStrue : mDNSfalse;
+    q-&gt;ForceMCast           = (inFlags &amp; kDNSServiceFlagsForceMulticast)            ? mDNStrue : mDNSfalse;
+    q-&gt;ReturnIntermed       = (inFlags &amp; kDNSServiceFlagsReturnIntermediates)       ? mDNStrue : mDNSfalse;
+    q-&gt;SuppressUnusable     = (inFlags &amp; kDNSServiceFlagsSuppressUnusable)          ? mDNStrue : mDNSfalse;
+    q-&gt;TimeoutQuestion      = (inFlags &amp; kDNSServiceFlagsTimeout)                   ? mDNStrue : mDNSfalse;
+    q-&gt;UseBackgroundTraffic = (inFlags &amp; kDNSServiceFlagsBackgroundTrafficClass)    ? mDNStrue : mDNSfalse;
+    q-&gt;AppendSearchDomains  = inAppendSearchDomains;
+    q-&gt;InitialCacheMiss     = mDNSfalse;
+
+    <span class="enscript-comment">// Turn off dnssec validation for local domains and Question Types: RRSIG/ANY(ANY Type is not supported yet) - Mohan
+</span>
+    q-&gt;ValidationRequired = DNSSEC_VALIDATION_NONE;
+    <span class="enscript-keyword">if</span> (!IsLocalDomain(&amp;q-&gt;qname) &amp;&amp; (inQType != kDNSServiceType_RRSIG) &amp;&amp; (inQType != kDNSServiceType_ANY))
+    {
+        <span class="enscript-keyword">if</span> (inFlags &amp; kDNSServiceFlagsValidate)
+        {
+            q-&gt;ValidationRequired   = DNSSEC_VALIDATION_SECURE;
+            q-&gt;AppendSearchDomains  = mDNSfalse;
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (inFlags &amp; kDNSServiceFlagsValidateOptional)
+        {
+            q-&gt;ValidationRequired = DNSSEC_VALIDATION_SECURE_OPTIONAL;
+        }
+    }
+
+    q-&gt;pid              = inPID;
+    <span class="enscript-keyword">if</span> (inUUID) mDNSPlatformMemCopy(q-&gt;uuid, inUUID, UUID_SIZE);
+    q-&gt;euid             = inUID;
+    q-&gt;request_id       = inReqID;
+    q-&gt;QuestionCallback = QueryRecordOpCallback;
+    q-&gt;ResetHandler     = QueryRecordOpResetHandler;
+
+    <span class="enscript-comment">// For single label queries that are not fully qualified, look at /etc/hosts, cache and try search domains before trying
+</span>    <span class="enscript-comment">// them on the wire as a single label query. - Mohan
+</span>
+    <span class="enscript-keyword">if</span> (q-&gt;AppendSearchDomains &amp;&amp; DomainNameIsSingleLabel(inOp-&gt;qname)) q-&gt;InterfaceID = mDNSInterface_LocalOnly;
+    err = QueryRecordOpStartQuestion(inOp, q);
+    <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">D2D</span>)
+    <span class="enscript-keyword">if</span> (callExternalHelpers(q-&gt;InterfaceID, &amp;q-&gt;qname, q-&gt;flags))
+    {
+        external_start_browsing_for_service(q-&gt;InterfaceID, &amp;q-&gt;qname, q-&gt;qtype, q-&gt;flags);
+    }
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNICAST_DOTLOCAL</span>)
+    <span class="enscript-keyword">if</span> ((RecordTypeIsAddress(q-&gt;qtype) || VALID_MSAD_SRV(&amp;inOp-&gt;q)) &amp;&amp; !q-&gt;ForceMCast &amp;&amp;
+        SameDomainLabel(LastLabel(&amp;q-&gt;qname), (<span class="enscript-type">const</span> mDNSu8 *)&amp;localdomain))
+    {
+        DNSQuestion *       q2;
+
+        q2 = (DNSQuestion *) mDNSPlatformMemAllocate((mDNSu32)<span class="enscript-keyword">sizeof</span>(*inOp-&gt;q2));
+        <span class="enscript-keyword">if</span> (!q2)
+        {
+            err = mStatus_NoMemoryErr;
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+        }
+        inOp-&gt;q2 = q2;
+
+        *q2 = *q;
+        q2-&gt;IsUnicastDotLocal = mDNStrue;
+
+        <span class="enscript-keyword">if</span> ((CountLabels(&amp;q2-&gt;qname) == 2) &amp;&amp; !SameDomainName(&amp;q2-&gt;qname, &amp;ActiveDirectoryPrimaryDomain)
+            &amp;&amp; !DomainNameIsInSearchList(&amp;q2-&gt;qname, mDNSfalse))
+        {
+            inOp-&gt;q2Type                = q2-&gt;qtype;
+            inOp-&gt;q2LongLived           = q2-&gt;LongLived;
+            inOp-&gt;q2ReturnIntermed      = q2-&gt;ReturnIntermed;
+            inOp-&gt;q2TimeoutQuestion     = q2-&gt;TimeoutQuestion;
+            inOp-&gt;q2AppendSearchDomains = q2-&gt;AppendSearchDomains;
+
+            AssignDomainName(&amp;q2-&gt;qname, &amp;localdomain);
+            q2-&gt;qtype                   = kDNSType_SOA;
+            q2-&gt;LongLived               = mDNSfalse;
+            q2-&gt;ReturnIntermed          = mDNStrue;
+            q2-&gt;TimeoutQuestion         = mDNSfalse;
+            q2-&gt;AppendSearchDomains     = mDNSfalse;
+        }
+
+        LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_INFO,
+               <span class="enscript-string">&quot;[R%u] QueryRecordOpStart: starting parallel unicast query for &quot;</span> PRI_DM_NAME <span class="enscript-string">&quot; &quot;</span> PUB_S,
+               inOp-&gt;reqID, DM_NAME_PARAM(q2-&gt;qname.c), DNSTypeName(q2-&gt;qtype));
+
+        err = QueryRecordOpStartQuestion(inOp, q2);
+        <span class="enscript-keyword">if</span> (err) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+#<span class="enscript-reference">endif</span>
+    err = mStatus_NoError;
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">if</span> (err) QueryRecordOpStop(inOp);
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordOpStop</span>(QueryRecordOp *op)
+{
+    <span class="enscript-keyword">if</span> (op-&gt;q.QuestionContext)
+    {
+        QueryRecordOpStopQuestion(&amp;op-&gt;q);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">D2D</span>)
+        <span class="enscript-keyword">if</span> (callExternalHelpers(op-&gt;q.InterfaceID, op-&gt;qname, op-&gt;q.flags))
+        {
+            external_stop_browsing_for_service(op-&gt;q.InterfaceID, &amp;op-&gt;q.qname, op-&gt;q.qtype, op-&gt;q.flags);
+        }
+#<span class="enscript-reference">endif</span>
+    }
+    <span class="enscript-keyword">if</span> (op-&gt;qname)
+    {
+        mDNSPlatformMemFree(op-&gt;qname);
+        op-&gt;qname = mDNSNULL;
+    }
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNICAST_DOTLOCAL</span>)
+    <span class="enscript-keyword">if</span> (op-&gt;q2)
+    {
+        <span class="enscript-keyword">if</span> (op-&gt;q2-&gt;QuestionContext) QueryRecordOpStopQuestion(op-&gt;q2);
+        mDNSPlatformMemFree(op-&gt;q2);
+        op-&gt;q2 = mDNSNULL;
+    }
+#<span class="enscript-reference">endif</span>
+}
+
+mDNSlocal mDNSBool <span class="enscript-function-name">QueryRecordOpIsMulticast</span>(<span class="enscript-type">const</span> QueryRecordOp *op)
+{
+    <span class="enscript-keyword">return</span> ((mDNSOpaque16IsZero(op-&gt;q.TargetQID) &amp;&amp; (op-&gt;q.ThisQInterval &gt; 0)) ? mDNStrue : mDNSfalse);
+}
+
+<span class="enscript-comment">// GetTimeNow is a callback-safe alternative to mDNS_TimeNow(), which expects to be called with m-&gt;mDNS_busy == 0.
+</span>mDNSlocal mDNSs32 <span class="enscript-function-name">GetTimeNow</span>(mDNS *m)
+{
+    mDNSs32 time;
+    mDNS_Lock(m);
+    time = m-&gt;timenow;
+    mDNS_Unlock(m);
+    <span class="enscript-keyword">return</span> time;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordOpCallback</span>(mDNS *m, DNSQuestion *inQuestion, <span class="enscript-type">const</span> ResourceRecord *inAnswer, QC_result inAddRecord)
+{
+    mStatus                     resultErr;
+    QueryRecordOp *<span class="enscript-type">const</span>        op = (QueryRecordOp *)inQuestion-&gt;QuestionContext;
+    <span class="enscript-type">const</span> domainname *          domain;
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNICAST_DOTLOCAL</span>)
+    <span class="enscript-keyword">if</span> ((inQuestion == op-&gt;q2) &amp;&amp; (inQuestion-&gt;qtype == kDNSType_SOA))
+    {
+        DNSQuestion * <span class="enscript-type">const</span>     q2 = op-&gt;q2;
+
+        <span class="enscript-keyword">if</span> (inAnswer-&gt;rrtype != kDNSType_SOA) <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+        QueryRecordOpStopQuestion(q2);
+
+        <span class="enscript-comment">// Restore DNSQuestion variables that were modified for the SOA query.
+</span>
+        q2-&gt;qtype               = op-&gt;q2Type;
+        q2-&gt;LongLived           = op-&gt;q2LongLived;
+        q2-&gt;ReturnIntermed      = op-&gt;q2ReturnIntermed;
+        q2-&gt;TimeoutQuestion     = op-&gt;q2TimeoutQuestion;
+        q2-&gt;AppendSearchDomains = op-&gt;q2AppendSearchDomains;
+
+        <span class="enscript-keyword">if</span> (inAnswer-&gt;RecordType != kDNSRecordTypePacketNegative)
+        {
+            QueryRecordOpRestartUnicastQuestion(op, q2, mDNSNULL);
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (q2-&gt;AppendSearchDomains)
+        {
+            domain = NextSearchDomain(op);
+            <span class="enscript-keyword">if</span> (domain) QueryRecordOpRestartUnicastQuestion(op, q2, domain);
+        }
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+    }
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (inAddRecord == QC_suppressed)
+    {
+        LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_DEBUG,
+               <span class="enscript-string">&quot;[R%u] QueryRecordOpCallback: Suppressed question &quot;</span> PRI_DM_NAME <span class="enscript-string">&quot; (&quot;</span> PUB_S <span class="enscript-string">&quot;)&quot;</span>,
+               op-&gt;reqID, DM_NAME_PARAM(inQuestion-&gt;qname.c), DNSTypeName(inQuestion-&gt;qtype));
+
+        resultErr = kDNSServiceErr_NoSuchRecord;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (inAnswer-&gt;RecordType == kDNSRecordTypePacketNegative)
+    {
+        <span class="enscript-keyword">if</span> (inQuestion-&gt;TimeoutQuestion &amp;&amp; ((GetTimeNow(m) - inQuestion-&gt;StopTime) &gt;= 0))
+        {
+            LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_INFO,
+                   <span class="enscript-string">&quot;[R%u] QueryRecordOpCallback: Question &quot;</span> PRI_DM_NAME <span class="enscript-string">&quot; (&quot;</span> PUB_S <span class="enscript-string">&quot;) timing out, InterfaceID %p&quot;</span>,
+                   op-&gt;reqID, DM_NAME_PARAM(inQuestion-&gt;qname.c), DNSTypeName(inQuestion-&gt;qtype),
+                   inQuestion-&gt;InterfaceID);
+            resultErr = kDNSServiceErr_Timeout;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-keyword">if</span> (inQuestion-&gt;AppendSearchDomains &amp;&amp; (op-&gt;searchListIndex &gt;= 0) &amp;&amp; inAddRecord &amp;&amp; (inAddRecord != QC_dnssec))
+            {
+                domain = NextSearchDomain(op);
+                <span class="enscript-keyword">if</span> (domain || DomainNameIsSingleLabel(op-&gt;qname))
+                {
+                    QueryRecordOpStopQuestion(inQuestion);
+                    QueryRecordOpRestartUnicastQuestion(op, inQuestion, domain);
+                    <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+                }
+            }
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNICAST_DOTLOCAL</span>)
+            <span class="enscript-keyword">if</span> (!inAnswer-&gt;InterfaceID &amp;&amp; IsLocalDomain(inAnswer-&gt;name))
+            {
+                <span class="enscript-keyword">if</span> ((RecordTypeIsAddress(inQuestion-&gt;qtype) &amp;&amp;
+                    (inAnswer-&gt;negativeRecordType == kNegativeRecordType_NoData)) ||
+                    DomainNameIsInSearchList(&amp;inQuestion-&gt;qname, mDNStrue))
+                {
+                    LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_INFO,
+                           <span class="enscript-string">&quot;[R%u] QueryRecordOpCallback: Question &quot;</span> PRI_DM_NAME <span class="enscript-string">&quot; (&quot;</span> PUB_S <span class="enscript-string">&quot;) answering local with negative unicast response&quot;</span>,
+                           op-&gt;reqID, DM_NAME_PARAM(inQuestion-&gt;qname.c), DNSTypeName(inQuestion-&gt;qtype));
+                }
+                <span class="enscript-keyword">else</span>
+                {
+                    <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+                }
+            }
+#<span class="enscript-reference">endif</span>
+            resultErr = kDNSServiceErr_NoSuchRecord;
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        resultErr = kDNSServiceErr_NoError;
+    }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">REACHABILITY_TRIGGER</span>)
+    <span class="enscript-keyword">if</span> ((resultErr != kDNSServiceErr_Timeout) &amp;&amp; (inAddRecord == QC_add))
+    {
+        op-&gt;answered = mDNStrue;
+    }
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (op-&gt;resultHandler) op-&gt;resultHandler(m, inQuestion, inAnswer, inAddRecord, resultErr, op-&gt;resultContext);
+    <span class="enscript-keyword">if</span> (resultErr == kDNSServiceErr_Timeout) QueryRecordOpStopQuestion(inQuestion);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">WEB_CONTENT_FILTER</span>)
+	NotifyWebContentFilter(inAnswer, inQuestion-&gt;euid);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">return</span>;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">QueryRecordOpResetHandler</span>(DNSQuestion *inQuestion)
+{
+    QueryRecordOp *<span class="enscript-type">const</span>        op = (QueryRecordOp *)inQuestion-&gt;QuestionContext;
+
+    AssignDomainName(&amp;inQuestion-&gt;qname, op-&gt;qname);
+    <span class="enscript-keyword">if</span> (inQuestion-&gt;AppendSearchDomains &amp;&amp; DomainNameIsSingleLabel(op-&gt;qname))
+    {
+        inQuestion-&gt;InterfaceID = mDNSInterface_LocalOnly;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        inQuestion-&gt;InterfaceID = op-&gt;interfaceID;
+    }
+    op-&gt;searchListIndex = 0;
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpStartQuestion</span>(QueryRecordOp *inOp, DNSQuestion *inQuestion)
+{
+    mStatus     err;
+
+    inQuestion-&gt;QuestionContext = inOp;
+    err = mDNS_StartQuery(&amp;mDNSStorage, inQuestion);
+    <span class="enscript-keyword">if</span> (err)
+    {
+        LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_DEFAULT,
+               <span class="enscript-string">&quot;[R%u] ERROR: QueryRecordOpStartQuestion mDNS_StartQuery for &quot;</span> PRI_DM_NAME <span class="enscript-string">&quot; &quot;</span> PUB_S <span class="enscript-string">&quot; failed with error %d&quot;</span>,
+               inOp-&gt;reqID, DM_NAME_PARAM(inQuestion-&gt;qname.c), DNSTypeName(inQuestion-&gt;qtype), err);
+        inQuestion-&gt;QuestionContext = mDNSNULL;
+    }
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpStopQuestion</span>(DNSQuestion *inQuestion)
+{
+    mStatus     err;
+
+    err = mDNS_StopQuery(&amp;mDNSStorage, inQuestion);
+    inQuestion-&gt;QuestionContext = mDNSNULL;
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">QueryRecordOpRestartUnicastQuestion</span>(QueryRecordOp *inOp, DNSQuestion *inQuestion,
+    <span class="enscript-type">const</span> domainname *inSearchDomain)
+{
+    mStatus     err;
+
+    inQuestion-&gt;InterfaceID = inOp-&gt;interfaceID;
+    AssignDomainName(&amp;inQuestion-&gt;qname, inOp-&gt;qname);
+    <span class="enscript-keyword">if</span> (inSearchDomain) AppendDomainName(&amp;inQuestion-&gt;qname, inSearchDomain);
+    <span class="enscript-keyword">if</span> (SameDomainLabel(LastLabel(&amp;inQuestion-&gt;qname), (<span class="enscript-type">const</span> mDNSu8 *)&amp;localdomain))
+    {
+        inQuestion-&gt;IsUnicastDotLocal = mDNStrue;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        inQuestion-&gt;IsUnicastDotLocal = mDNSfalse;
+    }
+    err = QueryRecordOpStartQuestion(inOp, inQuestion);
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">InterfaceIndexToInterfaceID</span>(mDNSu32 inInterfaceIndex, mDNSInterfaceID *outInterfaceID)
+{
+    mStatus             err;
+    mDNSInterfaceID     interfaceID;
+
+    interfaceID = mDNSPlatformInterfaceIDfromInterfaceIndex(&amp;mDNSStorage, inInterfaceIndex);
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNREADY_INTERFACES</span>)
+    <span class="enscript-comment">// The request is scoped to a specific interface index, but the interface is not currently in our list.
+</span>    <span class="enscript-keyword">if</span> ((inInterfaceIndex != kDNSServiceInterfaceIndexAny) &amp;&amp; (interfaceID == mDNSInterface_Any))
+    {
+        <span class="enscript-type">static</span> dispatch_once_t      getLoopbackIndexOnce = 0;
+        <span class="enscript-type">static</span> mDNSu32              loopbackIndex = 0;
+
+        dispatch_once(&amp;getLoopbackIndexOnce,
+        ^{
+            loopbackIndex = if_nametoindex(<span class="enscript-string">&quot;lo0&quot;</span>);
+        });
+
+        <span class="enscript-comment">// If it's one of the specially defined inteface index values, just return an error. Also, caller should return an
+</span>        <span class="enscript-comment">// error immediately if lo0 is not configured into the current active interfaces. See &lt;rdar://problem/21967160&gt;.
+</span>        <span class="enscript-keyword">if</span> ((inInterfaceIndex == kDNSServiceInterfaceIndexLocalOnly) ||
+            (inInterfaceIndex == kDNSServiceInterfaceIndexUnicast)   ||
+            (inInterfaceIndex == kDNSServiceInterfaceIndexP2P)       ||
+            (inInterfaceIndex == kDNSServiceInterfaceIndexBLE)       ||
+            (inInterfaceIndex == loopbackIndex))
+        {
+            LogInfo(<span class="enscript-string">&quot;ERROR: bad interfaceIndex %d&quot;</span>, inInterfaceIndex);
+            err = mStatus_BadParamErr;
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+        }
+
+        <span class="enscript-comment">// Otherwise, use the specified interface index value and the request will be applied to that interface when it
+</span>        <span class="enscript-comment">// comes up.
+</span>        interfaceID = (mDNSInterfaceID)(uintptr_t)inInterfaceIndex;
+        LogInfo(<span class="enscript-string">&quot;Query pending for interface index %d&quot;</span>, inInterfaceIndex);
+    }
+#<span class="enscript-reference">endif</span>
+
+    *outInterfaceID = interfaceID;
+    err = mStatus_NoError;
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNREADY_INTERFACES</span>)
+<span class="enscript-reference">exit</span>:
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSlocal mDNSBool <span class="enscript-function-name">DomainNameIsSingleLabel</span>(<span class="enscript-type">const</span> domainname *inName)
+{
+    <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span>     label = inName-&gt;c;
+    <span class="enscript-keyword">return</span> (((label[0] != 0) &amp;&amp; (label[1 + label[0]] == 0)) ? mDNStrue : mDNSfalse);
+}
+
+mDNSlocal mDNSBool <span class="enscript-function-name">StringEndsWithDot</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *inString)
+{
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *        ptr;
+    mDNSu32             escapeCount;
+    mDNSBool            result;
+
+    <span class="enscript-comment">// Loop invariant: escapeCount is the number of consecutive escape characters that immediately precede *ptr.
+</span>    <span class="enscript-comment">// - If escapeCount is even, then *ptr is immediately preceded by escapeCount / 2 consecutive literal backslash
+</span>    <span class="enscript-comment">//   characters, so *ptr is not escaped.
+</span>    <span class="enscript-comment">// - If escapeCount is odd, then *ptr is immediately preceded by (escapeCount - 1) / 2 consecutive literal backslash
+</span>    <span class="enscript-comment">//   characters followed by an escape character, so *ptr is escaped.
+</span>    escapeCount = 0;
+    result = mDNSfalse;
+    <span class="enscript-keyword">for</span> (ptr = inString; *ptr != <span class="enscript-string">'\0'</span>; ptr++)
+    {
+        <span class="enscript-keyword">if</span> (*ptr == <span class="enscript-string">'\\'</span>)
+        {
+            escapeCount++;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-keyword">if</span> ((*ptr == <span class="enscript-string">'.'</span>) &amp;&amp; (ptr[1] == <span class="enscript-string">'\0'</span>))
+            {
+                <span class="enscript-keyword">if</span> ((escapeCount % 2) == 0) result = mDNStrue;
+                <span class="enscript-keyword">break</span>;
+            }
+            escapeCount = 0;
+        }
+    }
+    <span class="enscript-keyword">return</span> result;
+}
+
+mDNSlocal <span class="enscript-type">const</span> domainname * <span class="enscript-function-name">NextSearchDomain</span>(QueryRecordOp *inOp)
+{
+    <span class="enscript-type">const</span> domainname *      domain;
+
+    <span class="enscript-keyword">while</span> ((domain = uDNS_GetNextSearchDomain(inOp-&gt;interfaceID, &amp;inOp-&gt;searchListIndex, mDNSfalse)) != mDNSNULL)
+    {
+        <span class="enscript-keyword">if</span> ((DomainNameLength(inOp-&gt;qname) - 1 + DomainNameLength(domain)) &lt;= MAX_DOMAIN_NAME) <span class="enscript-keyword">break</span>;
+    }
+    <span class="enscript-keyword">if</span> (!domain) inOp-&gt;searchListIndex = -1;
+    <span class="enscript-keyword">return</span> domain;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">UNICAST_DOTLOCAL</span>)
+mDNSlocal mDNSBool <span class="enscript-function-name">DomainNameIsInSearchList</span>(<span class="enscript-type">const</span> domainname *inName, mDNSBool inExcludeLocal)
+{
+    <span class="enscript-type">const</span> SearchListElem *      item;
+    <span class="enscript-type">int</span>                         labelCount, domainLabelCount;
+
+    labelCount = CountLabels(inName);
+    <span class="enscript-keyword">for</span> (item = SearchList; item; item = item-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (inExcludeLocal &amp;&amp; SameDomainName(&amp;item-&gt;domain, &amp;localdomain)) <span class="enscript-keyword">continue</span>;
+        domainLabelCount = CountLabels(&amp;item-&gt;domain);
+        <span class="enscript-keyword">if</span> (labelCount &gt;= domainLabelCount)
+        {
+            <span class="enscript-keyword">if</span> (SameDomainName(&amp;item-&gt;domain, SkipLeadingLabels(inName, (labelCount - domainLabelCount))))
+            {
+                <span class="enscript-keyword">return</span> mDNStrue;
+            }
+        }
+    }
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">WEB_CONTENT_FILTER</span>)
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">NotifyWebContentFilter</span>(<span class="enscript-type">const</span> ResourceRecord *inAnswer, uid_t inUID)
+{
+    <span class="enscript-keyword">if</span> (WCFIsServerRunning)
+    {
+		<span class="enscript-type">const</span> mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+
+        <span class="enscript-keyword">if</span> (WCFIsServerRunning(m-&gt;WCF) &amp;&amp; inAnswer-&gt;rdlength != 0)
+        {
+			<span class="enscript-type">struct</span> sockaddr_storage addr;
+			addr.ss_len = 0;
+			<span class="enscript-keyword">if</span> (inAnswer-&gt;rrtype == kDNSType_A || inAnswer-&gt;rrtype == kDNSType_AAAA)
+			{
+				<span class="enscript-keyword">if</span> (inAnswer-&gt;rrtype == kDNSType_A)
+				{
+					<span class="enscript-type">struct</span> sockaddr_in *<span class="enscript-type">const</span> sin = (<span class="enscript-type">struct</span> sockaddr_in *)&amp;addr;
+					sin-&gt;sin_port = 0;
+					<span class="enscript-comment">// Instead of this stupid call to putRData it would be much simpler to just assign the value in the sensible way, like this:
+</span>					<span class="enscript-comment">// sin-&gt;sin_addr.s_addr = inAnswer-&gt;rdata-&gt;u.ipv4.NotAnInteger;
+</span>					<span class="enscript-keyword">if</span> (!putRData(mDNSNULL, (mDNSu8 *)&amp;sin-&gt;sin_addr, (mDNSu8 *)(&amp;sin-&gt;sin_addr + <span class="enscript-keyword">sizeof</span>(mDNSv4Addr)), inAnswer))
+						LogMsg(<span class="enscript-string">&quot;NotifyWebContentFilter: WCF AF_INET putRData failed&quot;</span>);
+					<span class="enscript-keyword">else</span>
+					{
+						addr.ss_len = <span class="enscript-keyword">sizeof</span> (<span class="enscript-type">struct</span> sockaddr_in);
+						addr.ss_family = AF_INET;
+					}
+				}
+				<span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (inAnswer-&gt;rrtype == kDNSType_AAAA)
+				{
+					<span class="enscript-type">struct</span> sockaddr_in6 *<span class="enscript-type">const</span> sin6 = (<span class="enscript-type">struct</span> sockaddr_in6 *)&amp;addr;
+					sin6-&gt;sin6_port = 0;
+					<span class="enscript-comment">// Instead of this stupid call to putRData it would be much simpler to just assign the value in the sensible way, like this:
+</span>					<span class="enscript-comment">// sin6-&gt;sin6_addr.__u6_addr.__u6_addr32[0] = inAnswer-&gt;rdata-&gt;u.ipv6.l[0];
+</span>					<span class="enscript-comment">// sin6-&gt;sin6_addr.__u6_addr.__u6_addr32[1] = inAnswer-&gt;rdata-&gt;u.ipv6.l[1];
+</span>					<span class="enscript-comment">// sin6-&gt;sin6_addr.__u6_addr.__u6_addr32[2] = inAnswer-&gt;rdata-&gt;u.ipv6.l[2];
+</span>					<span class="enscript-comment">// sin6-&gt;sin6_addr.__u6_addr.__u6_addr32[3] = inAnswer-&gt;rdata-&gt;u.ipv6.l[3];
+</span>					<span class="enscript-keyword">if</span> (!putRData(mDNSNULL, (mDNSu8 *)&amp;sin6-&gt;sin6_addr, (mDNSu8 *)(&amp;sin6-&gt;sin6_addr + <span class="enscript-keyword">sizeof</span>(mDNSv6Addr)), inAnswer))
+						LogMsg(<span class="enscript-string">&quot;NotifyWebContentFilter: WCF AF_INET6 putRData failed&quot;</span>);
+					<span class="enscript-keyword">else</span>
+					{
+						addr.ss_len = <span class="enscript-keyword">sizeof</span> (<span class="enscript-type">struct</span> sockaddr_in6);
+						addr.ss_family = AF_INET6;
+					}
+				}
+				<span class="enscript-keyword">if</span> (addr.ss_len)
+				{
+        			<span class="enscript-type">char</span> name[MAX_ESCAPED_DOMAIN_NAME];
+        			ConvertDomainNameToCString(inAnswer-&gt;name, name);
+
+					debugf(<span class="enscript-string">&quot;NotifyWebContentFilter: Name %s, uid %u, addr length %d&quot;</span>, name, inUID, addr.ss_len);
+					<span class="enscript-keyword">if</span> (WCFNameResolvesToAddr)
+					{
+						WCFNameResolvesToAddr(m-&gt;WCF, name, (<span class="enscript-type">struct</span> sockaddr *)&amp;addr, inUID);
+					}
+				}
+			}
+			<span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (inAnswer-&gt;rrtype == kDNSType_CNAME)
+			{
+				domainname cname;
+        		<span class="enscript-type">char</span> name[MAX_ESCAPED_DOMAIN_NAME];
+				<span class="enscript-type">char</span> cname_cstr[MAX_ESCAPED_DOMAIN_NAME];
+
+				<span class="enscript-keyword">if</span> (!putRData(mDNSNULL, cname.c, (mDNSu8 *)(cname.c + MAX_DOMAIN_NAME), inAnswer))
+					LogMsg(<span class="enscript-string">&quot;NotifyWebContentFilter: WCF CNAME putRData failed&quot;</span>);
+				<span class="enscript-keyword">else</span>
+				{
+        			ConvertDomainNameToCString(inAnswer-&gt;name, name);
+					ConvertDomainNameToCString(&amp;cname, cname_cstr);
+					<span class="enscript-keyword">if</span> (WCFNameResolvesToAddr)
+					{
+						WCFNameResolvesToName(m-&gt;WCF, name, cname_cstr, inUID);
+					}
+				}
+			}
+        }
+    }
+}
+#<span class="enscript-reference">endif</span>
+</pre>
+<hr />
+</body></html>

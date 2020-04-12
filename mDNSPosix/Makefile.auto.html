@@ -1,0 +1,249 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>Makefile</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">Makefile&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="Makefile">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment"># -*- tab-width: 4 -*-
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># Copyright (c) 2002-2019 Apple Inc. All rights reserved.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># Redistribution and use in source and binary forms, with or without 
+</span><span class="enscript-comment"># modification, are permitted provided that the following conditions are met:
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># 1.  Redistributions of source code must retain the above copyright notice, 
+</span><span class="enscript-comment">#     this list of conditions and the following disclaimer. 
+</span><span class="enscript-comment"># 2.  Redistributions in binary form must reproduce the above copyright notice, 
+</span><span class="enscript-comment">#     this list of conditions and the following disclaimer in the documentation 
+</span><span class="enscript-comment">#     and/or other materials provided with the distribution. 
+</span><span class="enscript-comment"># 3.  Neither the name of Apple Computer, Inc. (&quot;Apple&quot;) nor the names of its 
+</span><span class="enscript-comment">#     contributors may be used to endorse or promote products derived from this 
+</span><span class="enscript-comment">#     software without specific prior written permission. 
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS &quot;AS IS&quot; AND ANY 
+</span><span class="enscript-comment"># EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED 
+</span><span class="enscript-comment"># WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE 
+</span><span class="enscript-comment"># DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY 
+</span><span class="enscript-comment"># DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES 
+</span><span class="enscript-comment"># (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; 
+</span><span class="enscript-comment"># LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND 
+</span><span class="enscript-comment"># ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT 
+</span><span class="enscript-comment"># (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS 
+</span><span class="enscript-comment"># SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># IMPORTANT NOTE: This is a Makefile for *GNU make*
+</span><span class="enscript-comment"># On some systems, a different program may be the default &quot;make&quot; command.
+</span><span class="enscript-comment"># If &quot;make os=xxx&quot; gives lots of errors like &quot;Missing dependency operator&quot;,
+</span><span class="enscript-comment"># then try typing &quot;gmake os=xxx&quot; instead.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># This Makefile builds an mDNSResponder daemon and a libdns_sd.so shared library
+</span><span class="enscript-comment"># for Linux. It also builds several example programs for embedded systems.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># Make with no arguments to build all production targets.
+</span><span class="enscript-comment"># 'make DEBUG=1' to build debugging targets.
+</span><span class="enscript-comment"># 'make clean' or 'make clean DEBUG=1' to delete prod/debug objects &amp; targets
+</span><span class="enscript-comment"># 'sudo make install [DEBUG=1]' to install mdnsd daemon and libdns_sd.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># Notes:
+</span><span class="enscript-comment"># $@ means &quot;The file name of the target of the rule&quot;
+</span><span class="enscript-comment"># $&lt; means &quot;The name of the first prerequisite&quot;
+</span><span class="enscript-comment"># $* means &quot;The stem with which an implicit rule matches&quot;
+</span><span class="enscript-comment"># $+ means &quot;The names of all the prerequisites, with spaces between them, exactly as given&quot;
+</span><span class="enscript-comment"># For more magic automatic variables, see
+</span><span class="enscript-comment"># &lt;<a href="http://www.gnu.org/software/make/manual/html_node/Automatic-Variables.html">http://www.gnu.org/software/make/manual/html_node/Automatic-Variables.html</a>&gt;
+</span>
+<span class="enscript-comment">#############################################################################
+</span>
+LIBVERS = 1
+
+COREDIR = ../mDNSCore
+SHAREDDIR ?= ../mDNSShared
+DSODIR ?= ../DSO
+JDK = /usr/jdk
+
+SYSTEM := $(<span class="enscript-reference">shell uname -s</span>)
+ifeq ($(<span class="enscript-reference">SYSTEM</span>), Darwin)
+  os=x
+else ifeq ($(<span class="enscript-reference">SYSTEM</span>), Linux)
+  os=linux
+endif
+
+CC = cc
+BISON = bison
+FLEX = flex
+ST = strip
+LD = ld
+SOOPTS = -shared
+CP = cp
+RM = rm
+LN = ln -s -f
+CFLAGS_COMMON = -I$(<span class="enscript-reference">COREDIR</span>) -I$(<span class="enscript-reference">SHAREDDIR</span>) -I$(<span class="enscript-reference">DSODIR</span>) -I$(<span class="enscript-reference">PROXYDIR</span>) -I$(<span class="enscript-reference">OBJDIR</span>) -fwrapv -W -Wall -DPID_FILE=\&quot;/var/run/mdnsd.pid\&quot; -DMDNS_UDS_SERVERPATH=\&quot;/var/run/mdnsd\&quot;
+CFLAGS_PTHREAD =
+LINKOPTS =
+LINKOPTS_PTHREAD = -lpthread
+LDSUFFIX = so
+JAVACFLAGS_OS = -fPIC -shared -ldns_sd
+
+ifeq <span class="enscript-string">&quot;$(OPEN_SOURCE)&quot;</span> <span class="enscript-string">&quot;1&quot;</span>
+CFLAGS_OPEN_SOURCE=-D__OPEN_SOURCE__
+else
+CFLAGS_OPEN_SOURCE=
+endif
+
+<span class="enscript-comment"># Set up diverging paths for debug vs. prod builds
+</span>ifeq <span class="enscript-string">&quot;$(DEBUG)&quot;</span> <span class="enscript-string">&quot;1&quot;</span>
+CFLAGS_DEBUGGING = -g -DMDNS_DEBUGMSGS=2
+OBJDIR = objects/debug
+BUILDDIR = build/debug
+STRIP = echo
+else
+ifeq <span class="enscript-string">&quot;$(DEBUGSYMS)&quot;</span> <span class="enscript-string">&quot;1&quot;</span>
+CFLAGS_DEBUGGING = -g -DMDNS_DEBUGMSGS=0
+OBJDIR = objects/prod
+BUILDDIR = build/prod
+STRIP = echo
+else
+<span class="enscript-comment"># We use -Os for two reasons:
+</span><span class="enscript-comment"># 1. We want to make small binaries, suitable for putting into hardware devices
+</span><span class="enscript-comment"># 2. Some of the code analysis warnings only work when some form of optimization is enabled
+</span>CFLAGS_DEBUGGING = -g -DMDNS_DEBUGMSGS=0
+OBJDIR ?= objects/prod
+BUILDDIR ?= build/prod
+STRIP = $(<span class="enscript-reference">ST</span>) -S
+endif
+endif
+
+<span class="enscript-comment"># Configure per-OS peculiarities
+</span>ifeq ($(<span class="enscript-reference">os</span>),solaris)
+CFLAGS_DEBUGGING = -O0 -DMDNS_DEBUGMSGS=0
+CFLAGS_OS = -DNOT_HAVE_DAEMON -DNOT_HAVE_SA_LEN -DNOT_HAVE_SOCKLEN_T -DNOT_HAVE_IF_NAMETOINDEX \
+	 -DLOG_PERROR=0 -D_XPG4_2 -D__EXTENSIONS__ -DHAVE_BROKEN_RECVIF_NAME -DTARGET_OS_SOLARIS
+CC = gcc
+LD = gcc
+SOOPTS = -shared
+LINKOPTS = -lsocket -lnsl -lresolv
+JAVACFLAGS_OS += -I$(<span class="enscript-reference">JDK</span>)/include/solaris
+ifneq ($(<span class="enscript-reference">DEBUG</span>),1)
+STRIP = $(<span class="enscript-reference">ST</span>)
+endif
+else
+
+<span class="enscript-comment"># any target that contains the string &quot;linux&quot;
+</span>ifeq ($(<span class="enscript-reference">findstring linux,$(os)</span>),linux)
+CFLAGS_OS = -D_GNU_SOURCE -DHAVE_IPV6 -DNOT_HAVE_SA_LEN -DUSES_NETLINK -DHAVE_LINUX -DTARGET_OS_LINUX -ftabstop=4
+LD = $(<span class="enscript-reference">CC</span>)
+SOOPTS = -shared
+FLEXFLAGS_OS = -l
+JAVACFLAGS_OS += -I$(<span class="enscript-reference">JDK</span>)/include/linux
+
+<span class="enscript-comment"># uClibc does not support Name Service Switch
+</span>ifneq ($(<span class="enscript-reference">os</span>),linux-uclibc)
+OPTIONALTARG = nss_mdns
+OPTINSTALL   = InstalledNSS
+endif
+else
+
+ifeq ($(<span class="enscript-reference">os</span>),netbsd)
+CFLAGS_OS =
+LDCONFIG = ldconfig
+else
+
+ifeq ($(<span class="enscript-reference">os</span>),freebsd)
+<span class="enscript-comment"># If not already defined, set LOCALBASE to /usr/local
+</span>LOCALBASE?=/usr/local
+INSTBASE=$(<span class="enscript-reference">LOCALBASE</span>)
+CFLAGS_OS = -DHAVE_IPV6
+<span class="enscript-comment"># FreeBSD 4 requires threaded code to be compiled and linked using the &quot;-pthread&quot; option,
+</span><span class="enscript-comment"># and requires that the &quot;-lpthread&quot; link option NOT be used
+</span><span class="enscript-comment"># This appies only to FreeBSD -- &quot;man cc&quot; on FreeBSD says:
+</span><span class="enscript-comment">#   FreeBSD SPECIFIC OPTIONS
+</span><span class="enscript-comment">#     -pthread
+</span><span class="enscript-comment">#       Link a user-threaded process against libc_r instead of libc.
+</span>CFLAGS_PTHREAD   = -pthread -D_THREAD_SAFE
+LINKOPTS_PTHREAD = -pthread
+JAVACFLAGS_OS += -I$(<span class="enscript-reference">JDK</span>)/include/freebsd
+LDCONFIG = ldconfig
+else
+
+ifeq ($(<span class="enscript-reference">os</span>),openbsd)
+CFLAGS_OS = -DHAVE_BROKEN_RECVDSTADDR
+LDCONFIG = ldconfig
+else
+
+ifeq ($(<span class="enscript-reference">os</span>),x)
+<span class="enscript-comment"># We have to define __MAC_OS_X_VERSION_MIN_REQUIRED=__MAC_OS_X_VERSION_10_4 or on Leopard
+</span><span class="enscript-comment"># we get build failures: ‘daemon’ is deprecated (declared at /usr/include/stdlib.h:283)
+</span>CFLAGS_OS = -DHAVE_IPV6 -no-cpp-precomp -Werror -Wdeclaration-after-statement \
+	-D__MAC_OS_X_VERSION_MIN_REQUIRED=__MAC_OS_X_VERSION_10_4 \
+	-DHAVE_STRLCPY=1 -DTARGET_OS_MAC \
+	-D__APPLE_USE_RFC_2292 <span class="enscript-comment">#-Wunreachable-code
+</span>CC = gcc
+LD = $(<span class="enscript-reference">CC</span>)
+SOOPTS = -dynamiclib
+LINKOPTS = -lSystem
+LDSUFFIX = dylib
+JDK = /System/Library/Frameworks/JavaVM.framework/Home
+JAVACFLAGS_OS = -dynamiclib -I/System/Library/Frameworks/JavaVM.framework/Headers -framework JavaVM
+OPTIONALTARG = dnsextd
+else
+
+$(<span class="enscript-reference">error ERROR: Must specify target OS on command-line, e.g. &quot;make os=x [target]&quot;.\
+Supported operating systems include: x, linux, linux-uclibc, netbsd, freebsd, openbsd, solaris</span>)
+endif
+endif
+endif
+endif
+endif
+endif
+
+NSSLIBNAME  := libnss_mdns
+NSSVERSION  := 0.2
+NSSLIBFILE  := $(<span class="enscript-reference">NSSLIBNAME</span>)-$(<span class="enscript-reference">NSSVERSION</span>).so
+NSSLINKNAME := $(<span class="enscript-reference">NSSLIBNAME</span>).so.2
+NSSINSTPATH := /lib
+
+<span class="enscript-comment"># If not otherwise defined, we install into /usr/lib and /usr/include
+</span><span class="enscript-comment"># and our startup script is called mdns (e.g. /etc/init.d/mdns)
+</span>ETCBASE?=/etc
+INSTBASE?=/usr
+STARTUPSCRIPTNAME?=mdns
+
+ifeq ($(<span class="enscript-reference">HAVE_IPV6</span>),1)
+CFLAGS_OS += -DHAVE_IPV6=1
+else
+ifeq ($(<span class="enscript-reference">HAVE_IPV6</span>),0)
+CFLAGS_OS += -DHAVE_IPV6=0
+endif
+endif
+
+<span class="enscript-comment"># If directory /usr/share/man exists, then we install man pages into that, else /usr/man
+</span>ifeq ($(<span class="enscript-reference">wildcard /usr/share/man</span>), /usr/share/man)
+MANPATH := /usr/share/man
+else
+MANPATH := /usr/man
+endif
+
+<span class="enscript-comment"># If directories /etc/init.d/rc*.d exist, then we install into that (Suse)
+</span>ifeq ($(<span class="enscript-reference">wildcard /etc/init.d/rc2.d/</span>), /etc/init.d/rc2.d/)
+STARTUPSCRIPTDIR = /etc/init.d
+RUNLEVELSCRIPTSDIR = /etc/init.d
+else
+</pre>
+<hr />
+</body></html>

@@ -1,0 +1,935 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnssd_server.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnssd_server.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnssd_server.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssd_server.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;ClientRequests.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssd_xpc.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;CoreUtils/CommonServices.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;CoreUtils/DebugServices.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;libproc.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/necp.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/proc_info.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;xpc/private.h&gt;</span>
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Declarations</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DX_STRUCT</span>(NAME)			struct dx_ ## NAME ## _s
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DX_TYPE</span>(NAME)			dx_ ## NAME ## _t
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DX_KIND_DECLARE</span>(NAME)	typedef DX_STRUCT(NAME) *	DX_TYPE(NAME)
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DX_KIND_DECLARE_FULL</span>(NAME)						\
+	DX_KIND_DECLARE(NAME);								\
+														\
+	static void											\
+	_dx_ ## NAME ## _invalidate(DX_TYPE(NAME) object);	\
+														\
+	static void											\
+	_dx_ ## NAME ## _finalize(DX_TYPE(NAME) object);	\
+														\
+	static DX_TYPE(NAME)								\
+	_dx_ ## NAME ## _alloc(void)
+
+<span class="enscript-comment">// Note: The last check checks if the base's type is equal to that of the superkind. If it's not, then the pointer
+</span><span class="enscript-comment">// comparison used as the argument to sizeof will cause a &quot;comparison of distinct pointer types&quot; warning, so long as
+</span><span class="enscript-comment">// the warning hasn't been disabled.
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DX_BASE_CHECK</span>(NAME, SUPER)																\
+	check_compile_time(offsetof(DX_STRUCT(NAME), base) == 0);									\
+	check_compile_time(sizeof_field(DX_STRUCT(NAME), base) == sizeof(DX_STRUCT(SUPER)));		\
+	extern int _dx_base_type_check[sizeof(&amp;(((DX_TYPE(NAME))0)-&gt;base) == ((DX_TYPE(SUPER))0))]
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DX_KIND_DEFINE</span>(NAME, SUPER)											\
+	static const struct dx_kind_s _dx_ ## NAME ## _kind = {					\
+		&amp;_dx_ ## SUPER ##_kind,												\
+		_dx_ ## NAME ## _invalidate,										\
+		_dx_ ## NAME ## _finalize,											\
+	};																		\
+																			\
+	static DX_TYPE(NAME)													\
+	_dx_ ## NAME ## _alloc(void)											\
+	{																		\
+		const DX_TYPE(NAME) obj = (DX_TYPE(NAME))calloc(1, sizeof(*obj));	\
+		require_quiet(obj, exit);											\
+																			\
+		const dx_base_t base = (dx_base_t)obj;								\
+		base-&gt;ref_count	= 1;												\
+		base-&gt;kind		= &amp;_dx_ ## NAME ## _kind;							\
+																			\
+	exit:																	\
+		return obj;															\
+	}																		\
+	DX_BASE_CHECK(NAME, SUPER)
+
+<span class="enscript-function-name">DX_KIND_DECLARE</span>(base);
+<span class="enscript-function-name">DX_KIND_DECLARE</span>(request);
+<span class="enscript-function-name">DX_KIND_DECLARE_FULL</span>(session);
+<span class="enscript-function-name">DX_KIND_DECLARE_FULL</span>(getaddrinfo_request);
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">union</span> {
+	dx_base_t					base;
+	dx_session_t				session;
+	dx_request_t				request;
+	dx_getaddrinfo_request_t	getaddrinfo_request;
+} dx_any_t __attribute__((__transparent_union__));
+
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*dx_invalidate_f)(dx_any_t object);
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*dx_finalize_f)(dx_any_t object);
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">const</span> <span class="enscript-type">struct</span> dx_kind_s *	dx_kind_t;
+<span class="enscript-type">struct</span> dx_kind_s {
+	dx_kind_t		superkind;	<span class="enscript-comment">// This kind's superkind. All kinds have a superkind, except the base kind.
+</span>	dx_invalidate_f	invalidate;	<span class="enscript-comment">// Stops an object's outstanding operations, if any.
+</span>	dx_finalize_f	finalize;	<span class="enscript-comment">// Releases object's resources right before the object is freed.
+</span>};
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Base</span> <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Definition</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">struct</span> dx_base_s {
+	dx_kind_t	kind;		<span class="enscript-comment">// The object's kind.
+</span>	int32_t		ref_count;	<span class="enscript-comment">// Reference count.
+</span>};
+
+<span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">struct</span> dx_kind_s _dx_base_kind = {
+	NULL,	<span class="enscript-comment">// No superkind.
+</span>	NULL,	<span class="enscript-comment">// No invalidate method.
+</span>	NULL,	<span class="enscript-comment">// No finalize method.
+</span>};
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Request</span> <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Definition</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">struct</span> dx_request_s {
+	<span class="enscript-type">struct</span> dx_base_s	base;			<span class="enscript-comment">// Object base.
+</span>	dx_request_t		next;			<span class="enscript-comment">// Next request in list.
+</span>	xpc_object_t		result_array;	<span class="enscript-comment">// Array of pending results.
+</span>	uint64_t			command_id;		<span class="enscript-comment">// ID to distinquish multiple commands during a session.
+</span>	uint32_t			request_id;		<span class="enscript-comment">// Request ID, used for logging purposes.
+</span>	DNSServiceErrorType	error;			<span class="enscript-comment">// Pending error.
+</span>	bool				sent_error;		<span class="enscript-comment">// True if the pending error has been sent to client.
+</span>};
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_request_finalize</span>(dx_any_t request);
+
+<span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">struct</span> dx_kind_s _dx_request_kind = {
+	&amp;_dx_base_kind,
+	NULL,					<span class="enscript-comment">// No invalidate method.
+</span>	_dx_request_finalize,
+};
+<span class="enscript-function-name">DX_BASE_CHECK</span>(request, base);
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Session</span> <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Definition</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">struct</span> dx_session_s {
+	<span class="enscript-type">struct</span> dx_base_s	base;						<span class="enscript-comment">// Object base;
+</span>	dx_session_t		next;						<span class="enscript-comment">// Next session in list.
+</span>	dx_request_t		request_list;				<span class="enscript-comment">// List of outstanding requests.
+</span>	xpc_connection_t	connection;					<span class="enscript-comment">// Underlying XPC connection.
+</span>	bool				has_delegate_entitlement;	<span class="enscript-comment">// True if the client is entitled to be a delegate.
+</span>};
+
+<span class="enscript-function-name">DX_KIND_DEFINE</span>(session, base);
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">GetAddrInfo</span> <span class="enscript-variable-name">Request</span> <span class="enscript-variable-name">Kind</span> <span class="enscript-variable-name">Definition</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">struct</span> dx_getaddrinfo_request_s {
+	<span class="enscript-type">struct</span> dx_request_s			base;			<span class="enscript-comment">// Request object base.
+</span>	GetAddrInfoClientRequest	gai;			<span class="enscript-comment">// Underlying GetAddrInfoClientRequest.
+</span>	xpc_object_t				hostname;		<span class="enscript-comment">// Hostname to be resolved for getaddrinfo requests.
+</span>	uuid_t						client_uuid;	<span class="enscript-comment">// Client's UUID for authenticating results.
+</span>	bool						need_auth;		<span class="enscript-comment">// True if results need to be authenticated.
+</span>	bool						active;			<span class="enscript-comment">// True if the GetAddrInfoClientRequest is currently active.
+</span>};
+
+<span class="enscript-function-name">DX_KIND_DEFINE</span>(getaddrinfo_request, request);
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Local</span> <span class="enscript-variable-name">Prototypes</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> dispatch_queue_t
+<span class="enscript-function-name">_dx_server_queue</span>(<span class="enscript-type">void</span>);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_server_register_session</span>(dx_session_t session);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_server_deregister_session</span>(dx_session_t session);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_retain</span>(dx_any_t object);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_release</span>(dx_any_t object);
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">_dx_release_null_safe</span>(X)	do { if (X) { _dx_release(X); } } while (0)
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_invalidate</span>(dx_any_t object);
+
+<span class="enscript-type">static</span> dx_session_t
+<span class="enscript-function-name">_dx_session_create</span>(xpc_connection_t connection);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_session_activate</span>(dx_session_t me);
+
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dx_session_handle_getaddrinfo_command</span>(dx_session_t session, xpc_object_t msg);
+
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dx_session_handle_stop_command</span>(dx_session_t session, xpc_object_t msg);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_session_send_results</span>(dx_session_t session);
+
+<span class="enscript-type">static</span> dx_getaddrinfo_request_t
+<span class="enscript-function-name">_dx_getaddrinfo_request_create</span>(uint64_t command_id, uint32_t request_id);
+
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dx_getaddrinfo_request_set_hostname</span>(dx_getaddrinfo_request_t request, xpc_object_t hostname);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_getaddrinfo_request_set_need_authenticaed_results</span>(dx_getaddrinfo_request_t request, bool need,
+	<span class="enscript-type">const</span> uuid_t client_uuid);
+
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dx_getaddrinfo_request_activate</span>(dx_getaddrinfo_request_t request, uint32_t interface_index, DNSServiceFlags flags,
+	DNSServiceProtocol protocols, pid_t pid, <span class="enscript-type">const</span> uuid_t uuid, uid_t uid);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_getaddrinfo_request_result_handler</span>(mDNS *m, DNSQuestion *question, <span class="enscript-type">const</span> ResourceRecord *answer,
+	QC_result qc_result, DNSServiceErrorType error, <span class="enscript-type">void</span> *context);
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Server</span> <span class="enscript-variable-name">Functions</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_server_handle_new_connection</span>(xpc_connection_t connection);
+
+mDNSexport <span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_server_init</span>(<span class="enscript-type">void</span>)
+{
+	<span class="enscript-type">static</span> xpc_connection_t	listener = NULL;
+
+	listener = xpc_connection_create_mach_service(DNSSD_MACH_SERVICE_NAME, _dx_server_queue(),
+		XPC_CONNECTION_MACH_SERVICE_LISTENER);
+    xpc_connection_set_event_handler(listener,
+	^(xpc_object_t event)
+	{
+		<span class="enscript-keyword">if</span> (xpc_get_type(event) == XPC_TYPE_CONNECTION) {
+			_dx_server_handle_new_connection((xpc_connection_t)event);
+		}
+	});
+	xpc_connection_activate(listener);
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_server_handle_new_connection</span>(xpc_connection_t connection)
+{
+	<span class="enscript-type">const</span> dx_session_t session = _dx_session_create(connection);
+	<span class="enscript-keyword">if</span> (session) {
+		_dx_session_activate(session);
+		_dx_server_register_session(session);
+		_dx_release(session);
+	} <span class="enscript-keyword">else</span> {
+		xpc_connection_cancel(connection);
+	}
+}
+
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> dx_session_t	g_session_list	= NULL;
+
+mDNSexport <span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_server_idle</span>(<span class="enscript-type">void</span>)
+{
+	<span class="enscript-keyword">for</span> (dx_session_t session = g_session_list; session; session = session-&gt;next) {
+		_dx_session_send_results(session);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> dispatch_queue_t
+<span class="enscript-function-name">_dx_server_queue</span>(<span class="enscript-type">void</span>)
+{
+	<span class="enscript-type">static</span> dispatch_once_t	once	= 0;
+	<span class="enscript-type">static</span> dispatch_queue_t	queue	= NULL;
+
+	dispatch_once(&amp;once,
+	^{
+		<span class="enscript-type">const</span> dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
+			QOS_CLASS_UTILITY, 0);
+		queue = dispatch_queue_create(<span class="enscript-string">&quot;com.apple.dnssd.server&quot;</span>, attr);
+	});
+	<span class="enscript-keyword">return</span> queue;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_server_register_session</span>(dx_session_t session)
+{
+	session-&gt;next	= g_session_list;
+	g_session_list	= session;
+	_dx_retain(session);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_server_deregister_session</span>(dx_session_t session)
+{
+	dx_session_t *ptr;
+	<span class="enscript-keyword">for</span> (ptr = &amp;g_session_list; *ptr; ptr = &amp;(*ptr)-&gt;next) {
+		<span class="enscript-keyword">if</span> (*ptr == session) {
+			<span class="enscript-keyword">break</span>;
+		}
+	}
+	<span class="enscript-keyword">if</span> (*ptr) {
+		*ptr			= session-&gt;next;
+		session-&gt;next	= NULL;
+		_dx_release(session);
+	}
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Base</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_retain</span>(dx_any_t object)
+{
+	++object.base-&gt;ref_count;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_release</span>(dx_any_t object)
+{
+	<span class="enscript-keyword">if</span> (--object.base-&gt;ref_count == 0) {
+		<span class="enscript-keyword">for</span> (dx_kind_t kind = object.base-&gt;kind; kind; kind = kind-&gt;superkind) {
+			<span class="enscript-keyword">if</span> (kind-&gt;finalize) {
+				kind-&gt;finalize(object);
+			}
+		}
+		free(object.base);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_invalidate</span>(dx_any_t object)
+{
+	<span class="enscript-keyword">for</span> (dx_kind_t kind = object.base-&gt;kind; kind; kind = kind-&gt;superkind) {
+		<span class="enscript-keyword">if</span> (kind-&gt;invalidate) {
+			kind-&gt;invalidate(object);
+			<span class="enscript-keyword">return</span>;
+		}
+	}
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Session</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> dx_session_t
+<span class="enscript-function-name">_dx_session_create</span>(xpc_connection_t connection)
+{
+	<span class="enscript-type">const</span> dx_session_t obj = _dx_session_alloc();
+	require_quiet(obj, exit);
+
+	obj-&gt;connection = connection;
+	xpc_retain(obj-&gt;connection);
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span> obj;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_session_handle_message</span>(dx_session_t session, xpc_object_t msg);
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_DELEGATE_ENTITLEMENT</span> <span class="enscript-string">&quot;com.apple.private.network.socket-delegate&quot;</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_session_activate</span>(dx_session_t me)
+{
+	<span class="enscript-type">const</span> xpc_object_t value = xpc_connection_copy_entitlement_value(me-&gt;connection, DNSSD_DELEGATE_ENTITLEMENT);
+	<span class="enscript-keyword">if</span> (value) {
+		<span class="enscript-keyword">if</span> (value == XPC_BOOL_TRUE) {
+			me-&gt;has_delegate_entitlement = true;
+		}
+		xpc_release(value);
+	}
+	_dx_retain(me);
+	xpc_connection_set_target_queue(me-&gt;connection, _dx_server_queue());
+	xpc_connection_set_event_handler(me-&gt;connection,
+	^(xpc_object_t event) {
+		<span class="enscript-type">const</span> xpc_type_t type = xpc_get_type(event);
+		<span class="enscript-keyword">if</span> (type == XPC_TYPE_DICTIONARY) {
+    		KQueueLock();
+			_dx_session_handle_message(me, event);
+    		KQueueUnlock(<span class="enscript-string">&quot;_dx_session_handle_message&quot;</span>);
+		} <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (event == XPC_ERROR_CONNECTION_INVALID) {
+    		KQueueLock();
+			_dx_server_deregister_session(me);
+    		KQueueUnlock(<span class="enscript-string">&quot;_dx_server_deregister_session&quot;</span>);
+			_dx_session_invalidate(me);
+			_dx_release(me);
+		} <span class="enscript-keyword">else</span> {
+			xpc_connection_cancel(me-&gt;connection);
+		}
+	});
+	xpc_connection_activate(me-&gt;connection);
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_session_handle_message</span>(dx_session_t me, xpc_object_t msg)
+{
+	DNSServiceErrorType error;
+	<span class="enscript-type">const</span> <span class="enscript-type">char</span> * <span class="enscript-type">const</span> command = dnssd_xpc_message_get_command(msg);
+	require_action_quiet(command, exit, error = kDNSServiceErr_BadParam);
+
+	<span class="enscript-keyword">if</span> (strcmp(command, DNSSD_COMMAND_GETADDRINFO) == 0) {
+		error = _dx_session_handle_getaddrinfo_command(me, msg);
+	} <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (strcmp(command, DNSSD_COMMAND_STOP) == 0) {
+		error = _dx_session_handle_stop_command(me, msg);
+	} <span class="enscript-keyword">else</span> {
+		error = kDNSServiceErr_BadParam;
+	}
+
+<span class="enscript-reference">exit</span>:
+	{
+		<span class="enscript-type">const</span> xpc_object_t reply = xpc_dictionary_create_reply(msg);
+		<span class="enscript-keyword">if</span> (likely(reply)) {
+			dnssd_xpc_message_set_error(reply, error);
+			xpc_connection_send_message(me-&gt;connection, reply);
+			xpc_release(reply);
+		} <span class="enscript-keyword">else</span> {
+			xpc_connection_cancel(me-&gt;connection);
+		}
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_session_invalidate</span>(dx_session_t me)
+{
+	xpc_connection_forget(&amp;me-&gt;connection);
+	dx_request_t req;
+	<span class="enscript-keyword">while</span> ((req = me-&gt;request_list) != NULL)
+	{
+		me-&gt;request_list = req-&gt;next;
+		_dx_invalidate(req);
+		_dx_release(req);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_session_finalize</span>(dx_session_t me)
+{
+	(<span class="enscript-type">void</span>)me;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> bool
+<span class="enscript-function-name">_dx_get_getaddrinfo_params</span>(xpc_object_t msg, uint64_t *out_command_id, xpc_object_t *out_hostname,
+	uint32_t *out_interface_index, DNSServiceFlags *out_flags, DNSServiceProtocol *out_protocols,
+	pid_t *out_delegate_pid, <span class="enscript-type">const</span> uint8_t **out_delegate_uuid, bool *out_need_auth_tags);
+
+<span class="enscript-type">extern</span> mDNS	mDNSStorage;
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">g_mdns</span>	mDNSStorage
+
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dx_session_handle_getaddrinfo_command</span>(dx_session_t me, xpc_object_t msg)
+{
+	dx_getaddrinfo_request_t	req = NULL;
+	DNSServiceErrorType			error;
+	uint64_t					command_id;
+	xpc_object_t				hostname;
+	uint32_t					interface_index;
+	DNSServiceFlags				flags;
+	DNSServiceProtocol			protocols;
+	pid_t						pid;
+	<span class="enscript-type">const</span> uint8_t *				uuid;
+	bool						need_auth;
+
+	<span class="enscript-type">const</span> bool valid = _dx_get_getaddrinfo_params(msg, &amp;command_id, &amp;hostname, &amp;interface_index, &amp;flags, &amp;protocols,
+		&amp;pid, &amp;uuid, &amp;need_auth);
+	require_action_quiet(valid, exit, error = kDNSServiceErr_BadParam);
+
+	<span class="enscript-keyword">if</span> (uuid || (pid != 0)) {
+		require_action_quiet(me-&gt;has_delegate_entitlement, exit, error = kDNSServiceErr_NoAuth);
+	} <span class="enscript-keyword">else</span> {
+		pid = xpc_connection_get_pid(me-&gt;connection);
+	}
+
+	req = _dx_getaddrinfo_request_create(command_id, g_mdns.next_request_id++);
+	require_action_quiet(req, exit, error = kDNSServiceErr_NoMemory);
+
+	error = _dx_getaddrinfo_request_set_hostname(req, hostname);
+	require_noerr_quiet(error, exit);
+
+	<span class="enscript-keyword">if</span> (need_auth) {
+		<span class="enscript-type">struct</span> proc_uniqidentifierinfo info;
+		<span class="enscript-type">const</span> <span class="enscript-type">int</span> n = proc_pidinfo(pid, PROC_PIDUNIQIDENTIFIERINFO, 1, &amp;info, <span class="enscript-keyword">sizeof</span>(info));
+		<span class="enscript-keyword">if</span> (n == (<span class="enscript-type">int</span>)<span class="enscript-keyword">sizeof</span>(info)) {
+			_dx_getaddrinfo_request_set_need_authenticaed_results(req, true, info.p_uuid);
+		}
+	}
+
+	<span class="enscript-type">const</span> uid_t euid = xpc_connection_get_euid(me-&gt;connection);
+	error = _dx_getaddrinfo_request_activate(req, interface_index, flags, protocols, pid, uuid, euid);
+	require_noerr_quiet(error, exit);
+
+	req-&gt;base.next		= me-&gt;request_list;
+	me-&gt;request_list	= (dx_request_t)req;
+	req = NULL;
+
+<span class="enscript-reference">exit</span>:
+	_dx_release_null_safe(req);
+	static_analyzer_malloc_freed(req);
+	<span class="enscript-keyword">return</span> error;
+}
+
+<span class="enscript-type">static</span> bool
+<span class="enscript-function-name">_dx_get_getaddrinfo_params</span>(xpc_object_t msg, uint64_t *out_command_id, xpc_object_t *out_hostname,
+	uint32_t *out_interface_index, DNSServiceFlags *out_flags, DNSServiceProtocol *out_protocols,
+	pid_t *out_delegate_pid, <span class="enscript-type">const</span> uint8_t **out_delegate_uuid, bool *out_need_auth_tags)
+{
+	bool params_are_valid = false;
+	bool valid;
+	<span class="enscript-type">const</span> uint64_t command_id = dnssd_xpc_message_get_id(msg, &amp;valid);
+	require_quiet(valid, exit);
+
+	<span class="enscript-type">const</span> xpc_object_t params = dnssd_xpc_message_get_parameters(msg);
+	require_quiet(params, exit);
+
+	xpc_object_t hostname = dnssd_xpc_parameters_get_hostname_object(params);
+	require_quiet(hostname, exit);
+
+	<span class="enscript-type">const</span> uint32_t interface_index = dnssd_xpc_parameters_get_interface_index(params, &amp;valid);
+	require_quiet(valid, exit);
+
+	<span class="enscript-type">const</span> DNSServiceFlags flags = dnssd_xpc_parameters_get_flags(params, &amp;valid);
+	require_quiet(valid, exit);
+
+	<span class="enscript-type">const</span> uint32_t protocols = dnssd_xpc_parameters_get_protocols(params, &amp;valid);
+	require_quiet(valid, exit);
+
+	pid_t pid;
+	<span class="enscript-type">const</span> uint8_t * <span class="enscript-type">const</span> uuid = dnssd_xpc_parameters_get_delegate_uuid(params);
+	<span class="enscript-keyword">if</span> (uuid) {
+		pid = 0;
+	} <span class="enscript-keyword">else</span> {
+		pid = dnssd_xpc_parameters_get_delegate_pid(params, NULL);
+	}
+
+	*out_command_id			= command_id;
+	*out_hostname			= hostname;
+	*out_interface_index	= interface_index;
+	*out_flags				= flags;
+	*out_protocols			= protocols;
+	*out_delegate_pid		= pid;
+	*out_delegate_uuid		= uuid;
+	*out_need_auth_tags		= dnssd_xpc_parameters_get_need_authentication_tags(params);
+	params_are_valid = true;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span> params_are_valid;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dx_session_handle_stop_command</span>(dx_session_t me, xpc_object_t msg)
+{
+	bool valid;
+	DNSServiceErrorType error;
+	<span class="enscript-type">const</span> uint64_t command_id = dnssd_xpc_message_get_id(msg, &amp;valid);
+	require_action_quiet(valid, exit, error = kDNSServiceErr_BadParam);
+
+	dx_request_t * ptr;
+	dx_request_t req;
+	<span class="enscript-keyword">for</span> (ptr = &amp;me-&gt;request_list; (req = *ptr) != NULL; ptr = &amp;req-&gt;next) {
+		<span class="enscript-keyword">if</span> (req-&gt;command_id == command_id) {
+			<span class="enscript-keyword">break</span>;
+		}
+	}
+	require_action_quiet(req, exit, error = kDNSServiceErr_BadReference);
+
+	*ptr		= req-&gt;next;
+	req-&gt;next	= NULL;
+
+	_dx_invalidate(req);
+	_dx_release(req);
+	error = kDNSServiceErr_NoError;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span> error;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_session_send_results</span>(dx_session_t me)
+{
+	bool success = false;
+	<span class="enscript-keyword">for</span> (dx_request_t req = me-&gt;request_list; req; req = req-&gt;next) {
+		<span class="enscript-keyword">if</span> (req-&gt;result_array &amp;&amp; (xpc_array_get_count(req-&gt;result_array) &gt; 0)) {
+			<span class="enscript-type">const</span> xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
+			require_quiet(msg, exit);
+
+			dnssd_xpc_message_set_id(msg, req-&gt;command_id);
+			dnssd_xpc_message_set_error(msg, kDNSServiceErr_NoError);
+			dnssd_xpc_message_set_results(msg, req-&gt;result_array);
+			xpc_connection_send_message(me-&gt;connection, msg);
+			xpc_release(msg);
+
+			xpc_release(req-&gt;result_array);
+			req-&gt;result_array = xpc_array_create(NULL, 0);
+			require_quiet(req-&gt;result_array, exit);
+		}
+		<span class="enscript-keyword">if</span> (req-&gt;error &amp;&amp; !req-&gt;sent_error) {
+			<span class="enscript-type">const</span> xpc_object_t msg = xpc_dictionary_create(NULL, NULL, 0);
+			require_quiet(msg, exit);
+
+			dnssd_xpc_message_set_id(msg, req-&gt;command_id);
+			dnssd_xpc_message_set_error(msg, req-&gt;error);
+			xpc_connection_send_message(me-&gt;connection, msg);
+			xpc_release(msg);
+			req-&gt;sent_error = true;
+		}
+	}
+	success = true;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">if</span> (unlikely(!success)) {
+		xpc_connection_cancel(me-&gt;connection);
+	}
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Request</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_request_finalize</span>(dx_request_t me)
+{
+	xpc_forget(&amp;me-&gt;result_array);
+}
+
+#<span class="enscript-reference">if</span> 0
+<span class="enscript-comment">//======================================================================================================================
+</span>#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">GetAddrInfo</span> <span class="enscript-variable-name">Request</span> <span class="enscript-variable-name">Methods</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> dx_getaddrinfo_request_t
+<span class="enscript-function-name">_dx_getaddrinfo_request_create</span>(uint64_t command_id, uint32_t request_id)
+{
+	dx_getaddrinfo_request_t req = NULL;
+	dx_getaddrinfo_request_t obj = _dx_getaddrinfo_request_alloc();
+	require_quiet(obj, exit);
+
+	obj-&gt;base.command_id	= command_id;
+	obj-&gt;base.request_id	= request_id;
+	obj-&gt;base.result_array	= xpc_array_create(NULL, 0);
+	require_quiet(obj-&gt;base.result_array, exit);
+
+	req = obj;
+	obj = NULL;
+
+<span class="enscript-reference">exit</span>:
+	_dx_release_null_safe(obj);
+	<span class="enscript-keyword">return</span> req;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dx_getaddrinfo_request_set_hostname</span>(dx_getaddrinfo_request_t me, xpc_object_t hostname)
+{
+	DNSServiceErrorType err;
+	require_action_quiet(xpc_string_get_length(hostname) &lt;= MAX_ESCAPED_DOMAIN_NAME, exit,
+		err = kDNSServiceErr_BadParam);
+
+	xpc_release_null_safe(me-&gt;hostname);
+	me-&gt;hostname = xpc_copy(hostname);
+	require_action_quiet(me-&gt;hostname, exit, err = kDNSServiceErr_NoMemory);
+
+	err = kDNSServiceErr_NoError;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_getaddrinfo_request_set_need_authenticaed_results</span>(dx_getaddrinfo_request_t me, bool need, <span class="enscript-type">const</span> uuid_t client_uuid)
+{
+	<span class="enscript-keyword">if</span> (need) {
+		uuid_copy(me-&gt;client_uuid, client_uuid);
+		me-&gt;need_auth = true;
+	} <span class="enscript-keyword">else</span> {
+		uuid_clear(me-&gt;client_uuid);
+		me-&gt;need_auth = false;
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> DNSServiceErrorType
+<span class="enscript-function-name">_dx_getaddrinfo_request_activate</span>(dx_getaddrinfo_request_t me, uint32_t interface_index, DNSServiceFlags flags,
+	DNSServiceProtocol protocols, pid_t pid, <span class="enscript-type">const</span> uuid_t uuid, uid_t uid)
+{
+	DNSServiceErrorType err;
+	<span class="enscript-type">const</span> <span class="enscript-type">char</span> * <span class="enscript-type">const</span> hostname_str = xpc_string_get_string_ptr(me-&gt;hostname);
+	require_action_quiet(hostname_str, exit, err = kDNSServiceErr_Unknown);
+
+	err = GetAddrInfoClientRequestStart(&amp;me-&gt;gai, me-&gt;base.request_id, hostname_str, interface_index, flags,
+		protocols, pid, uuid, uid, _dx_getaddrinfo_request_result_handler, me);
+	require_noerr_quiet(err, exit);
+
+	_dx_retain(me);
+	me-&gt;active = true;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_getaddrinfo_request_invalidate</span>(dx_getaddrinfo_request_t me)
+{
+	<span class="enscript-keyword">if</span> (me-&gt;active) {
+		GetAddrInfoClientRequestStop(&amp;me-&gt;gai);
+		me-&gt;active = false;
+		_dx_release(me);
+	}
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_getaddrinfo_request_finalize</span>(dx_getaddrinfo_request_t me)
+{
+	xpc_forget(&amp;me-&gt;hostname);
+}
+
+<span class="enscript-comment">//======================================================================================================================
+</span>
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">NECP_CLIENT_ACTION_SIGN</span>)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSD_AUTHENTICATION_TAG_SIZE</span>	32	// XXX: Defined as a workaround until NECP header defines this length.
+
+<span class="enscript-type">static</span> bool
+<span class="enscript-function-name">_dx_authenticate_answer</span>(uuid_t client_id, xpc_object_t hostname, <span class="enscript-type">int</span> record_type, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *record_data,
+	uint8_t out_auth_tag[STATIC_PARAM DNSSD_AUTHENTICATION_TAG_SIZE]);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">_dx_getaddrinfo_request_result_handler</span>(mDNS *m, DNSQuestion *question, <span class="enscript-type">const</span> ResourceRecord *answer,
+	QC_result qc_result, DNSServiceErrorType error, <span class="enscript-type">void</span> *context)
+{
+	(<span class="enscript-type">void</span>)question;
+
+	<span class="enscript-type">const</span> dx_getaddrinfo_request_t me = (dx_getaddrinfo_request_t)context;
+	<span class="enscript-keyword">if</span> (error &amp;&amp; (error != kDNSServiceErr_NoSuchRecord)) {
+		<span class="enscript-keyword">if</span> (!me-&gt;base.error) {
+			me-&gt;base.error = error;
+		}
+		<span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+	}
+	require_quiet((answer-&gt;rrtype == kDNSServiceType_A) || (answer-&gt;rrtype == kDNSServiceType_AAAA), exit);
+
+	<span class="enscript-type">const</span> <span class="enscript-type">void</span> *	rdata_ptr;
+	size_t			rdata_len;
+	<span class="enscript-keyword">if</span> (!error) {
+		<span class="enscript-keyword">if</span> (answer-&gt;rrtype == kDNSServiceType_A) {
+			rdata_ptr = answer-&gt;rdata-&gt;u.ipv4.b;
+			rdata_len = 4;
+		} <span class="enscript-keyword">else</span> {
+			rdata_ptr = answer-&gt;rdata-&gt;u.ipv6.b;
+			rdata_len = 16;
+		}
+	} <span class="enscript-keyword">else</span> {
+		rdata_ptr = NULL;
+		rdata_len = 0;
+	}
+
+	DNSServiceFlags flags = 0;
+	<span class="enscript-keyword">if</span> (qc_result != QC_rmv) {
+		flags |= kDNSServiceFlagsAdd;
+	}
+    <span class="enscript-keyword">if</span> (answer-&gt;mortality == Mortality_Ghost) {
+		flags |= kDNSServiceFlagsExpiredAnswer;
+	}
+	<span class="enscript-keyword">if</span> (!question-&gt;InitialCacheMiss) {
+		flags |= kDNSServiceFlagAnsweredFromCache;
+	}
+	
+	<span class="enscript-type">const</span> uint32_t interface_index = mDNSPlatformInterfaceIndexfromInterfaceID(m, answer-&gt;InterfaceID, mDNStrue);
+	<span class="enscript-type">const</span> xpc_object_t result = xpc_dictionary_create(NULL, NULL, 0);
+	<span class="enscript-keyword">if</span> (likely(result)) {
+    	<span class="enscript-type">char</span> name_str[MAX_ESCAPED_DOMAIN_NAME];
+    	ConvertDomainNameToCString(answer-&gt;name, name_str);
+
+		dnssd_xpc_result_set_error(result, error);
+		dnssd_xpc_result_set_flags(result, flags);
+		dnssd_xpc_result_set_interface_index(result, interface_index);
+		dnssd_xpc_result_set_record_name(result, name_str);
+		dnssd_xpc_result_set_record_type(result, answer-&gt;rrtype);
+		dnssd_xpc_result_set_record_class(result, answer-&gt;rrclass);
+		dnssd_xpc_result_set_record_data(result, rdata_ptr, rdata_len);
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">NECP_CLIENT_ACTION_SIGN</span>)
+		<span class="enscript-keyword">if</span> (me-&gt;need_auth &amp;&amp; !error &amp;&amp; (flags &amp; kDNSServiceFlagsAdd)) {
+			uint8_t auth_tag[DNSSD_AUTHENTICATION_TAG_SIZE];
+			<span class="enscript-type">const</span> bool success = _dx_authenticate_answer(me-&gt;client_uuid, me-&gt;hostname, answer-&gt;rrtype, rdata_ptr,
+				auth_tag);
+			<span class="enscript-keyword">if</span> (success) {
+				dnssd_xpc_result_set_authentication_tag(result, auth_tag, <span class="enscript-keyword">sizeof</span>(auth_tag));
+			}
+		}
+#<span class="enscript-reference">endif</span>
+		xpc_array_append_value(me-&gt;base.result_array, result);
+		xpc_release(result);
+	} <span class="enscript-keyword">else</span> {
+		me-&gt;base.error = kDNSServiceErr_NoMemory;
+	}
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span>;
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">NECP_CLIENT_ACTION_SIGN</span>)
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> {
+	<span class="enscript-type">struct</span> necp_client_resolver_answer	hdr;
+	uint8_t								hostname[MAX_ESCAPED_DOMAIN_NAME];
+} dx_necp_answer_t;
+
+<span class="enscript-function-name">check_compile_time</span>(offsetof(dx_necp_answer_t, hdr) == 0);
+<span class="enscript-function-name">check_compile_time</span>(endof_field(<span class="enscript-type">struct</span> necp_client_resolver_answer, hostname_length) == offsetof(dx_necp_answer_t, hostname));
+
+<span class="enscript-type">static</span> bool
+<span class="enscript-function-name">_dx_authenticate_answer</span>(uuid_t client_id, xpc_object_t hostname, <span class="enscript-type">int</span> record_type, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *record_data,
+	uint8_t out_auth_tag[STATIC_PARAM DNSSD_AUTHENTICATION_TAG_SIZE])
+{
+	<span class="enscript-type">static</span> <span class="enscript-type">int</span> necp_fd = -1;
+
+	bool success = false;
+	<span class="enscript-keyword">if</span> (necp_fd &lt; 0) {
+		necp_fd = necp_open(0);
+	}
+	require_quiet(necp_fd &gt;= 0, exit);
+
+	dx_necp_answer_t answer;
+	memset(&amp;answer, 0, <span class="enscript-keyword">sizeof</span>(answer));
+
+	<span class="enscript-type">struct</span> necp_client_resolver_answer * <span class="enscript-type">const</span> hdr = &amp;answer.hdr;
+	uuid_copy(hdr-&gt;client_id, client_id);
+
+	hdr-&gt;sign_type = NECP_CLIENT_SIGN_TYPE_RESOLVER_ANSWER;
+
+	<span class="enscript-keyword">switch</span> (record_type) {
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">kDNSServiceType_A</span>:
+			hdr-&gt;address_answer.sa.sa_family	= AF_INET;
+			hdr-&gt;address_answer.sa.sa_len		= <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> sockaddr_in);
+			memcpy(&amp;hdr-&gt;address_answer.sin.sin_addr.s_addr, record_data, 4);
+			<span class="enscript-keyword">break</span>;
+
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">kDNSServiceType_AAAA</span>:
+			hdr-&gt;address_answer.sa.sa_family	= AF_INET6;
+			hdr-&gt;address_answer.sa.sa_len		= <span class="enscript-keyword">sizeof</span>(<span class="enscript-type">struct</span> sockaddr_in6);
+			memcpy(hdr-&gt;address_answer.sin6.sin6_addr.s6_addr, record_data, 16);
+			<span class="enscript-keyword">break</span>;
+
+		<span class="enscript-reference">default</span>:
+			<span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>;
+	}
+	<span class="enscript-type">const</span> size_t hostname_len = xpc_string_get_length(hostname);
+	require_quiet(hostname_len &lt;= <span class="enscript-keyword">sizeof</span>(answer.hostname), exit);
+
+	hdr-&gt;hostname_length = (uint32_t)hostname_len;
+	memcpy(answer.hostname, xpc_string_get_string_ptr(hostname), hdr-&gt;hostname_length);
+
+	<span class="enscript-type">const</span> <span class="enscript-type">int</span> necp_err = necp_client_action(necp_fd, NECP_CLIENT_ACTION_SIGN, (<span class="enscript-type">void</span> *)&amp;answer,
+		<span class="enscript-keyword">sizeof</span>(answer.hdr) + hdr-&gt;hostname_length, out_auth_tag, DNSSD_AUTHENTICATION_TAG_SIZE);
+	require_noerr_quiet(necp_err, exit);
+
+	success = true;
+
+<span class="enscript-reference">exit</span>:
+	<span class="enscript-keyword">return</span> success;
+}
+#<span class="enscript-reference">endif</span>	// <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">NECP_CLIENT_ACTION_SIGN</span>)
+</pre>
+<hr />
+</body></html>

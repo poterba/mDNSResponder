@@ -1,0 +1,94 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnsextd.8</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnsextd.8&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnsextd.8">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+.\&quot; -*- tab-width: 4 -*-
+.\&quot; 
+.\&quot; Copyright (c) 2004, 2006, 2009 Apple Inc. All Rights Reserved.
+.\&quot; 
+.\&quot; Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+.\&quot; you may not use this file except in compliance with the License.
+.\&quot; You may obtain a copy of the License at
+.\&quot; 
+.\&quot;     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+.\&quot; 
+.\&quot; Unless required by applicable law or agreed to in writing, software
+.\&quot; distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+.\&quot; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+.\&quot; See the License for the specific language governing permissions and
+.\&quot; limitations under the License.
+.\&quot;
+.Dd August 2004             \&quot; Date
+.Dt dnsextd 8               \&quot; Document Title
+.Os Darwin                  \&quot; Operating System
+.\&quot;
+.Sh NAME
+.Nm dnsextd
+.Nd BIND Extension Daemon   \&quot; Name Description for whatis database
+.\&quot; 
+.Sh SYNOPSIS
+.Nm
+.\&quot;
+.Sh DESCRIPTION
+.Nm
+is a daemon invoked at boot time, running alongside BIND 9,
+to implement two EDNS0 extensions to the standard DNS protocol.
+.Pp
+.Nm
+allows clients to perform DNS Updates with an attached lease lifetime,
+so that if the client crashes or is disconnected from the network, its
+address records will be automatically deleted after the lease expires.
+.Pp
+.Nm
+allows clients to perform long-lived queries. Instead of rapidly polling
+the server to discover when information changes, long-lived queries
+enable a client to indicate its interest in some set of data, and then
+be notified asynchronously by the server whenever any of that data changes.
+.Pp
+.Nm
+has no user-specifiable command-line argument, and users should not run
+.Nm
+manually.
+.\&quot;
+.Sh SEE ALSO
+.Xr mDNS 1
+.Xr mDNSResponder 8
+.Pp
+For information on Dynamic DNS Update, see RFC 2136
+&quot;Dynamic Updates in the Domain Name System (DNS UPDATE)&quot;
+.Pp
+For information on Dynamic DNS Update Leases, see
+.Pa <a href="http://files.dns-sd.org/draft-dns-update-leases.txt">http://files.dns-sd.org/draft-dns-update-leases.txt</a>
+.Pp
+For information on Long-Lived Queries, see
+.Pa <a href="http://files.dns-sd.org/draft-dns-llq.txt">http://files.dns-sd.org/draft-dns-llq.txt</a>
+.\&quot;
+.Sh BUGS
+.Nm
+bugs are tracked in Apple Radar component &quot;mDNSResponder&quot;.
+.\&quot;
+.Sh HISTORY
+The
+.Nm
+daemon first appeared in Mac OS X 10.4 (Tiger).
+</pre>
+<hr />
+</body></html>

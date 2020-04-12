@@ -1,0 +1,1292 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dso-transport.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dso-transport.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dso-transport.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* dso-transport.c
+ *
+ * Copyright (c) 2018-2019 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Headers
+</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;signal.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdbool.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;assert.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netdb.h&gt;</span>           // For gethostbyname()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>      // For AF_INET, AF_INET6, etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/if.h&gt;</span>          // For IF_NAMESIZE
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>      // For INADDR_NONE
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/tcp.h&gt;</span>     // For SOL_TCP, TCP_NOTSENT_LOWAT
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>       // For inet_addr()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;fcntl.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dso.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dso-transport.h&quot;</span>
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+<span class="enscript-comment">// Network Framework only works on MacOS X at the moment, and we need the locking primitives for
+</span><span class="enscript-comment">// MacOSX.
+</span>#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">extern</span> mDNS mDNSStorage;
+
+<span class="enscript-type">static</span> dso_connect_state_t *dso_connect_states; <span class="enscript-comment">// DSO connect states that exist.
+</span><span class="enscript-type">static</span> dso_transport_t *dso_transport_states; <span class="enscript-comment">// DSO transport states that exist.
+</span>#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+<span class="enscript-type">static</span> uint32_t dso_transport_serial; <span class="enscript-comment">// Serial number of next dso_transport_state_t or dso_connect_state_t.
+</span><span class="enscript-type">static</span> dispatch_queue_t dso_dispatch_queue;
+#<span class="enscript-reference">else</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_read_callback</span>(TCPSocket *sock, <span class="enscript-type">void</span> *context, mDNSBool connection_established,
+                       mStatus err);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dso_transport_init</span>(<span class="enscript-type">void</span>)
+{
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+    <span class="enscript-comment">// It's conceivable that we might want a separate queue, but we don't know yet, so for
+</span>    <span class="enscript-comment">// now we just use the main dispatch queue, which should be on the main dispatch thread,
+</span>    <span class="enscript-comment">// which is _NOT_ the kevent thread.   So whenever we are doing anything on the dispatch
+</span>    <span class="enscript-comment">// queue (any completion functions for NW framework) we need to acquire the lock before
+</span>    <span class="enscript-comment">// we even look at any variables that could be changed by the other thread.
+</span>    dso_dispatch_queue = dispatch_get_main_queue();
+#<span class="enscript-reference">endif</span>
+}
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+<span class="enscript-type">static</span> dso_connect_state_t *
+<span class="enscript-function-name">dso_connect_state_find</span>(uint32_t serial)
+{
+    dso_connect_state_t *csp;
+    <span class="enscript-keyword">for</span> (csp = dso_connect_states; csp; csp = csp-&gt;next) {
+        <span class="enscript-keyword">if</span> (csp-&gt;serial ==  serial) {
+            <span class="enscript-keyword">return</span> csp;
+        }
+    }
+    <span class="enscript-keyword">return</span> NULL;
+}
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">dso_transport_finalize</span>(dso_transport_t *transport)
+{
+    dso_transport_t **tp = &amp;dso_transport_states;
+    <span class="enscript-keyword">if</span> (transport-&gt;connection != NULL) {
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+        nw_connection_cancel(transport-&gt;connection);
+        nw_release(transport-&gt;connection);
+#<span class="enscript-reference">else</span>
+        mDNSPlatformTCPCloseConnection(transport-&gt;connection);
+#<span class="enscript-reference">endif</span>
+        transport-&gt;connection = NULL;
+    }
+    <span class="enscript-keyword">while</span> (*tp) {
+        <span class="enscript-keyword">if</span> (*tp == transport) {
+            *tp = transport-&gt;next;
+        } <span class="enscript-keyword">else</span> {
+            tp = &amp;transport-&gt;next;
+        }
+    }
+    free(transport);
+}    
+
+<span class="enscript-comment">// We do all of the finalization for the dso state object and any objects it depends on here in the
+</span><span class="enscript-comment">// dso_idle function because it avoids the possibility that some code on the way out to the event loop
+</span><span class="enscript-comment">// _after_ the DSO connection has been dropped might still write to the DSO structure or one of the
+</span><span class="enscript-comment">// dependent structures and corrupt the heap, or indeed in the unlikely event that this memory was
+</span><span class="enscript-comment">// freed and then reallocated before the exit to the event loop, there could be a bad pointer
+</span><span class="enscript-comment">// dereference.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// If there is a finalize function, that function MUST either free its own state that references the
+</span><span class="enscript-comment">// DSO state, or else must NULL out the pointer to the DSO state.
+</span>int64_t <span class="enscript-function-name">dso_transport_idle</span>(<span class="enscript-type">void</span> *context, int64_t now_in, int64_t next_timer_event)
+{
+    dso_connect_state_t *cs, *cnext;
+    mDNS *m = context;
+    mDNSs32 now = (mDNSs32)now_in;
+    mDNSs32 next_event = (mDNSs32)next_timer_event;
+
+    <span class="enscript-comment">// Notice if a DSO connection state is active but hasn't seen activity in a while.
+</span>    <span class="enscript-keyword">for</span> (cs = dso_connect_states; cs != NULL; cs = cnext) {
+        cnext = cs-&gt;next;
+        <span class="enscript-keyword">if</span> (!cs-&gt;connecting &amp;&amp; cs-&gt;last_event != 0) {
+            mDNSs32 expiry = cs-&gt;last_event + 90 * mDNSPlatformOneSecond;
+            <span class="enscript-keyword">if</span> (now - expiry &gt; 0) {
+                cs-&gt;last_event = 0;
+                cs-&gt;callback(cs-&gt;context, NULL, NULL, kDSOEventType_ConnectFailed);
+                <span class="enscript-keyword">if</span> (cs-&gt;lookup != NULL) {
+                    DNSServiceRef ref = cs-&gt;lookup;
+                    cs-&gt;lookup = NULL;
+                    mDNS_DropLockBeforeCallback();
+                    DNSServiceRefDeallocate(ref);
+                    mDNS_ReclaimLockAfterCallback();    <span class="enscript-comment">// Decrement mDNS_reentrancy to block mDNS API calls again
+</span>                }
+            } <span class="enscript-keyword">else</span> {
+                <span class="enscript-keyword">if</span> (next_timer_event - expiry &gt; 0) {
+                    next_timer_event = expiry;
+                }
+            }
+        } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!cs-&gt;connecting &amp;&amp; cs-&gt;reconnect_time &amp;&amp; now - cs-&gt;reconnect_time &gt; 0) {
+            cs-&gt;reconnect_time = 0; <span class="enscript-comment">// Don't try to immediately reconnect if it fails.
+</span>            <span class="enscript-comment">// If cs-&gt;dso-&gt;transport is non-null, we're already connected.
+</span>            <span class="enscript-keyword">if</span> (cs-&gt;dso &amp;&amp; cs-&gt;dso-&gt;transport == NULL) {
+                cs-&gt;callback(cs-&gt;context, NULL, NULL, kDSOEventType_ShouldReconnect);
+            }
+        }
+        <span class="enscript-keyword">if</span> (cs-&gt;reconnect_time != 0 &amp;&amp; next_event - cs-&gt;reconnect_time &gt; 0) {
+            next_event = cs-&gt;reconnect_time;
+        }
+    }
+            
+    <span class="enscript-keyword">return</span> next_event;
+}
+
+<span class="enscript-comment">// Call to schedule a reconnect at a later time.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_schedule_reconnect</span>(mDNS *m, dso_connect_state_t *cs, mDNSs32 when)
+{
+    cs-&gt;reconnect_time = when * mDNSPlatformOneSecond + m-&gt;timenow;
+}
+
+<span class="enscript-comment">// If a DSO was created by an incoming connection, the creator of the listener can use this function
+</span><span class="enscript-comment">// to supply context and a callback for future events.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_set_callback</span>(dso_state_t *dso, <span class="enscript-type">void</span> *context, dso_event_callback_t cb)
+{
+    dso-&gt;cb = cb;
+    dso-&gt;context = context;
+}
+
+<span class="enscript-comment">// This is called before writing a DSO message to the output buffer.  length is the length of the message.
+</span><span class="enscript-comment">// Returns true if we have successfully selected for write (which means that we're under TCP_NOTSENT_LOWAT).
+</span><span class="enscript-comment">// Otherwise returns false.   It is valid to write even if it returns false, but there is a risk that
+</span><span class="enscript-comment">// the write will return EWOULDBLOCK, at which point we'd have to blow away the connection.   It is also
+</span><span class="enscript-comment">// valid to give up at this point and not write a message; as long as dso_write_finish isn't called, a later
+</span><span class="enscript-comment">// call to dso_write_start will overwrite the length that was stored by the previous invocation.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// The circumstance in which this would occur is that we have filled the kernel's TCP output buffer for this
+</span><span class="enscript-comment">// connection all the way up to TCP_NOTSENT_LOWAT, and then we get a query from the Discovery Proxy to which we
+</span><span class="enscript-comment">// need to respond.  Because TCP_NOTSENT_LOWAT is fairly low, there should be a lot of room in the TCP output
+</span><span class="enscript-comment">// buffer for small responses; it would need to be the case that we are getting requests from the proxy at a
+</span><span class="enscript-comment">// high rate for us to fill the output buffer to the point where a write of a 12-byte response returns
+</span><span class="enscript-comment">// EWOULDBLOCK; in that case, things are so dysfunctional that killing the connection isn't any worse than
+</span><span class="enscript-comment">// allowing it to continue.
+</span>
+<span class="enscript-comment">// An additional note about the motivation for this code: the idea originally was that we'd do scatter/gather
+</span><span class="enscript-comment">// I/O here: this lets us write everything out in a single sendmsg() call.   This isn't used with the mDNSPlatformTCP
+</span><span class="enscript-comment">// code because it doesn't support scatter/gather.   Network Framework does, however, and in principle we could
+</span><span class="enscript-comment">// write to the descriptor directly if that were really needed.
+</span>
+bool <span class="enscript-function-name">dso_write_start</span>(dso_transport_t *transport, size_t length)
+{
+    <span class="enscript-comment">// The transport doesn't support messages outside of this range.
+</span>    <span class="enscript-keyword">if</span> (length &lt; 12 || length &gt; 65535) {
+        <span class="enscript-keyword">return</span> false;
+    }
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+    uint8_t lenbuf[2];
+
+    <span class="enscript-keyword">if</span> (transport-&gt;to_write != NULL) {
+        nw_release(transport-&gt;to_write);
+        transport-&gt;to_write = NULL;
+    }
+    lenbuf[0] = length &gt;&gt; 8;
+    lenbuf[1] = length &amp; 255;
+    transport-&gt;to_write = dispatch_data_create(lenbuf, 2, dso_dispatch_queue,
+                                               DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    <span class="enscript-keyword">if</span> (transport-&gt;to_write == NULL) {
+        transport-&gt;write_failed = true;
+        <span class="enscript-keyword">return</span> false;
+    }
+    transport-&gt;bytes_to_write = length + 2;
+
+    <span class="enscript-comment">// We don't have access to TCP_NOTSENT_LOWAT, so for now we track how many bytes we've written
+</span>    <span class="enscript-comment">// versus how many bytes that we've written have completed, and if that creeps above MAX_UNSENT_BYTES,
+</span>    <span class="enscript-comment">// we return false here to indicate that there is congestion.
+</span>    <span class="enscript-keyword">if</span> (transport-&gt;unsent_bytes &gt; MAX_UNSENT_BYTES) {
+        <span class="enscript-keyword">return</span> false;
+    } <span class="enscript-keyword">else</span> {
+        <span class="enscript-keyword">return</span> true;
+    }
+#<span class="enscript-reference">else</span>
+    transport-&gt;lenbuf[0] = length &gt;&gt; 8;
+    transport-&gt;lenbuf[1] = length &amp; 255;
+
+    transport-&gt;to_write[0] = transport-&gt;lenbuf;
+    transport-&gt;write_lengths[0] = 2;
+    transport-&gt;num_to_write = 1;
+
+    <span class="enscript-keyword">return</span> mDNSPlatformTCPWritable(transport-&gt;connection);
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+}
+
+<span class="enscript-comment">// Called to finish a write (dso_write_start .. dso_write .. [ dso_write ... ] dso_write_finish).  The
+</span><span class="enscript-comment">// write must completely finish--if we get a partial write, this means that the connection is stalled, and
+</span><span class="enscript-comment">// so we drop it.  Since this can call dso_drop, the caller must not reference the DSO state object
+</span><span class="enscript-comment">// after this call if the return value is false.
+</span>bool <span class="enscript-function-name">dso_write_finish</span>(dso_transport_t *transport)
+{
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+    uint32_t serial = transport-&gt;dso-&gt;serial;
+    <span class="enscript-type">int</span> bytes_to_write = transport-&gt;bytes_to_write;
+    transport-&gt;bytes_to_write = 0;
+    <span class="enscript-keyword">if</span> (transport-&gt;write_failed) {
+        dso_drop(transport-&gt;dso);
+        <span class="enscript-keyword">return</span> false;
+    }
+    transport-&gt;unsent_bytes += bytes_to_write;
+    nw_connection_send(transport-&gt;connection, transport-&gt;to_write, NW_CONNECTION_DEFAULT_STREAM_CONTEXT, true,
+                       ^(nw_error_t  _Nullable error) {
+                           dso_state_t *dso;
+                           KQueueLock();
+                           dso = dso_find_by_serial(serial);
+                           <span class="enscript-keyword">if</span> (error != NULL) {
+                               LogMsg(<span class="enscript-string">&quot;dso_write_finish: write failed: %s&quot;</span>, strerror(nw_error_get_error_code(error)));
+                               <span class="enscript-keyword">if</span> (dso != NULL) {
+                                   dso_drop(dso);
+                               }
+                           } <span class="enscript-keyword">else</span> {
+                               dso-&gt;transport-&gt;unsent_bytes -= bytes_to_write;
+                               LogMsg(<span class="enscript-string">&quot;dso_write_finish completion routine: %d bytes written, %d bytes outstanding&quot;</span>,
+                                      bytes_to_write, dso-&gt;transport-&gt;unsent_bytes);
+                           }
+                           KQueueUnlock(<span class="enscript-string">&quot;dso_write_finish completion routine&quot;</span>);
+                       });
+    nw_release(transport-&gt;to_write);
+    transport-&gt;to_write = NULL;
+    <span class="enscript-keyword">return</span> true;
+#<span class="enscript-reference">else</span>
+    ssize_t result, total = 0;
+    <span class="enscript-type">int</span> i;
+
+   <span class="enscript-keyword">if</span> (transport-&gt;num_to_write &gt; MAX_WRITE_HUNKS) {
+        LogMsg(<span class="enscript-string">&quot;dso_write_finish: fatal internal programming error: called %d times (more than limit of %d)&quot;</span>, 
+               transport-&gt;num_to_write, MAX_WRITE_HUNKS);
+        dso_drop(transport-&gt;dso);
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    <span class="enscript-comment">// This is our ersatz scatter/gather I/O.
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; transport-&gt;num_to_write; i++) {
+        result = mDNSPlatformWriteTCP(transport-&gt;connection, (<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)transport-&gt;to_write[i], transport-&gt;write_lengths[i]);
+        <span class="enscript-keyword">if</span> (result != transport-&gt;write_lengths[i]) {
+            <span class="enscript-keyword">if</span> (result &lt; 0) {
+                LogMsg(<span class="enscript-string">&quot;dso_write_finish: fatal: mDNSPlatformWrite on %s returned %d&quot;</span>, transport-&gt;dso-&gt;remote_name, errno);
+            } <span class="enscript-keyword">else</span> {
+                LogMsg(<span class="enscript-string">&quot;dso_write_finish: fatal: mDNSPlatformWrite: short write on %s: %ld &lt; %ld&quot;</span>,
+                       transport-&gt;dso-&gt;remote_name, (<span class="enscript-type">long</span>)result, (<span class="enscript-type">long</span>)total);
+            }
+            dso_drop(transport-&gt;dso);
+            <span class="enscript-keyword">return</span> false;
+        }
+    }
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-keyword">return</span> true;
+}
+
+<span class="enscript-comment">// This function may only be called after a previous call to dso_write_start; it records the length of and
+</span><span class="enscript-comment">// pointer to the write buffer.  These buffers must remain valid until dso_write_finish() is called.  The
+</span><span class="enscript-comment">// caller is responsible for managing the memory they contain.  The expected control flow for writing is:
+</span><span class="enscript-comment">// dso_write_start(); dso_write(); dso_write(); dso_write(); dso_write_finished(); There should be one or
+</span><span class="enscript-comment">// more calls to dso_write; these will ideally be translated into a single scatter/gather sendmsg call (or
+</span><span class="enscript-comment">// equivalent) to the kernel.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_write</span>(dso_transport_t *transport, <span class="enscript-type">const</span> uint8_t *buf, size_t length)
+{
+    <span class="enscript-keyword">if</span> (length == 0) {
+        <span class="enscript-keyword">return</span>;
+    }
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+    <span class="enscript-keyword">if</span> (transport-&gt;write_failed) {
+        <span class="enscript-keyword">return</span>;
+    }
+    dispatch_data_t dpd = dispatch_data_create(buf, length, dso_dispatch_queue,
+                                               DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    <span class="enscript-keyword">if</span> (dpd == NULL) {
+        transport-&gt;write_failed = true;
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-keyword">if</span> (transport-&gt;to_write != NULL) {
+        dispatch_data_t dpc = dispatch_data_create_concat(transport-&gt;to_write, dpd);
+        dispatch_release(dpd);
+        dispatch_release(transport-&gt;to_write);
+        <span class="enscript-keyword">if</span> (dpc == NULL) {
+            transport-&gt;to_write = NULL;
+            transport-&gt;write_failed = true;
+            <span class="enscript-keyword">return</span>;
+        }
+        transport-&gt;to_write = dpc;
+    }
+#<span class="enscript-reference">else</span>
+    <span class="enscript-comment">// We'll report this in dso_write_finish();
+</span>    <span class="enscript-keyword">if</span> (transport-&gt;num_to_write &gt;= MAX_WRITE_HUNKS) {
+        transport-&gt;num_to_write++;
+        <span class="enscript-keyword">return</span>;
+    }
+
+    transport-&gt;to_write[transport-&gt;num_to_write] = buf;
+    transport-&gt;write_lengths[transport-&gt;num_to_write] = length;
+    transport-&gt;num_to_write++;
+#<span class="enscript-reference">endif</span>
+}
+
+<span class="enscript-comment">// Write a DSO message
+</span><span class="enscript-type">int</span> <span class="enscript-function-name">dso_message_write</span>(dso_state_t *dso, dso_message_t *msg, bool disregard_low_water)
+{
+    dso_transport_t *transport = dso-&gt;transport;
+    <span class="enscript-keyword">if</span> (transport-&gt;connection != NULL) {
+        <span class="enscript-keyword">if</span> (dso_write_start(transport, dso_message_length(msg)) || disregard_low_water) {
+            dso_write(transport, msg-&gt;buf, msg-&gt;no_copy_bytes_offset);
+            dso_write(transport, msg-&gt;no_copy_bytes, msg-&gt;no_copy_bytes_len);
+            dso_write(transport, &amp;msg-&gt;buf[msg-&gt;no_copy_bytes_offset], msg-&gt;cur - msg-&gt;no_copy_bytes_offset);
+            <span class="enscript-keyword">return</span> dso_write_finish(transport);
+        }
+    }
+    <span class="enscript-keyword">return</span> mStatus_NoMemoryErr;
+}
+
+<span class="enscript-comment">// Replies to some message we were sent with a response code and no data.
+</span><span class="enscript-comment">// This is a convenience function for replies that do not require that a new
+</span><span class="enscript-comment">// packet be constructed.   It takes advantage of the fact that the message
+</span><span class="enscript-comment">// to which this is a reply is still in the input buffer, and modifies that
+</span><span class="enscript-comment">// message in place to turn it into a response.
+</span>
+bool <span class="enscript-function-name">dso_send_simple_response</span>(dso_state_t *dso, <span class="enscript-type">int</span> rcode, <span class="enscript-type">const</span> DNSMessageHeader *header, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *pres)
+{
+    dso_transport_t *transport = dso-&gt;transport;
+    (<span class="enscript-type">void</span>)pres; <span class="enscript-comment">// might want this later.
+</span>    DNSMessageHeader response = *header;
+    
+    <span class="enscript-comment">// Just return the message, with no questions, answers, etc.
+</span>    response.flags.b[1] = (response.flags.b[1] &amp; ~kDNSFlag1_RC_Mask) | rcode;
+    response.flags.b[0] |= kDNSFlag0_QR_Response;
+    response.numQuestions = 0;
+    response.numAnswers = 0;
+    response.numAuthorities = 0;
+    response.numAdditionals = 0;
+
+    <span class="enscript-comment">// Buffered write back to discovery proxy
+</span>    (<span class="enscript-type">void</span>)dso_write_start(transport, 12);
+    dso_write(transport, (uint8_t *)&amp;response, 12);
+    <span class="enscript-keyword">if</span> (!dso_write_finish(transport)) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">return</span> true;
+}
+
+<span class="enscript-comment">// DSO Message we received has a primary TLV that's not implemented.
+</span><span class="enscript-comment">// XXX is this what we're supposed to do here? check draft.
+</span>bool <span class="enscript-function-name">dso_send_not_implemented</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header)
+{
+    <span class="enscript-keyword">return</span> dso_send_simple_response(dso, kDNSFlag1_RC_DSOTypeNI, header, <span class="enscript-string">&quot;DSOTYPENI&quot;</span>);
+}
+
+<span class="enscript-comment">// Non-DSO message we received is refused.
+</span>bool <span class="enscript-function-name">dso_send_refused</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header)
+{
+    <span class="enscript-keyword">return</span> dso_send_simple_response(dso, kDNSFlag1_RC_Refused, header, <span class="enscript-string">&quot;REFUSED&quot;</span>);
+}
+
+bool <span class="enscript-function-name">dso_send_formerr</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header)
+{
+    <span class="enscript-keyword">return</span> dso_send_simple_response(dso, kDNSFlag1_RC_FormErr, header, <span class="enscript-string">&quot;FORMERR&quot;</span>);
+}
+
+bool <span class="enscript-function-name">dso_send_servfail</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header)
+{
+    <span class="enscript-keyword">return</span> dso_send_simple_response(dso, kDNSFlag1_RC_ServFail, header, <span class="enscript-string">&quot;SERVFAIL&quot;</span>);
+}
+
+bool <span class="enscript-function-name">dso_send_name_error</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header)
+{
+    <span class="enscript-keyword">return</span> dso_send_simple_response(dso, kDNSFlag1_RC_NXDomain, header, <span class="enscript-string">&quot;NXDOMAIN&quot;</span>);
+}
+
+bool <span class="enscript-function-name">dso_send_no_error</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header)
+{
+    <span class="enscript-keyword">return</span> dso_send_simple_response(dso, kDNSFlag1_RC_NoErr, header, <span class="enscript-string">&quot;NOERROR&quot;</span>);
+}
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_read_message</span>(dso_transport_t *transport, size_t length);
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_read_message_length</span>(dso_transport_t *transport)
+{
+    <span class="enscript-type">const</span> uint32_t serial = transport-&gt;dso-&gt;serial;
+    <span class="enscript-keyword">if</span> (transport-&gt;connection == NULL) {
+        LogMsg(<span class="enscript-string">&quot;dso_read_message_length called with null connection.&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+    nw_connection_receive(transport-&gt;connection, 2, 2,
+                          ^(dispatch_data_t content, nw_content_context_t __unused context,
+                            bool __unused is_complete, nw_error_t error) {
+                              dso_state_t *dso;
+                              <span class="enscript-comment">// Don't touch anything or look at anything until we have the lock.
+</span>                              KQueueLock();
+                              dso = dso_find_by_serial(serial);
+                              <span class="enscript-keyword">if</span> (error != NULL) {
+                                  LogMsg(<span class="enscript-string">&quot;dso_read_message_length: read failed: %s&quot;</span>,
+                                         strerror(nw_error_get_error_code(error)));
+                              <span class="enscript-reference">fail</span>:
+                                  <span class="enscript-keyword">if</span> (dso != NULL) {
+                                      mDNS_Lock(&amp;mDNSStorage);
+                                      dso_drop(dso);
+                                      mDNS_Unlock(&amp;mDNSStorage);
+                                  }
+                              } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (content == NULL) {
+                                  LogMsg(<span class="enscript-string">&quot;dso_read_message_length: remote end closed connection.&quot;</span>);
+                                  <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+                              } <span class="enscript-keyword">else</span> {
+                                  size_t length;
+                                  <span class="enscript-type">const</span> uint8_t *lenbuf;
+                                  dispatch_data_t map = dispatch_data_create_map(content, (<span class="enscript-type">const</span> <span class="enscript-type">void</span> **)&amp;lenbuf, &amp;length);
+                                  <span class="enscript-keyword">if</span> (map == NULL) {
+                                      LogMsg(<span class="enscript-string">&quot;dso_read_message_length: map create failed&quot;</span>);
+                                      <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+                                  } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (length != 2) {
+                                      LogMsg(<span class="enscript-string">&quot;dso_read_message_length: invalid length = %d&quot;</span>, length);
+                                      <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+                                  }
+                                  length = ((<span class="enscript-type">unsigned</span>)(lenbuf[0]) &lt;&lt; 8) | ((<span class="enscript-type">unsigned</span>)lenbuf[1]);
+                                  dso_read_message(transport, length);
+                              }
+                              KQueueUnlock(<span class="enscript-string">&quot;dso_read_message_length completion routine&quot;</span>);
+                          });
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_read_message</span>(dso_transport_t *transport, size_t length)
+{
+    <span class="enscript-type">const</span> uint32_t serial = transport-&gt;dso-&gt;serial;
+    <span class="enscript-keyword">if</span> (transport-&gt;connection == NULL) {
+        LogMsg(<span class="enscript-string">&quot;dso_read_message called with null connection.&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+    nw_connection_receive(transport-&gt;connection, length, length,
+                          ^(dispatch_data_t content, nw_content_context_t __unused context,
+                            bool __unused is_complete, nw_error_t error) {
+                              dso_state_t *dso;
+                              <span class="enscript-comment">// Don't touch anything or look at anything until we have the lock.
+</span>                              KQueueLock();
+                              dso = dso_find_by_serial(serial);
+                              <span class="enscript-keyword">if</span> (error != NULL) {
+                                  LogMsg(<span class="enscript-string">&quot;dso_read_message: read failed: %s&quot;</span>, strerror(nw_error_get_error_code(error)));
+                              <span class="enscript-reference">fail</span>:
+                                  <span class="enscript-keyword">if</span> (dso != NULL) {
+                                      mDNS_Lock(&amp;mDNSStorage);
+                                      dso_drop(dso);
+                                      mDNS_Unlock(&amp;mDNSStorage);
+                                  }
+                              } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (content == NULL) {
+                                  LogMsg(<span class="enscript-string">&quot;dso_read_message: remote end closed connection&quot;</span>);
+                                  <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+                              } <span class="enscript-keyword">else</span> {
+                                  size_t bytes_read;
+                                  <span class="enscript-type">const</span> uint8_t *message;
+                                  dispatch_data_t map = dispatch_data_create_map(content, (<span class="enscript-type">const</span> <span class="enscript-type">void</span> **)&amp;message, &amp;bytes_read);
+                                  <span class="enscript-keyword">if</span> (map == NULL) {
+                                      LogMsg(<span class="enscript-string">&quot;dso_read_message_length: map create failed&quot;</span>);
+                                      <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+                                  } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (bytes_read != length) {
+                                      LogMsg(<span class="enscript-string">&quot;dso_read_message_length: only %d of %d bytes read&quot;</span>, bytes_read, length);
+                                      <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+                                  }
+                                  <span class="enscript-comment">// Process the message.
+</span>                                  mDNS_Lock(&amp;mDNSStorage);
+                                  dns_message_received(dso, message, length);
+                                  mDNS_Unlock(&amp;mDNSStorage);
+
+                                  <span class="enscript-comment">// Now read the next message length.
+</span>                                  dso_read_message_length(transport);
+                              }
+                              KQueueUnlock(<span class="enscript-string">&quot;dso_read_message completion routine&quot;</span>);
+                          });
+}
+#<span class="enscript-reference">else</span>
+<span class="enscript-comment">// Called whenever there's data available on a DSO connection
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">dso_read_callback</span>(TCPSocket *sock, <span class="enscript-type">void</span> *context, mDNSBool connection_established, <span class="enscript-type">int</span> err)
+{
+    dso_transport_t *transport = context;
+    dso_state_t *dso;
+    mDNSBool closed = mDNSfalse;
+
+    mDNS_Lock(&amp;mDNSStorage);
+    dso = transport-&gt;dso;
+
+    <span class="enscript-comment">// This shouldn't ever happen.
+</span>    <span class="enscript-keyword">if</span> (err) {
+        LogMsg(<span class="enscript-string">&quot;dso_read_callback: error %d&quot;</span>, err);
+        dso_drop(dso);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+
+    <span class="enscript-comment">// Connection is already established by the time we set this up.
+</span>    <span class="enscript-keyword">if</span> (connection_established) {
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    
+    <span class="enscript-comment">// This will be true either if we have never read a message or
+</span>    <span class="enscript-comment">// if the last thing we did was to finish reading a message and
+</span>    <span class="enscript-comment">// process it.
+</span>    <span class="enscript-keyword">if</span> (transport-&gt;message_length == 0) {
+        transport-&gt;need_length = true;
+        transport-&gt;inbufp = transport-&gt;inbuf;
+        transport-&gt;bytes_needed = 2;
+    }
+    
+    <span class="enscript-comment">// Read up to bytes_needed bytes.
+</span>    ssize_t count = mDNSPlatformReadTCP(sock, transport-&gt;inbufp, transport-&gt;bytes_needed, &amp;closed);
+    <span class="enscript-comment">// LogMsg(&quot;read(%d, %p:%p, %d) -&gt; %d&quot;, fd, dso-&gt;inbuf, dso-&gt;inbufp, dso-&gt;bytes_needed, count);
+</span>    <span class="enscript-keyword">if</span> (count &lt; 0) {
+        LogMsg(<span class="enscript-string">&quot;dso_read_callback: read from %s returned %d&quot;</span>, dso-&gt;remote_name, errno);
+        dso_drop(dso);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+
+    <span class="enscript-comment">// If we get selected for read and there's nothing to read, the remote end has closed the
+</span>    <span class="enscript-comment">// connection.
+</span>    <span class="enscript-keyword">if</span> (closed) {
+        LogMsg(<span class="enscript-string">&quot;dso_read_callback: remote %s closed&quot;</span>, dso-&gt;remote_name);
+        dso_drop(dso);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    
+    transport-&gt;inbufp += count;
+    transport-&gt;bytes_needed -= count;
+
+    <span class="enscript-comment">// If we read all the bytes we wanted, do what's next.
+</span>    <span class="enscript-keyword">if</span> (transport-&gt;bytes_needed == 0) {
+        <span class="enscript-comment">// We just finished reading the complete length of a DNS-over-TCP message.
+</span>        <span class="enscript-keyword">if</span> (transport-&gt;need_length) {
+            <span class="enscript-comment">// Get the number of bytes in this DNS message
+</span>            transport-&gt;bytes_needed = (((<span class="enscript-type">int</span>)transport-&gt;inbuf[0]) &lt;&lt; 8) | transport-&gt;inbuf[1];
+
+            <span class="enscript-comment">// Under no circumstances can length be zero.
+</span>            <span class="enscript-keyword">if</span> (transport-&gt;bytes_needed == 0) {
+                LogMsg(<span class="enscript-string">&quot;dso_read_callback: %s sent zero-length message.&quot;</span>, dso-&gt;remote_name);
+                dso_drop(dso);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+            }
+
+            <span class="enscript-comment">// The input buffer size is AbsoluteMaxDNSMessageData, which is around 9000 bytes on
+</span>            <span class="enscript-comment">// big platforms and around 1500 bytes on smaller ones.   If the remote end has sent
+</span>            <span class="enscript-comment">// something larger than that, it's an error from which we can't recover.
+</span>            <span class="enscript-keyword">if</span> (transport-&gt;bytes_needed &gt; transport-&gt;inbuf_size - 2) {
+                LogMsg(<span class="enscript-string">&quot;dso_read_callback: fatal: Proxy at %s sent a too-long (%ld bytes) message&quot;</span>,
+                       dso-&gt;remote_name, (<span class="enscript-type">long</span>)transport-&gt;bytes_needed);
+                dso_drop(dso);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+            }
+
+            transport-&gt;message_length = transport-&gt;bytes_needed;
+            transport-&gt;inbufp = transport-&gt;inbuf + 2;
+            transport-&gt;need_length = false;
+
+        <span class="enscript-comment">// We just finished reading a complete DNS-over-TCP message.
+</span>        } <span class="enscript-keyword">else</span> {
+            dns_message_received(dso, &amp;transport-&gt;inbuf[2], transport-&gt;message_length);
+            transport-&gt;message_length = 0;
+        }
+    }
+<span class="enscript-reference">out</span>:
+    mDNS_Unlock(&amp;mDNSStorage);
+}
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+<span class="enscript-type">static</span> dso_transport_t *<span class="enscript-function-name">dso_transport_create</span>(nw_connection_t connection, bool is_server, <span class="enscript-type">void</span> *context,
+                                             <span class="enscript-type">int</span> max_outstanding_queries, size_t outbuf_size_in, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *remote_name,
+                                             dso_event_callback_t cb, dso_state_t *dso)
+{
+    dso_transport_t *transport;
+    uint8_t *transp;
+    <span class="enscript-type">const</span> size_t outbuf_size = outbuf_size_in + 256; <span class="enscript-comment">// Space for additional TLVs
+</span>
+    <span class="enscript-comment">// We allocate everything in a single hunk so that we can free it together as well.
+</span>    transp = mallocL(<span class="enscript-string">&quot;dso_transport_create&quot;</span>, (<span class="enscript-keyword">sizeof</span> *transport) + outbuf_size);
+    <span class="enscript-keyword">if</span> (transp == NULL) {
+        transport = NULL;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    <span class="enscript-comment">// Don't clear the buffers.
+</span>    mDNSPlatformMemZero(transp, <span class="enscript-keyword">sizeof</span> (*transport));
+
+    transport = (dso_transport_t *)transp;
+    transp += <span class="enscript-keyword">sizeof</span> *transport;
+
+    transport-&gt;outbuf = transp;
+    transport-&gt;outbuf_size = outbuf_size;
+
+    <span class="enscript-keyword">if</span> (dso == NULL) {
+        transport-&gt;dso = dso_create(is_server, max_outstanding_queries, remote_name, cb, context, transport);
+        <span class="enscript-keyword">if</span> (transport-&gt;dso == NULL) {
+            mDNSPlatformMemFree(transport);
+            transport = NULL;
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+        }
+    } <span class="enscript-keyword">else</span> {
+        transport-&gt;dso = dso;
+    }
+    transport-&gt;connection = connection;
+    nw_retain(transport-&gt;connection);
+    transport-&gt;serial = dso_transport_serial++;
+
+    transport-&gt;dso-&gt;transport = transport;
+    transport-&gt;dso-&gt;transport_finalize = dso_transport_finalize;
+    transport-&gt;next = dso_transport_states;
+    dso_transport_states = transport;
+
+    <span class="enscript-comment">// Start looking for messages...
+</span>    dso_read_message_length(transport);
+<span class="enscript-reference">out</span>:
+    <span class="enscript-keyword">return</span> transport;
+}
+#<span class="enscript-reference">else</span>
+<span class="enscript-comment">// Create a dso_transport_t structure
+</span><span class="enscript-type">static</span> dso_transport_t *<span class="enscript-function-name">dso_transport_create</span>(TCPSocket *sock, bool is_server, <span class="enscript-type">void</span> *context, <span class="enscript-type">int</span> max_outstanding_queries,
+                                             size_t inbuf_size_in, size_t outbuf_size_in, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *remote_name,
+                                             dso_event_callback_t cb, dso_state_t *dso)
+{
+    dso_transport_t *transport;
+    size_t outbuf_size;
+    size_t inbuf_size;
+    uint8_t *transp;
+    <span class="enscript-type">int</span> status;
+
+    <span class="enscript-comment">// There's no point in a DSO that doesn't have a callback.
+</span>    <span class="enscript-keyword">if</span> (!cb) {
+        <span class="enscript-keyword">return</span> NULL;
+    }
+
+    outbuf_size = outbuf_size_in + 256; <span class="enscript-comment">// Space for additional TLVs
+</span>    inbuf_size = inbuf_size_in + 2;   <span class="enscript-comment">// Space for length
+</span>
+    <span class="enscript-comment">// We allocate everything in a single hunk so that we can free it together as well.
+</span>    transp = mallocL(<span class="enscript-string">&quot;dso_transport_create&quot;</span>, (<span class="enscript-keyword">sizeof</span> *transport) + inbuf_size + outbuf_size);
+    <span class="enscript-keyword">if</span> (transp == NULL) {
+        transport = NULL;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    <span class="enscript-comment">// Don't clear the buffers.
+</span>    mDNSPlatformMemZero(transp, <span class="enscript-keyword">sizeof</span> (*transport));
+
+    transport = (dso_transport_t *)transp;
+    transp += <span class="enscript-keyword">sizeof</span> *transport;
+
+    transport-&gt;inbuf = transp;
+    transport-&gt;inbuf_size = inbuf_size;
+    transp += inbuf_size;
+
+    transport-&gt;outbuf = transp;
+    transport-&gt;outbuf_size = outbuf_size;
+
+    <span class="enscript-keyword">if</span> (dso == NULL) {
+        transport-&gt;dso = dso_create(is_server, max_outstanding_queries, remote_name, cb, context, transport);
+        <span class="enscript-keyword">if</span> (transport-&gt;dso == NULL) {
+            mDNSPlatformMemFree(transport);
+            transport = NULL;
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+        }
+    } <span class="enscript-keyword">else</span> {
+        transport-&gt;dso = dso;
+    }
+    transport-&gt;connection = sock;
+
+    status = mDNSPlatformTCPSocketSetCallback(sock, dso_read_callback, transport);
+    <span class="enscript-keyword">if</span> (status != mStatus_NoError) {
+        LogMsg(<span class="enscript-string">&quot;dso_create: unable to set callback: %d&quot;</span>, status);
+        dso_drop(transport-&gt;dso);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+
+    transport-&gt;dso-&gt;transport = transport;
+    transport-&gt;dso-&gt;transport_finalize = dso_transport_finalize;
+    transport-&gt;next = dso_transport_states;
+    dso_transport_states = transport;
+<span class="enscript-reference">out</span>:
+    <span class="enscript-keyword">return</span> transport;
+}
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+
+<span class="enscript-comment">// This should all be replaced with Network Framework connection setup.
+</span>dso_connect_state_t *<span class="enscript-function-name">dso_connect_state_create</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *hostname, mDNSAddr *addr, mDNSIPPort port,
+                                              <span class="enscript-type">int</span> max_outstanding_queries, size_t inbuf_size, size_t outbuf_size,
+                                              dso_event_callback_t callback, dso_state_t *dso, <span class="enscript-type">void</span> *context, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *detail)
+{
+    <span class="enscript-type">int</span> detlen = strlen(detail) + 1;
+    <span class="enscript-type">int</span> hostlen = hostname == NULL ? 0 : strlen(hostname) + 1;
+    <span class="enscript-type">int</span> len;
+    dso_connect_state_t *cs;
+    <span class="enscript-type">char</span> *csp;
+    <span class="enscript-type">char</span> nbuf[INET6_ADDRSTRLEN + 1];
+    dso_connect_state_t **states;
+
+    <span class="enscript-comment">// Enforce Some Minimums (Xxx these are a bit arbitrary, maybe not worth doing?)
+</span>    <span class="enscript-keyword">if</span> (inbuf_size &lt; MaximumRDSize || outbuf_size &lt; 128 || max_outstanding_queries &lt; 1) {
+        <span class="enscript-keyword">return</span> 0;
+    }
+
+    <span class="enscript-comment">// If we didn't get a hostname, make a presentation form of the IP address to use instead.
+</span>    <span class="enscript-keyword">if</span> (!hostlen) {
+        <span class="enscript-keyword">if</span> (addr != NULL) {
+            <span class="enscript-keyword">if</span> (addr-&gt;type == mDNSAddrType_IPv4) {
+                hostname = inet_ntop(AF_INET, &amp;addr-&gt;ip.v4, nbuf, <span class="enscript-keyword">sizeof</span> nbuf);
+            } <span class="enscript-keyword">else</span> {
+                hostname = inet_ntop(AF_INET6, &amp;addr-&gt;ip.v6, nbuf, <span class="enscript-keyword">sizeof</span> nbuf);
+            }
+            <span class="enscript-keyword">if</span> (hostname != NULL) {
+                hostlen = strlen(nbuf);
+            }
+        }
+    }
+    <span class="enscript-comment">// If we don't have a printable name, we won't proceed, because this means we don't know
+</span>    <span class="enscript-comment">// what to connect to.
+</span>    <span class="enscript-keyword">if</span> (!hostlen) {
+        <span class="enscript-keyword">return</span> 0;
+    }
+
+    len = (<span class="enscript-keyword">sizeof</span> *cs) + detlen + hostlen;
+    csp = malloc(len);
+    <span class="enscript-keyword">if</span> (!csp) {
+        <span class="enscript-keyword">return</span> NULL;
+    }
+    cs = (dso_connect_state_t *)csp;
+    memset(cs, 0, <span class="enscript-keyword">sizeof</span> *cs);
+    csp += <span class="enscript-keyword">sizeof</span> *cs;
+
+    cs-&gt;detail = csp;
+    memcpy(cs-&gt;detail, detail, detlen);
+    csp += detlen;
+    cs-&gt;hostname = csp;
+    memcpy(cs-&gt;hostname, hostname, hostlen);
+
+    cs-&gt;config_port = port;
+    cs-&gt;max_outstanding_queries = max_outstanding_queries;
+    cs-&gt;outbuf_size = outbuf_size;
+    <span class="enscript-keyword">if</span> (context) {
+        cs-&gt;context = context;
+    } <span class="enscript-comment">// else cs-&gt;context = NULL because of memset call above.
+</span>    cs-&gt;callback = callback;
+    cs-&gt;connect_port.NotAnInteger = 0;
+    cs-&gt;dso = dso;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+    cs-&gt;serial = dso_transport_serial++;
+#<span class="enscript-reference">else</span>
+    cs-&gt;inbuf_size = inbuf_size;
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (addr) {
+        cs-&gt;num_addrs = 1;
+        cs-&gt;addresses[0] = *addr;
+        cs-&gt;ports[0] = port;
+    }
+    <span class="enscript-keyword">for</span> (states = &amp;dso_connect_states; *states != NULL; states = &amp;(*states)-&gt;next)
+        ;
+    *states = cs;
+    <span class="enscript-keyword">return</span> cs;
+}
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_connect_state_use_tls</span>(dso_connect_state_t *cs)
+{
+    cs-&gt;tls_enabled = true;
+}
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_connect_state_drop</span>(dso_connect_state_t *cs)
+{
+    dso_connect_state_t **states;
+
+    <span class="enscript-keyword">for</span> (states = &amp;dso_connect_states; *states != NULL &amp;&amp; *states != cs; states = &amp;(*states)-&gt;next)
+        ;
+    <span class="enscript-keyword">if</span> (*states) {
+        *states = cs-&gt;next;;
+    } <span class="enscript-keyword">else</span> {
+        LogMsg(<span class="enscript-string">&quot;dso_connect_state_drop: dropping a connect state that isn't recognized.&quot;</span>);
+    }
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+    <span class="enscript-keyword">if</span> (cs-&gt;connection != NULL) {
+        nw_connection_cancel(cs-&gt;connection);
+        nw_release(cs-&gt;connection);
+        cs-&gt;connection = NULL;
+    }
+#<span class="enscript-reference">endif</span>
+    mDNSPlatformMemFree(cs);
+}
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">dso_connection_succeeded</span>(dso_connect_state_t *cs)
+{
+    <span class="enscript-comment">// We got a connection.
+</span>    dso_transport_t *transport =
+        dso_transport_create(cs-&gt;connection, false, cs-&gt;context, cs-&gt;max_outstanding_queries,
+                             cs-&gt;outbuf_size, cs-&gt;hostname, cs-&gt;callback, cs-&gt;dso);
+    nw_release(cs-&gt;connection);
+    cs-&gt;connection = NULL;
+    <span class="enscript-keyword">if</span> (transport == NULL) {
+        <span class="enscript-comment">// If dso_transport_create fails, there's no point in continuing to try to connect to new
+</span>        <span class="enscript-comment">// addresses
+</span>        LogMsg(<span class="enscript-string">&quot;dso_connection_succeeded: dso_create failed&quot;</span>);
+        <span class="enscript-comment">// XXX we didn't retain the connection, so we're done when it goes out of scope, right?
+</span>    } <span class="enscript-keyword">else</span> {
+        <span class="enscript-comment">// Call the &quot;we're connected&quot; callback, which will start things up.
+</span>        transport-&gt;dso-&gt;cb(cs-&gt;context, NULL, transport-&gt;dso, kDSOEventType_Connected);
+    }
+    
+    cs-&gt;last_event = 0;
+
+    <span class="enscript-comment">// When the connection has succeeded, stop asking questions.
+</span>    <span class="enscript-keyword">if</span> (cs-&gt;lookup != NULL) {
+        mDNS *m = &amp;mDNSStorage;
+        DNSServiceRef ref = cs-&gt;lookup;
+        cs-&gt;lookup = NULL;
+        mDNS_DropLockBeforeCallback();
+        DNSServiceRefDeallocate(ref);
+        mDNS_ReclaimLockAfterCallback();
+    }
+    <span class="enscript-keyword">return</span>;
+}
+
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_connect_internal</span>(dso_connect_state_t *cs)
+{
+    uint32_t serial = cs-&gt;serial;
+
+    cs-&gt;last_event = mDNSStorage.timenow;
+
+    <span class="enscript-keyword">if</span> (cs-&gt;num_addrs &lt;= cs-&gt;cur_addr) {
+        <span class="enscript-keyword">if</span> (cs-&gt;lookup == NULL) {
+            LogMsg(<span class="enscript-string">&quot;dso_connect_internal: %s: no more addresses to try&quot;</span>, cs-&gt;hostname);
+            cs-&gt;last_event = 0;
+            cs-&gt;callback(cs-&gt;context, NULL, NULL, kDSOEventType_ConnectFailed);
+        }
+        <span class="enscript-comment">// Otherwise, we will get more callbacks when outstanding queries either fail or succeed.
+</span>        <span class="enscript-keyword">return</span>;
+    }            
+        
+    <span class="enscript-type">char</span> addrbuf[INET6_ADDRSTRLEN + 1];
+    <span class="enscript-type">char</span> portbuf[6];
+
+    inet_ntop(cs-&gt;addresses[cs-&gt;cur_addr].type == mDNSAddrType_IPv4 ? AF_INET : AF_INET6,
+              cs-&gt;addresses[cs-&gt;cur_addr].type == mDNSAddrType_IPv4
+              ? (<span class="enscript-type">void</span> *)cs-&gt;addresses[cs-&gt;cur_addr].ip.v4.b
+              : (<span class="enscript-type">void</span> *)cs-&gt;addresses[cs-&gt;cur_addr].ip.v6.b, addrbuf, <span class="enscript-keyword">sizeof</span> addrbuf);
+    snprintf(portbuf, <span class="enscript-keyword">sizeof</span> portbuf, <span class="enscript-string">&quot;%u&quot;</span>, ntohs(cs-&gt;ports[cs-&gt;cur_addr].NotAnInteger));
+    cs-&gt;cur_addr++;
+
+    nw_endpoint_t endpoint = nw_endpoint_create_host(addrbuf, portbuf);
+    <span class="enscript-keyword">if</span> (endpoint == NULL) {
+    <span class="enscript-reference">nomem</span>:
+        LogMsg(<span class="enscript-string">&quot;dso_connect_internal: no memory creating connection.&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+    nw_parameters_t parameters = NULL;
+    nw_parameters_configure_protocol_block_t configure_tls = NW_PARAMETERS_DISABLE_PROTOCOL;
+    <span class="enscript-keyword">if</span> (cs-&gt;tls_enabled) {
+        <span class="enscript-comment">// This sets up a block that's called when we get a TLS connection and want to verify
+</span>        <span class="enscript-comment">// the cert.   Right now we only support opportunistic security, which means we have
+</span>        <span class="enscript-comment">// no way to validate the cert.   Future work: add support for validating the cert
+</span>        <span class="enscript-comment">// using a TLSA record if one is present.
+</span>        configure_tls = ^(nw_protocol_options_t tls_options) {
+            sec_protocol_options_t sec_options = nw_tls_copy_sec_protocol_options(tls_options);
+            sec_protocol_options_set_verify_block(sec_options, 
+                                                  ^(sec_protocol_metadata_t __unused metadata,
+                                                    sec_trust_t __unused trust_ref,
+                                                    sec_protocol_verify_complete_t complete) {
+                                                      complete(true);
+                                                  }, dso_dispatch_queue);
+        };
+    }
+    parameters = nw_parameters_create_secure_tcp(configure_tls, NW_PARAMETERS_DEFAULT_CONFIGURATION);
+    <span class="enscript-keyword">if</span> (parameters == NULL) {
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">nomem</span>;
+    }
+    nw_connection_t connection = nw_connection_create(endpoint, parameters);
+    <span class="enscript-keyword">if</span> (connection == NULL) {
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">nomem</span>;
+    }
+    cs-&gt;connection = connection;
+
+    LogMsg(<span class="enscript-string">&quot;dso_connect_internal: Attempting to connect to %s%%%s&quot;</span>, addrbuf, portbuf);
+    nw_connection_set_queue(connection, dso_dispatch_queue);
+    nw_connection_set_state_changed_handler(
+        connection, ^(nw_connection_state_t state, nw_error_t error) {
+            dso_connect_state_t *ncs;
+            KQueueLock();
+            ncs = dso_connect_state_find(serial); <span class="enscript-comment">// Might have been freed.
+</span>            <span class="enscript-keyword">if</span> (ncs == NULL) {
+                LogMsg(<span class="enscript-string">&quot;forgotten connection is %s.&quot;</span>,
+                       state == nw_connection_state_cancelled ? <span class="enscript-string">&quot;canceled&quot;</span> :
+                       state == nw_connection_state_failed ? <span class="enscript-string">&quot;failed&quot;</span> :
+                       state == nw_connection_state_waiting ? <span class="enscript-string">&quot;canceled&quot;</span> :
+                       state == nw_connection_state_ready ? <span class="enscript-string">&quot;ready&quot;</span> : <span class="enscript-string">&quot;unknown&quot;</span>);
+                <span class="enscript-keyword">if</span> (state != nw_connection_state_cancelled) {
+                    nw_connection_cancel(connection);
+                    <span class="enscript-comment">// Don't need to release it because only NW framework is holding a reference (XXX right?)
+</span>                }
+            } <span class="enscript-keyword">else</span> {
+                <span class="enscript-keyword">if</span> (state == nw_connection_state_waiting) {
+                    LogMsg(<span class="enscript-string">&quot;connection to %#a%%%d is waiting&quot;</span>, &amp;ncs-&gt;addresses[ncs-&gt;cur_addr], ncs-&gt;ports[ncs-&gt;cur_addr]);
+
+                    <span class="enscript-comment">// XXX the right way to do this is to just let NW Framework wait until we get a connection,
+</span>                    <span class="enscript-comment">// but there are a bunch of problems with that right now.   First, will we get &quot;waiting&quot; on
+</span>                    <span class="enscript-comment">// every connection we try?   We aren't relying on NW Framework for DNS lookups, so we are
+</span>                    <span class="enscript-comment">// connecting to an IP address, not a host, which means in principle that a later IP address
+</span>                    <span class="enscript-comment">// might be reachable.   So we have to stop trying on this one to try that one.   Oops.
+</span>                    <span class="enscript-comment">// Once we get NW Framework to use internal calls to resolve names, we can fix this.
+</span>                    <span class="enscript-comment">// Second, maybe we want to switch to polling if this happens.   Probably not, but we need
+</span>                    <span class="enscript-comment">// to think this through.   So right now we're just using the semantics of regular sockets,
+</span>                    <span class="enscript-comment">// which we /have/ thought through.   So in the future we should do this think-through and
+</span>                    <span class="enscript-comment">// try to use NW Framework as it's intended to work rather than as if it were just sockets.
+</span>                    ncs-&gt;connecting = mDNSfalse;
+                    nw_connection_cancel(connection);
+                } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (state == nw_connection_state_failed) {
+                    <span class="enscript-comment">// We tried to connect, but didn't succeed.
+</span>                    LogMsg(<span class="enscript-string">&quot;dso_connect_internal: failed to connect to %s on %#a%%%d: %s%s&quot;</span>,
+                           ncs-&gt;hostname, &amp;ncs-&gt;addresses[ncs-&gt;cur_addr], ncs-&gt;ports[ncs-&gt;cur_addr],
+                           strerror(nw_error_get_error_code(error)), ncs-&gt;detail);
+                    nw_release(ncs-&gt;connection);
+                    ncs-&gt;connection = NULL;
+                    ncs-&gt;connecting = mDNSfalse;
+                    <span class="enscript-comment">// This will do the work of figuring out if there are more addresses to try.
+</span>                    mDNS_Lock(&amp;mDNSStorage);
+                    dso_connect_internal(ncs);
+                    mDNS_Unlock(&amp;mDNSStorage);
+                } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (state == nw_connection_state_ready) {
+                    ncs-&gt;connecting = mDNSfalse;
+                    mDNS_Lock(&amp;mDNSStorage);
+                    dso_connection_succeeded(ncs);
+                    mDNS_Unlock(&amp;mDNSStorage);
+                } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (state == nw_connection_state_cancelled) {
+                    <span class="enscript-keyword">if</span> (ncs-&gt;connection) {
+                        nw_release(ncs-&gt;connection);
+                    }
+                    ncs-&gt;connection = NULL;
+                    ncs-&gt;connecting = mDNSfalse;
+                    <span class="enscript-comment">// If we get here and cs exists, we are still trying to connect.   So do the next step.
+</span>                    mDNS_Lock(&amp;mDNSStorage);
+                    dso_connect_internal(ncs);
+                    mDNS_Unlock(&amp;mDNSStorage);
+                }
+            }                
+            KQueueUnlock(<span class="enscript-string">&quot;dso_connect_internal state change handler&quot;</span>);
+        });
+    nw_connection_start(connection);
+    cs-&gt;connecting = mDNStrue;
+}
+
+#<span class="enscript-reference">else</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_connect_callback</span>(TCPSocket *sock, <span class="enscript-type">void</span> *context, mDNSBool connected, <span class="enscript-type">int</span> err)
+{
+    dso_connect_state_t *cs = context;
+    <span class="enscript-type">char</span> *detail;
+    <span class="enscript-type">int</span> status;
+    dso_transport_t *transport;
+    mDNS *m = &amp;mDNSStorage;
+
+    (<span class="enscript-type">void</span>)connected;
+    mDNS_Lock(m);
+    detail = cs-&gt;detail;
+    
+    <span class="enscript-comment">// If we had a socket open but the connect failed, close it and try the next address, if we have
+</span>    <span class="enscript-comment">// a next address.
+</span>    <span class="enscript-keyword">if</span> (sock != NULL) {
+        cs-&gt;last_event = m-&gt;timenow;
+
+        cs-&gt;connecting = mDNSfalse;
+        <span class="enscript-keyword">if</span> (err != mStatus_NoError) {
+            mDNSPlatformTCPCloseConnection(sock);
+            LogMsg(<span class="enscript-string">&quot;dso_connect_callback: connect %p failed (%d)&quot;</span>, cs, err);
+        } <span class="enscript-keyword">else</span> {
+        <span class="enscript-reference">success</span>:
+            <span class="enscript-comment">// We got a connection.
+</span>            transport = dso_transport_create(sock, false, cs-&gt;context, cs-&gt;max_outstanding_queries,
+                                             cs-&gt;inbuf_size, cs-&gt;outbuf_size, cs-&gt;hostname, cs-&gt;callback, cs-&gt;dso);
+            <span class="enscript-keyword">if</span> (transport == NULL) {
+                <span class="enscript-comment">// If dso_create fails, there's no point in continuing to try to connect to new
+</span>                <span class="enscript-comment">// addresses
+</span>            <span class="enscript-reference">fail</span>:
+                LogMsg(<span class="enscript-string">&quot;dso_connect_callback: dso_create failed&quot;</span>);
+                mDNSPlatformTCPCloseConnection(sock);
+            } <span class="enscript-keyword">else</span> {
+                <span class="enscript-comment">// Call the &quot;we're connected&quot; callback, which will start things up.
+</span>                transport-&gt;dso-&gt;cb(cs-&gt;context, NULL, transport-&gt;dso, kDSOEventType_Connected);
+            }
+
+            cs-&gt;last_event = 0;
+
+            <span class="enscript-comment">// When the connection has succeeded, stop asking questions.
+</span>            <span class="enscript-keyword">if</span> (cs-&gt;lookup != NULL) {
+                DNSServiceRef ref = cs-&gt;lookup;
+                cs-&gt;lookup = NULL;
+                mDNS_DropLockBeforeCallback();
+                DNSServiceRefDeallocate(ref);
+                mDNS_ReclaimLockAfterCallback();
+            }
+            mDNS_Unlock(m);
+            <span class="enscript-keyword">return</span>;
+        }
+    }
+
+    <span class="enscript-comment">// If there are no addresses to connect to, and there are no queries running, then we can give
+</span>    <span class="enscript-comment">// up.  Otherwise, we wait for one of the queries to deliver an answer.
+</span>    <span class="enscript-keyword">if</span> (cs-&gt;num_addrs &lt;= cs-&gt;cur_addr) {
+        <span class="enscript-keyword">if</span> (cs-&gt;lookup == NULL) {
+            LogMsg(<span class="enscript-string">&quot;dso_connect_callback: %s: no more addresses to try&quot;</span>, cs-&gt;hostname);
+            cs-&gt;last_event = 0;
+            cs-&gt;callback(cs-&gt;context, NULL, NULL, kDSOEventType_ConnectFailed);
+        }
+        <span class="enscript-comment">// Otherwise, we will get more callbacks when outstanding queries either fail or succeed.
+</span>        mDNS_Unlock(m);
+        <span class="enscript-keyword">return</span>;
+    }            
+        
+    sock = mDNSPlatformTCPSocket(kTCPSocketFlags_Zero, cs-&gt;addresses[cs-&gt;cur_addr].type, NULL, NULL, mDNSfalse);
+    <span class="enscript-keyword">if</span> (sock == NULL) {
+        LogMsg(<span class="enscript-string">&quot;drConnectCallback: couldn't get a socket for %s: %s%s&quot;</span>,
+               cs-&gt;hostname, strerror(errno), detail);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+    }
+
+    LogMsg(<span class="enscript-string">&quot;dso_connect_callback: Attempting to connect to %#a%%%d&quot;</span>,
+           &amp;cs-&gt;addresses[cs-&gt;cur_addr], ntohs(cs-&gt;ports[cs-&gt;cur_addr].NotAnInteger));
+
+    status = mDNSPlatformTCPConnect(sock, &amp;cs-&gt;addresses[cs-&gt;cur_addr], cs-&gt;ports[cs-&gt;cur_addr], NULL,
+                                    dso_connect_callback, cs);
+    cs-&gt;cur_addr++;
+    <span class="enscript-keyword">if</span> (status == mStatus_NoError || status == mStatus_ConnEstablished) {
+        <span class="enscript-comment">// This can't happen in practice on MacOS; we don't know about all other operating systems,
+</span>        <span class="enscript-comment">// so we handle it just in case.
+</span>        LogMsg(<span class="enscript-string">&quot;dso_connect_callback: synchronous connect to %s&quot;</span>, cs-&gt;hostname);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">success</span>;
+    } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (status == mStatus_ConnPending) {
+        LogMsg(<span class="enscript-string">&quot;dso_connect_callback: asynchronous connect to %s&quot;</span>, cs-&gt;hostname);
+        cs-&gt;connecting = mDNStrue;
+        <span class="enscript-comment">// We should get called back when the connection succeeds or fails.
+</span>        mDNS_Unlock(m);
+        <span class="enscript-keyword">return</span>;
+    }
+    LogMsg(<span class="enscript-string">&quot;dso_connect_callback: failed to connect to %s on %#a%d: %s%s&quot;</span>,
+           cs-&gt;hostname, &amp;cs-&gt;addresses[cs-&gt;cur_addr],
+           ntohs(cs-&gt;ports[cs-&gt;cur_addr].NotAnInteger), strerror(errno), detail);
+    mDNS_Unlock(m);
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_connect_internal</span>(dso_connect_state_t *cs)
+{
+    dso_connect_callback(NULL, cs, false, mStatus_NoError);
+}
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_inaddr_callback</span>(DNSServiceRef sdRef, DNSServiceFlags flags, uint32_t interfaceIndex,
+                                DNSServiceErrorType errorCode, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *fullname, <span class="enscript-type">const</span> <span class="enscript-type">struct</span> sockaddr *sa,
+                                uint32_t ttl, <span class="enscript-type">void</span> *context)
+{
+    dso_connect_state_t *cs = context;
+    <span class="enscript-type">char</span> addrbuf[INET6_ADDRSTRLEN + 1];
+    mDNS *m = &amp;mDNSStorage;
+    (<span class="enscript-type">void</span>)sdRef;
+
+    cs-&gt;last_event = m-&gt;timenow;
+    inet_ntop(sa-&gt;sa_family, (sa-&gt;sa_family == AF_INET
+                              ? (<span class="enscript-type">void</span> *)&amp;((<span class="enscript-type">struct</span> sockaddr_in *)sa)-&gt;sin_addr
+                              : (<span class="enscript-type">void</span> *)&amp;((<span class="enscript-type">struct</span> sockaddr_in6 *)sa)-&gt;sin6_addr), addrbuf, <span class="enscript-keyword">sizeof</span> addrbuf);
+    LogMsg(<span class="enscript-string">&quot;dso_inaddr_callback: %s: flags %x index %d error %d fullname %s addr %s ttl %lu&quot;</span>,
+           cs-&gt;hostname, flags, interfaceIndex, errorCode, fullname, addrbuf, (<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)ttl);
+    
+    <span class="enscript-keyword">if</span> (errorCode != mStatus_NoError) {
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (cs-&gt;num_addrs == MAX_DSO_CONNECT_ADDRS) {
+        <span class="enscript-keyword">if</span> (cs-&gt;cur_addr &gt; 1) {
+            memmove(&amp;cs-&gt;addresses, &amp;cs-&gt;addresses[cs-&gt;cur_addr],
+                    (MAX_DSO_CONNECT_ADDRS - cs-&gt;cur_addr) * <span class="enscript-keyword">sizeof</span> cs-&gt;addresses[0]);
+            cs-&gt;num_addrs -= cs-&gt;cur_addr;
+            cs-&gt;cur_addr = 0;
+        } <span class="enscript-keyword">else</span> {
+            LogMsg(<span class="enscript-string">&quot;dso_inaddr_callback: ran out of room for addresses.&quot;</span>);
+            <span class="enscript-keyword">return</span>;
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (sa-&gt;sa_family == AF_INET) {
+        cs-&gt;addresses[cs-&gt;num_addrs].type = mDNSAddrType_IPv4;
+        mDNSPlatformMemCopy(&amp;cs-&gt;addresses[cs-&gt;num_addrs].ip.v4,
+                            &amp;((<span class="enscript-type">struct</span> sockaddr_in *)sa)-&gt;sin_addr, <span class="enscript-keyword">sizeof</span> cs-&gt;addresses[cs-&gt;num_addrs].ip.v4);
+    } <span class="enscript-keyword">else</span> {
+        cs-&gt;addresses[cs-&gt;num_addrs].type = mDNSAddrType_IPv6;
+        mDNSPlatformMemCopy(&amp;cs-&gt;addresses[cs-&gt;num_addrs].ip.v6,
+                            &amp;((<span class="enscript-type">struct</span> sockaddr_in *)sa)-&gt;sin_addr, <span class="enscript-keyword">sizeof</span> cs-&gt;addresses[cs-&gt;num_addrs].ip.v6);
+    }
+
+    cs-&gt;ports[cs-&gt;num_addrs] = cs-&gt;config_port;
+    cs-&gt;num_addrs++;
+    <span class="enscript-keyword">if</span> (!cs-&gt;connecting) {
+        LogMsg(<span class="enscript-string">&quot;dso_inaddr_callback: starting a new connection.&quot;</span>);
+        dso_connect_internal(cs);
+    } <span class="enscript-keyword">else</span> {
+        LogMsg(<span class="enscript-string">&quot;dso_inaddr_callback: connection in progress, deferring new connect until it fails.&quot;</span>);
+    }
+}
+
+bool <span class="enscript-function-name">dso_connect</span>(dso_connect_state_t *cs)
+{
+    <span class="enscript-type">struct</span> in_addr in;
+    <span class="enscript-type">struct</span> in6_addr in6;
+
+    <span class="enscript-comment">// If the connection state was created with an address, use that rather than hostname.
+</span>    <span class="enscript-keyword">if</span> (cs-&gt;num_addrs &gt; 0) {
+        dso_connect_internal(cs);
+    }
+    <span class="enscript-comment">// Else allow an IPv4 address literal string
+</span>    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (inet_pton(AF_INET, cs-&gt;hostname, &amp;in)) {
+        cs-&gt;num_addrs = 1;
+        cs-&gt;addresses[0].type = mDNSAddrType_IPv4;
+        cs-&gt;addresses[0].ip.v4.NotAnInteger = in.s_addr;
+        cs-&gt;ports[0] = cs-&gt;config_port;
+        dso_connect_internal(cs);
+    }
+    <span class="enscript-comment">// ...or an IPv6 address literal string
+</span>    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (inet_pton(AF_INET6, cs-&gt;hostname, &amp;in6)) {
+        cs-&gt;num_addrs = 1;
+        cs-&gt;addresses[0].type = mDNSAddrType_IPv6;
+        memcpy(&amp;cs-&gt;addresses[0].ip.v6, &amp;in6, <span class="enscript-keyword">sizeof</span> in6);
+        cs-&gt;ports[0] = cs-&gt;config_port;
+        dso_connect_internal(cs);
+    }
+    <span class="enscript-comment">// ...or else look it up.
+</span>    <span class="enscript-keyword">else</span> {
+        mDNS *m = &amp;mDNSStorage;
+        <span class="enscript-type">int</span> err;
+        mDNS_DropLockBeforeCallback();
+        err = DNSServiceGetAddrInfo(&amp;cs-&gt;lookup, kDNSServiceFlagsReturnIntermediates,
+                                    kDNSServiceInterfaceIndexAny, 0, cs-&gt;hostname, dso_inaddr_callback, cs);
+
+        mDNS_ReclaimLockAfterCallback();
+        <span class="enscript-keyword">if</span> (err != mStatus_NoError) {
+            LogMsg(<span class="enscript-string">&quot;dso_connect: inaddr lookup query allocate failed for '%s': %d&quot;</span>, cs-&gt;hostname, err);
+            <span class="enscript-keyword">return</span> false;
+        }
+    }
+    <span class="enscript-keyword">return</span> true;
+}
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+<span class="enscript-comment">// We don't need this for DNS Push, so it is being left as future work.
+</span><span class="enscript-type">int</span> <span class="enscript-function-name">dso_listen</span>(dso_connect_state_t * __unused listen_context)
+{
+    <span class="enscript-keyword">return</span> mStatus_UnsupportedErr;
+}
+
+#<span class="enscript-reference">else</span>
+
+<span class="enscript-comment">// Called whenever we get a connection on the DNS TCP socket
+</span><span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_listen_callback</span>(TCPSocket *sock, mDNSAddr *addr, mDNSIPPort *port,
+                                <span class="enscript-type">const</span> <span class="enscript-type">char</span> *remote_name, <span class="enscript-type">void</span> *context)
+{
+    dso_connect_state_t *lc = context;
+    dso_transport_t *transport;
+
+    mDNS_Lock(&amp;mDNSStorage);
+    transport = dso_transport_create(sock, mDNStrue, lc-&gt;context, lc-&gt;max_outstanding_queries,
+                                     lc-&gt;inbuf_size, lc-&gt;outbuf_size, remote_name, lc-&gt;callback, NULL);
+    <span class="enscript-keyword">if</span> (transport == NULL) {
+        mDNSPlatformTCPCloseConnection(sock);
+        LogMsg(<span class="enscript-string">&quot;No memory for new DSO connection from %s&quot;</span>, remote_name);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+
+    transport-&gt;remote_addr = *addr;
+    transport-&gt;remote_port = ntohs(port-&gt;NotAnInteger);
+    <span class="enscript-keyword">if</span> (transport-&gt;dso-&gt;cb) {
+        transport-&gt;dso-&gt;cb(lc-&gt;context, 0, transport-&gt;dso, kDSOEventType_Connected);
+    }
+    LogMsg(<span class="enscript-string">&quot;DSO connection from %s&quot;</span>, remote_name);
+<span class="enscript-reference">out</span>:
+    mDNS_Unlock(&amp;mDNSStorage);
+}
+
+<span class="enscript-comment">// Listen for connections; each time we get a connection, make a new dso_state_t object with the specified
+</span><span class="enscript-comment">// parameters and call the callback.   Port can be zero to leave it unspecified.
+</span>
+<span class="enscript-type">int</span> <span class="enscript-function-name">dso_listen</span>(dso_connect_state_t *listen_context)
+{
+    <span class="enscript-type">char</span> addrbuf[INET6_ADDRSTRLEN + 1];
+    mDNSIPPort port;
+    mDNSBool reuseAddr = mDNSfalse;
+    
+    <span class="enscript-keyword">if</span> (listen_context-&gt;config_port.NotAnInteger) {
+        port = listen_context-&gt;config_port;
+        reuseAddr = mDNStrue;
+    }
+    listen_context-&gt;listener = mDNSPlatformTCPListen(mDNSAddrType_None, &amp;port, NULL, kTCPSocketFlags_Zero,
+                                                     reuseAddr, 5, dso_listen_callback, listen_context);
+    <span class="enscript-keyword">if</span> (!listen_context-&gt;listener) {
+        <span class="enscript-keyword">return</span> mStatus_UnknownErr;
+    }
+    listen_context-&gt;connect_port = port;
+    <span class="enscript-keyword">if</span> (listen_context-&gt;addresses[0].type == mDNSAddrType_IPv4) {
+        inet_ntop(AF_INET, &amp;listen_context-&gt;addresses[0].ip.v4, addrbuf, <span class="enscript-keyword">sizeof</span> addrbuf);
+    } <span class="enscript-keyword">else</span> {
+        inet_ntop(AF_INET6, &amp;listen_context-&gt;addresses[0].ip.v6, addrbuf, <span class="enscript-keyword">sizeof</span> addrbuf);
+    }
+    
+    LogMsg(<span class="enscript-string">&quot;DSOListen: Listening on %s%%%d&quot;</span>, addrbuf, ntohs(listen_context-&gt;connect_port.NotAnInteger));
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">DSO_USES_NETWORK_FRAMEWORK</span>
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

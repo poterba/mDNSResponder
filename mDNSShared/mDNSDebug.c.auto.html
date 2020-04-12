@@ -1,0 +1,138 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>mDNSDebug.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">mDNSDebug.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="mDNSDebug.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2003-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">WIN32</span>) || <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">EFI32</span>) || <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">EFI64</span>) || <span class="enscript-reference">defined</span>(<span class="enscript-variable-name">EFIX64</span>)
+<span class="enscript-comment">// Need to add Windows/EFI syslog support here
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">LOG_PID</span> 0x01
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">LOG_CONS</span> 0x02
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">LOG_PERROR</span> 0x20
+#<span class="enscript-reference">else</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;syslog.h&gt;</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+
+mDNSexport <span class="enscript-type">int</span> mDNS_LoggingEnabled       = 0;
+mDNSexport <span class="enscript-type">int</span> mDNS_PacketLoggingEnabled = 0;
+mDNSexport <span class="enscript-type">int</span> mDNS_McastLoggingEnabled  = 0;
+mDNSexport <span class="enscript-type">int</span> mDNS_McastTracingEnabled  = 0; 
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span>
+mDNSexport <span class="enscript-type">int</span> mDNS_DebugMode = mDNStrue;
+#<span class="enscript-reference">else</span>
+mDNSexport <span class="enscript-type">int</span> mDNS_DebugMode = mDNSfalse;
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Note, this uses mDNS_vsnprintf instead of standard &quot;vsnprintf&quot;, because mDNS_vsnprintf knows
+</span><span class="enscript-comment">// how to print special data types like IP addresses and length-prefixed domain names
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span> &gt; 1
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">verbosedebugf_</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...)
+{
+    <span class="enscript-type">char</span> buffer[512];
+    va_list args;
+    va_start(args, format);
+    buffer[mDNS_vsnprintf(buffer, <span class="enscript-keyword">sizeof</span>(buffer), format, args)] = 0;
+    va_end(args);
+    mDNSPlatformWriteDebugMsg(buffer);
+}
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Log message with default &quot;mDNSResponder&quot; ident string at the start
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">OS_LOG</span>)
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">LogMsgWithLevelv</span>(os_log_t category, os_log_type_t level, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, va_list args)
+{
+    <span class="enscript-type">char</span> buffer[512];
+    mDNS_vsnprintf(buffer, (mDNSu32)<span class="enscript-keyword">sizeof</span>(buffer), format, args);
+    os_log_with_type(category ? category : mDNSLogCategory_Default, level, <span class="enscript-string">&quot;%{private}s&quot;</span>, buffer);
+}
+#<span class="enscript-reference">else</span>
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">LogMsgWithLevelv</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *category, mDNSLogLevel_t level, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, va_list args)
+{
+    <span class="enscript-type">char</span> buffer[512];
+    <span class="enscript-type">char</span> *dst = buffer;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> lim = &amp;buffer[512];
+    <span class="enscript-keyword">if</span> (category) mDNS_snprintf_add(&amp;dst, lim, <span class="enscript-string">&quot;%s: &quot;</span>, category);
+    mDNS_vsnprintf(dst, (mDNSu32)(lim - dst), format, args);
+    mDNSPlatformWriteLogMsg(ProgramName, buffer, level);
+}
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">LOG_HELPER_BODY</span>(CATEGORY, LEVEL) \
+    { \
+        va_list args; \
+        va_start(args,format); \
+        LogMsgWithLevelv(CATEGORY, LEVEL, format, args); \
+        va_end(args); \
+    }
+
+<span class="enscript-comment">// see mDNSDebug.h
+</span>#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">MDNS_HAS_VA_ARG_MACROS</span>
+<span class="enscript-type">void</span> <span class="enscript-function-name">LogMsg_</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...)       LOG_HELPER_BODY(NULL, MDNS_LOG_INFO)
+<span class="enscript-type">void</span> <span class="enscript-function-name">LogOperation_</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...) LOG_HELPER_BODY(NULL, MDNS_LOG_INFO)
+<span class="enscript-type">void</span> <span class="enscript-function-name">LogSPS_</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...)       LOG_HELPER_BODY(NULL, MDNS_LOG_INFO)
+<span class="enscript-type">void</span> <span class="enscript-function-name">LogInfo_</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...)      LOG_HELPER_BODY(NULL, MDNS_LOG_INFO)
+<span class="enscript-type">void</span> <span class="enscript-function-name">LogDebug_</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...)     LOG_HELPER_BODY(NULL, MDNS_LOG_DEBUG)
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span>
+<span class="enscript-type">void</span> <span class="enscript-function-name">debugf_</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...)       LOG_HELPER_BODY(MDNS_LOG_DEBUG)
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Log message with default &quot;mDNSResponder&quot; ident string at the start
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">LogMsgWithLevel</span>(mDNSLogCategory_t category, mDNSLogLevel_t level, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...)
+<span class="enscript-function-name">LOG_HELPER_BODY</span>(category, level)
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">LogToFD</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span>
+    <span class="enscript-type">char</span> buffer[1024];
+    buffer[mDNS_vsnprintf(buffer, (mDNSu32)<span class="enscript-keyword">sizeof</span>(buffer), format, args)] = <span class="enscript-string">'\0'</span>;
+    dprintf(fd, <span class="enscript-string">&quot;%s\n&quot;</span>, buffer);
+#<span class="enscript-reference">else</span>
+    (<span class="enscript-type">void</span>)fd;
+    LogMsgWithLevelv(NULL, MDNS_LOG_INFO, format, args);
+#<span class="enscript-reference">endif</span>
+    va_end(args);
+}
+</pre>
+<hr />
+</body></html>

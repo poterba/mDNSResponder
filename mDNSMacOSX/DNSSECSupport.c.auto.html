@@ -1,0 +1,675 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>DNSSECSupport.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">DNSSECSupport.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="DNSSECSupport.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2012-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+<span class="enscript-comment">// ***************************************************************************
+</span><span class="enscript-comment">// DNSSECSupport.c: Platform specific support for DNSSEC like fetching root
+</span><span class="enscript-comment">// trust anchor and dnssec probes etc.
+</span><span class="enscript-comment">// ***************************************************************************
+</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>                  // For mDNS_Lock, mDNS_Random
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dnssec.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSSECSupport.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;CommonCrypto/CommonDigest.h&gt;</span>  // For Hash algorithms SHA1 etc.
+
+<span class="enscript-comment">// Following are needed for fetching the root trust anchor dynamically
+</span>#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;CoreFoundation/CoreFoundation.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;libxml2/libxml/parser.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;libxml2/libxml/tree.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;libxml2/libxml/xmlmemory.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;notify.h&gt;</span>
+
+<span class="enscript-comment">// 30 days
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">ROOT_TA_UPDATE_INTERVAL</span>  (30 * 24 * 3600)   // seconds
+
+<span class="enscript-comment">// After 100 days, the test anchors are not valid. Just an arbitrary number
+</span><span class="enscript-comment">// to configure validUntil. 
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">TEST_TA_EXPIRE_INTERVAL</span>  (100 * 24 * 4600)
+
+<span class="enscript-comment">// When we can't fetch the root TA due to network errors etc., we start off a timer
+</span><span class="enscript-comment">// to fire at 60 seconds and then keep doubling it till we fetch it
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">InitialTAFetchInterval</span> 60
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">DNSSECProbePercentage</span> 1
+
+
+#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">TARGET_OS_IPHONE</span>
+DNSQuestion DNSSECProbeQuestion;
+#<span class="enscript-reference">endif</span>
+
+mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">RegisterNotification</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> interval);
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">LinkTrustAnchor</span>(mDNS *<span class="enscript-type">const</span> m, TrustAnchor *ta)
+{
+    <span class="enscript-type">int</span> length = 0;
+    <span class="enscript-type">int</span> i;
+    mDNSu8 *p;
+    TrustAnchor **t = &amp;m-&gt;TrustAnchors;
+    <span class="enscript-type">char</span> buffer[256];
+
+    <span class="enscript-keyword">while</span> (*t)
+        t = &amp;((*t)-&gt;next);
+    *t = ta;
+
+    buffer[0] = 0;
+    p = ta-&gt;rds.digest;
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; ta-&gt;digestLen; i++)
+    {
+        length += mDNS_snprintf(buffer+length, <span class="enscript-keyword">sizeof</span>(buffer)-1-length, <span class="enscript-string">&quot;%x&quot;</span>, p[i]);
+    }
+    LogInfo(<span class="enscript-string">&quot;LinkTrustAnchor: Zone %##s, keytag %d, alg %d, digestType %d, digestLen %d, digest %s&quot;</span>, ta-&gt;zone.c, ta-&gt;rds.keyTag,
+        ta-&gt;rds.alg, ta-&gt;rds.digestType, ta-&gt;digestLen, buffer);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">DelTrustAnchor</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> domainname *zone)
+{
+    TrustAnchor **ta = &amp;m-&gt;TrustAnchors;
+    TrustAnchor *tmp;
+
+    <span class="enscript-keyword">while</span> (*ta &amp;&amp; !SameDomainName(&amp;(*ta)-&gt;zone, zone))
+        ta = &amp;(*ta)-&gt;next;
+
+    <span class="enscript-comment">// First time, we won't find the TrustAnchor in the list as it has
+</span>    <span class="enscript-comment">// not been added.
+</span>    <span class="enscript-keyword">if</span> (!(*ta))
+        <span class="enscript-keyword">return</span>;
+
+    tmp = *ta;
+    *ta = (*ta)-&gt;next;                  <span class="enscript-comment">// Cut this record from the list
+</span>    tmp-&gt;next = mDNSNULL;
+    <span class="enscript-keyword">if</span> (tmp-&gt;rds.digest)
+        mDNSPlatformMemFree(tmp-&gt;rds.digest);
+    mDNSPlatformMemFree(tmp);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">AddTrustAnchor</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> domainname *zone, mDNSu16 keytag, mDNSu8 alg, mDNSu8 digestType, <span class="enscript-type">int</span> diglen,
+    mDNSu8 *digest)
+{
+    TrustAnchor *ta, *tmp;
+    mDNSu32 t = (mDNSu32) time(NULL); 
+
+    <span class="enscript-comment">// Check for duplicates
+</span>    tmp = m-&gt;TrustAnchors;
+    <span class="enscript-keyword">while</span> (tmp)
+    {
+        <span class="enscript-keyword">if</span> (SameDomainName(zone, &amp;tmp-&gt;zone) &amp;&amp; tmp-&gt;rds.keyTag == keytag &amp;&amp; tmp-&gt;rds.alg == alg &amp;&amp; tmp-&gt;rds.digestType == digestType &amp;&amp;
+            !memcmp(tmp-&gt;rds.digest, digest, diglen))
+        {
+            LogMsg(<span class="enscript-string">&quot;AddTrustAnchors: Found a duplicate&quot;</span>);
+            <span class="enscript-keyword">return</span>;
+        }
+        tmp = tmp-&gt;next;
+    }
+
+    ta = (TrustAnchor *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*ta));
+    <span class="enscript-keyword">if</span> (!ta)
+    {
+        LogMsg(<span class="enscript-string">&quot;AddTrustAnchor: malloc failure ta&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+    ta-&gt;rds.keyTag = keytag;
+    ta-&gt;rds.alg = alg;
+    ta-&gt;rds.digestType = digestType;
+    ta-&gt;rds.digest = digest;
+    ta-&gt;digestLen = diglen;
+    ta-&gt;validFrom = t;
+    ta-&gt;validUntil = t + TEST_TA_EXPIRE_INTERVAL;
+    AssignDomainName(&amp;ta-&gt;zone, zone);
+    ta-&gt;next = mDNSNULL;
+
+    LinkTrustAnchor(m, ta);
+}
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">HexVal</span>(X) ( ((X) &gt;= <span class="enscript-string">'0'</span> &amp;&amp; (X) &lt;= <span class="enscript-string">'9'</span>) ? ((X) - <span class="enscript-string">'0'</span>     ) :   \
+                    ((X) &gt;= <span class="enscript-string">'A'</span> &amp;&amp; (X) &lt;= <span class="enscript-string">'F'</span>) ? ((X) - <span class="enscript-string">'A'</span> + 10) :   \
+                    ((X) &gt;= <span class="enscript-string">'a'</span> &amp;&amp; (X) &lt;= <span class="enscript-string">'f'</span>) ? ((X) - <span class="enscript-string">'a'</span> + 10) : -1)
+
+mDNSlocal mDNSu8 *<span class="enscript-function-name">ConvertDigest</span>(<span class="enscript-type">char</span> *digest, <span class="enscript-type">int</span> digestType, <span class="enscript-type">int</span> *diglen)
+{
+    <span class="enscript-type">int</span> i, j;
+    mDNSu8 *dig;
+
+    <span class="enscript-keyword">switch</span> (digestType)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SHA1_DIGEST_TYPE</span>:
+        *diglen = CC_SHA1_DIGEST_LENGTH;
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SHA256_DIGEST_TYPE</span>:
+        *diglen = CC_SHA256_DIGEST_LENGTH;
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-reference">default</span>:
+        LogMsg(<span class="enscript-string">&quot;ConvertDigest: digest type %d not supported&quot;</span>, digestType);
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+    dig = (mDNSu8 *) mDNSPlatformMemAllocate(*diglen);
+    <span class="enscript-keyword">if</span> (!dig)
+    {
+        LogMsg(<span class="enscript-string">&quot;ConvertDigest: malloc failure&quot;</span>);
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+
+    <span class="enscript-keyword">for</span> (j=0,i=0; i&lt;*diglen*2; i+=2)
+    {
+        <span class="enscript-type">int</span> l, h;
+        l = HexVal(digest[i]);
+        h = HexVal(digest[i+1]);
+        <span class="enscript-keyword">if</span> (l&lt;0 || h&lt;0) { LogMsg(<span class="enscript-string">&quot;ConvertDigest: Cannot convert digest&quot;</span>); mDNSPlatformMemFree(dig); <span class="enscript-keyword">return</span> NULL;}
+        dig[j++] = (mDNSu8)((l &lt;&lt; 4) | h);
+    }
+    <span class="enscript-keyword">return</span> dig;
+}
+
+<span class="enscript-comment">// All the children are in a linked list
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// &lt;TrustAnchor&gt; has two children: &lt;Zone&gt; and &lt;KeyDigest&gt;
+</span><span class="enscript-comment">// &lt;KeyDigest&gt; has four children &lt;KeyTag&gt; &lt;Algorithm&gt; &lt;DigestType&gt; &lt;Digest&gt;
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// Returns false if failed to parse the element i.e., malformed xml document.
+</span><span class="enscript-comment">// Validity of the actual values itself is done outside the function.
+</span>mDNSlocal mDNSBool <span class="enscript-function-name">ParseElementChildren</span>(xmlDocPtr tadoc, xmlNode *node, TrustAnchor *ta)
+{
+    xmlNode *cur_node;
+    xmlChar *val1, *val2, *val;
+    <span class="enscript-type">char</span> *invalid = NULL;
+
+    val = val1 = val2 = NULL;
+
+    <span class="enscript-keyword">for</span> (cur_node = node; cur_node; cur_node = cur_node-&gt;next)
+    {
+        invalid = NULL;
+        val1 = val2 = NULL;
+        
+        val = xmlNodeListGetString(tadoc, cur_node-&gt;xmlChildrenNode, 1);
+        <span class="enscript-keyword">if</span> (!val)
+        {
+           LogInfo(<span class="enscript-string">&quot;ParseElementChildren: NULL value for %s&quot;</span>, cur_node-&gt;name);
+           <span class="enscript-keyword">continue</span>; 
+        }
+        <span class="enscript-keyword">if</span> (!xmlStrcmp(cur_node-&gt;name, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;Zone&quot;</span>))
+        {
+            <span class="enscript-comment">// MaeDomainNameFromDNSNameString does not work for &quot;.&quot;
+</span>            <span class="enscript-keyword">if</span> (!xmlStrcmp(val, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;.&quot;</span>))
+            {
+                ta-&gt;zone.c[0] = 0;
+            }
+            <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!MakeDomainNameFromDNSNameString(&amp;ta-&gt;zone, (<span class="enscript-type">char</span> *)val))
+            {
+                LogMsg(<span class="enscript-string">&quot;ParseElementChildren: Cannot parse Zone %s&quot;</span>, val);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogInfo(<span class="enscript-string">&quot;ParseElementChildren: Element %s, value %##s&quot;</span>, cur_node-&gt;name, ta-&gt;zone.c);
+            }
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!xmlStrcmp(cur_node-&gt;name, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;KeyTag&quot;</span>))
+        {
+            ta-&gt;rds.keyTag = strtol((<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)val, &amp;invalid, 10);
+            <span class="enscript-keyword">if</span> (*invalid != <span class="enscript-string">'\0'</span>)
+            {
+                LogMsg(<span class="enscript-string">&quot;ParseElementChildren: KeyTag invalid character %d&quot;</span>, *invalid);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogInfo(<span class="enscript-string">&quot;ParseElementChildren: Element %s, value %d&quot;</span>, cur_node-&gt;name, ta-&gt;rds.keyTag);
+            }
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!xmlStrcmp(cur_node-&gt;name, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;Algorithm&quot;</span>))
+        {
+            ta-&gt;rds.alg = strtol((<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)val, &amp;invalid, 10);
+            <span class="enscript-keyword">if</span> (*invalid != <span class="enscript-string">'\0'</span>)
+            {
+                LogMsg(<span class="enscript-string">&quot;ParseElementChildren: Algorithm invalid character %c&quot;</span>, *invalid);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogInfo(<span class="enscript-string">&quot;ParseElementChildren: Element %s, value %d&quot;</span>, cur_node-&gt;name, ta-&gt;rds.alg);
+            }
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!xmlStrcmp(cur_node-&gt;name, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;DigestType&quot;</span>))
+        {
+            ta-&gt;rds.digestType = strtol((<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)val, &amp;invalid, 10);
+            <span class="enscript-keyword">if</span> (*invalid != <span class="enscript-string">'\0'</span>)
+            {
+                LogMsg(<span class="enscript-string">&quot;ParseElementChildren: Algorithm invalid character %c&quot;</span>, *invalid);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogInfo(<span class="enscript-string">&quot;ParseElementChildren: Element %s, value %d&quot;</span>, cur_node-&gt;name, ta-&gt;rds.digestType);
+            }
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!xmlStrcmp(cur_node-&gt;name, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;Digest&quot;</span>))
+        {
+            <span class="enscript-type">int</span> diglen;
+            mDNSu8 *dig = ConvertDigest((<span class="enscript-type">char</span> *)val, ta-&gt;rds.digestType, &amp;diglen);
+            <span class="enscript-keyword">if</span> (dig)
+            { 
+                LogInfo(<span class="enscript-string">&quot;ParseElementChildren: Element %s, digest %s&quot;</span>, cur_node-&gt;name, val);
+                ta-&gt;digestLen = diglen;
+                ta-&gt;rds.digest = dig;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogMsg(<span class="enscript-string">&quot;ParseElementChildren: Element %s, NULL digest&quot;</span>, cur_node-&gt;name);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+            }
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!xmlStrcmp(cur_node-&gt;name, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;KeyDigest&quot;</span>))
+        {
+            <span class="enscript-type">struct</span> tm tm;
+            val1 = xmlGetProp(cur_node, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;validFrom&quot;</span>);
+            <span class="enscript-keyword">if</span> (val1)
+            {
+                <span class="enscript-type">char</span> *s = strptime((<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)val1, <span class="enscript-string">&quot;%Y-%m-%dT%H:%M:%S&quot;</span>, &amp;tm);
+                <span class="enscript-keyword">if</span> (!s)
+                {
+                    LogMsg(<span class="enscript-string">&quot;ParseElementChildren: Parsing ValidFrom failed %s&quot;</span>, val1);
+                    <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+                }
+                <span class="enscript-keyword">else</span>
+                {
+                    ta-&gt;validFrom = (mDNSu32)timegm(&amp;tm);
+                }
+            }
+            val2 = xmlGetProp(cur_node, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;validUntil&quot;</span>);
+            <span class="enscript-keyword">if</span> (val2)
+            {
+                <span class="enscript-type">char</span> *s = strptime((<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)val2, <span class="enscript-string">&quot;%Y-%m-%dT%H:%M:%S&quot;</span>, &amp;tm);
+                <span class="enscript-keyword">if</span> (!s)
+                {
+                    LogMsg(<span class="enscript-string">&quot;ParseElementChildren: Parsing ValidFrom failed %s&quot;</span>, val2);
+                    <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+                }
+                <span class="enscript-keyword">else</span>
+                {
+                    ta-&gt;validUntil = (mDNSu32)timegm(&amp;tm);
+                }
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                <span class="enscript-comment">// If there is no validUntil, set it to the next probing interval
+</span>                mDNSu32 t = (mDNSu32) time(NULL); 
+                ta-&gt;validUntil = t + ROOT_TA_UPDATE_INTERVAL;
+            }
+            LogInfo(<span class="enscript-string">&quot;ParseElementChildren: ValidFrom time %u, validUntil %u&quot;</span>, (<span class="enscript-type">unsigned</span>)ta-&gt;validFrom, (<span class="enscript-type">unsigned</span>)ta-&gt;validUntil);
+        }
+        <span class="enscript-keyword">if</span> (val1)
+            xmlFree(val1);
+        <span class="enscript-keyword">if</span> (val2)
+            xmlFree(val2);
+        <span class="enscript-keyword">if</span> (val)
+            xmlFree(val);
+    }
+    <span class="enscript-keyword">return</span> mDNStrue;
+<span class="enscript-reference">error</span>:
+    <span class="enscript-keyword">if</span> (val1)
+        xmlFree(val1);
+    <span class="enscript-keyword">if</span> (val2)
+        xmlFree(val2);
+    <span class="enscript-keyword">if</span> (val)
+        xmlFree(val);
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+mDNSlocal mDNSBool <span class="enscript-function-name">ValidateTrustAnchor</span>(TrustAnchor *ta)
+{
+    time_t currTime = time(NULL);
+
+    <span class="enscript-comment">// Currently only support trust anchor for root.
+</span>    <span class="enscript-keyword">if</span> (!SameDomainName(&amp;ta-&gt;zone, (<span class="enscript-type">const</span> domainname *)<span class="enscript-string">&quot;\000&quot;</span>))
+    {
+        LogInfo(<span class="enscript-string">&quot;ParseElementChildren: Zone %##s not root&quot;</span>, ta-&gt;zone.c);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+
+    <span class="enscript-keyword">switch</span> (ta-&gt;rds.digestType)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SHA1_DIGEST_TYPE</span>:
+        <span class="enscript-keyword">if</span> (ta-&gt;digestLen != CC_SHA1_DIGEST_LENGTH) 
+        {
+            LogMsg(<span class="enscript-string">&quot;ValidateTrustAnchor: Invalid digest len %d for SHA1&quot;</span>, ta-&gt;digestLen);
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">SHA256_DIGEST_TYPE</span>:
+        <span class="enscript-keyword">if</span> (ta-&gt;digestLen != CC_SHA256_DIGEST_LENGTH) 
+        {
+            LogMsg(<span class="enscript-string">&quot;ValidateTrustAnchor: Invalid digest len %d for SHA256&quot;</span>, ta-&gt;digestLen);
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-reference">default</span>:
+        LogMsg(<span class="enscript-string">&quot;ValidateTrustAnchor: digest type %d not supported&quot;</span>, ta-&gt;rds.digestType);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-keyword">if</span> (!ta-&gt;rds.digest)
+    {
+        LogMsg(<span class="enscript-string">&quot;ValidateTrustAnchor: digest NULL for %d&quot;</span>, ta-&gt;rds.digestType);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-keyword">switch</span> (ta-&gt;rds.alg)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">CRYPTO_RSA_SHA512</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">CRYPTO_RSA_SHA256</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">CRYPTO_RSA_NSEC3_SHA1</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">CRYPTO_RSA_SHA1</span>:
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-reference">default</span>:
+        LogMsg(<span class="enscript-string">&quot;ValidateTrustAnchor: Algorithm %d not supported&quot;</span>, ta-&gt;rds.alg);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    
+    <span class="enscript-keyword">if</span> (DNS_SERIAL_LT(currTime, ta-&gt;validFrom))
+    {
+        LogMsg(<span class="enscript-string">&quot;ValidateTrustAnchor: Invalid ValidFrom time %u, currtime %u&quot;</span>, (<span class="enscript-type">unsigned</span>)ta-&gt;validFrom, (<span class="enscript-type">unsigned</span>)currTime);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-keyword">if</span> (DNS_SERIAL_LT(ta-&gt;validUntil, currTime))
+    {
+        LogMsg(<span class="enscript-string">&quot;ValidateTrustAnchor: Invalid ValidUntil time %u, currtime %u&quot;</span>, (<span class="enscript-type">unsigned</span>)ta-&gt;validUntil, (<span class="enscript-type">unsigned</span>)currTime);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+mDNSlocal mDNSBool <span class="enscript-function-name">ParseElement</span>(xmlDocPtr tadoc, xmlNode * a_node, TrustAnchor *ta)
+{
+    xmlNode *cur_node = NULL;
+
+    <span class="enscript-keyword">for</span> (cur_node = a_node; cur_node; cur_node = cur_node-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (cur_node-&gt;type == XML_ELEMENT_NODE)
+        {
+            <span class="enscript-comment">// There could be multiple KeyDigests per TrustAnchor. We keep parsing till we
+</span>            <span class="enscript-comment">// reach the last one or we encounter an error in parsing the document.
+</span>            <span class="enscript-keyword">if</span> (!xmlStrcmp(cur_node-&gt;name, (<span class="enscript-type">const</span> xmlChar *)<span class="enscript-string">&quot;KeyDigest&quot;</span>))
+            {
+                <span class="enscript-keyword">if</span> (ta-&gt;rds.digest)
+                    mDNSPlatformMemFree(ta-&gt;rds.digest);
+                ta-&gt;rds.digestType = 0;
+                ta-&gt;digestLen = 0;
+            }
+            <span class="enscript-keyword">if</span> (!ParseElementChildren(tadoc, cur_node-&gt;children, ta))
+                <span class="enscript-keyword">return</span> mDNSfalse;
+            <span class="enscript-keyword">if</span> (!ParseElement(tadoc, cur_node-&gt;children, ta))
+                <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+    }
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">TAComplete</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">void</span> *context)
+{
+    TrustAnchor *ta = (TrustAnchor *)context;
+
+    DelTrustAnchor(m, &amp;ta-&gt;zone);
+    LinkTrustAnchor(m, ta);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">FetchRootTA</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    CFStringRef urlString = CFSTR(<span class="enscript-string">&quot;<a href="https://data.iana.org/root-anchors/root-anchors.xml">https://data.iana.org/root-anchors/root-anchors.xml</a>&quot;</span>);
+    CFDataRef xmlData;
+    CFStringRef fileRef = NULL;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *xmlFileName = NULL;
+    <span class="enscript-type">char</span> buf[512];
+    CFURLRef url = NULL;
+    <span class="enscript-type">static</span> <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> RootTAFetchInterval = InitialTAFetchInterval;
+
+    (<span class="enscript-type">void</span>) m;
+
+    TrustAnchor *ta = (TrustAnchor *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*ta));
+    <span class="enscript-keyword">if</span> (!ta)
+    {
+        LogMsg(<span class="enscript-string">&quot;FetchRootTA: TrustAnchor alloc failed&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    url = CFURLCreateWithString(NULL, urlString, NULL);
+    <span class="enscript-keyword">if</span> (!url)
+    {
+        LogMsg(<span class="enscript-string">&quot;FetchRootTA: CFURLCreateWithString error&quot;</span>);
+        mDNSPlatformMemFree(ta);
+        <span class="enscript-keyword">return</span>;
+    }
+
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">clang</span> <span class="enscript-variable-name">diagnostic</span> <span class="enscript-variable-name">push</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">clang</span> <span class="enscript-variable-name">diagnostic</span> <span class="enscript-variable-name">ignored</span> <span class="enscript-string">&quot;-Wdeprecated-declarations&quot;</span>
+    <span class="enscript-comment">// If we can't fetch the XML file e.g., network problems, trigger a timer. All other failures
+</span>    <span class="enscript-comment">// should hardly happen in practice for which schedule the normal interval to refetch the TA.
+</span>    Boolean success = CFURLCreateDataAndPropertiesFromResource(kCFAllocatorDefault, url, &amp;xmlData, NULL, NULL, NULL);
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">clang</span> <span class="enscript-variable-name">diagnostic</span> <span class="enscript-variable-name">pop</span>
+    <span class="enscript-keyword">if</span> (!success)
+    {
+        LogInfo(<span class="enscript-string">&quot;FetchRootTA: CFURLCreateDataAndPropertiesFromResource error&quot;</span>);
+        CFRelease(url);
+        mDNSPlatformMemFree(ta);
+        RegisterNotification(m, RootTAFetchInterval);
+        RootTAFetchInterval *= 2 + 1;
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// get the name of the last component from the url, libxml will use it if
+</span>    <span class="enscript-comment">// it has to report an error
+</span>    fileRef = CFURLCopyLastPathComponent(url);
+    <span class="enscript-keyword">if</span> (fileRef)
+    {
+        xmlFileName = CFStringGetCStringPtr(fileRef, kCFStringEncodingUTF8);
+        <span class="enscript-keyword">if</span> (!xmlFileName)
+        {
+            <span class="enscript-keyword">if</span> (!CFStringGetCString(fileRef, buf, <span class="enscript-keyword">sizeof</span>(buf), kCFStringEncodingUTF8) )
+                strlcpy(buf, <span class="enscript-string">&quot;nofile.xml&quot;</span>, <span class="enscript-keyword">sizeof</span>(buf));
+            xmlFileName = (<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)buf;
+        }
+    }
+
+    <span class="enscript-comment">// Parse the XML and get the CFXMLTree.
+</span>    xmlDocPtr tadoc = xmlReadMemory((<span class="enscript-type">const</span> <span class="enscript-type">char</span>*)CFDataGetBytePtr(xmlData),
+        (<span class="enscript-type">int</span>)CFDataGetLength(xmlData), xmlFileName, NULL, 0);        
+
+    <span class="enscript-keyword">if</span> (fileRef)
+        CFRelease(fileRef);
+    CFRelease(url);
+    CFRelease(xmlData);
+
+    <span class="enscript-keyword">if</span> (!tadoc)
+    {
+        LogMsg(<span class="enscript-string">&quot;FetchRootTA: xmlReadMemory failed&quot;</span>);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">done</span>;
+    }
+
+    xmlNodePtr root = xmlDocGetRootElement(tadoc);
+    <span class="enscript-keyword">if</span> (!root)
+    {
+        LogMsg(<span class="enscript-string">&quot;FetchRootTA: Cannot get root element&quot;</span>);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">done</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (ParseElement(tadoc, root, ta) &amp;&amp; ValidateTrustAnchor(ta))
+    {
+        <span class="enscript-comment">// Do the actual addition of TA on the main queue.
+</span>        mDNSPlatformDispatchAsync(m, ta, TAComplete);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-keyword">if</span> (ta-&gt;rds.digest)
+            mDNSPlatformMemFree(ta-&gt;rds.digest);
+        mDNSPlatformMemFree(ta);
+    }
+<span class="enscript-reference">done</span>:
+    <span class="enscript-keyword">if</span> (tadoc)
+        xmlFreeDoc(tadoc);
+    RegisterNotification(m, ROOT_TA_UPDATE_INTERVAL);
+    RootTAFetchInterval = InitialTAFetchInterval;
+    <span class="enscript-keyword">return</span>;
+}
+
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span> &amp;&amp; !<span class="enscript-variable-name">TARGET_OS_IPHONE</span>
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">DNSSECProbeCallback</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *question, <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> answer, QC_result AddRecord)
+{
+    <span class="enscript-keyword">if</span> (!AddRecord)
+        <span class="enscript-keyword">return</span>;
+
+    mDNS_Lock(m);
+    <span class="enscript-keyword">if</span> ((m-&gt;timenow - question-&gt;StopTime) &gt;= 0)
+    {
+        mDNS_Unlock(m);
+        LogDNSSEC(<span class="enscript-string">&quot;DNSSECProbeCallback: Question %##s (%s) timed out&quot;</span>, question-&gt;qname.c, DNSTypeName(question-&gt;qtype));
+        mDNS_StopQuery(m, question);
+        <span class="enscript-keyword">return</span>;
+    }
+    mDNS_Unlock(m);
+
+    <span class="enscript-comment">// Wait till we get the DNSSEC results. If we get a negative response e.g., no DNS servers, the
+</span>    <span class="enscript-comment">// question will be restarted by the core and we should have the DNSSEC results eventually.
+</span>    <span class="enscript-keyword">if</span> (AddRecord != QC_dnssec)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;DNSSECProbeCallback: Question %##s (%s)&quot;</span>, question-&gt;qname.c, DNSTypeName(question-&gt;qtype), RRDisplayString(m, answer));
+        <span class="enscript-keyword">return</span>;
+    }
+
+    LogDNSSEC(<span class="enscript-string">&quot;DNSSECProbeCallback: Question %##s (%s), DNSSEC status %s&quot;</span>, question-&gt;qname.c, DNSTypeName(question-&gt;qtype),
+            DNSSECStatusName(question-&gt;ValidationStatus));
+
+    mDNS_StopQuery(m, question);
+}
+
+<span class="enscript-comment">// Send a DNSSEC probe just for the sake of collecting DNSSEC statistics.
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNSSECProbe</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    mDNSu32 rand;
+
+    <span class="enscript-keyword">if</span> (DNSSECProbeQuestion.ThisQInterval != -1)
+        <span class="enscript-keyword">return</span>;
+    
+    rand = mDNSRandom(FutureTime) % 100;
+    <span class="enscript-comment">// Probe 1% of the time
+</span>    <span class="enscript-keyword">if</span> (rand &gt;= DNSSECProbePercentage)
+        <span class="enscript-keyword">return</span>;
+    
+    mDNS_DropLockBeforeCallback();
+    InitializeQuestion(m, &amp;DNSSECProbeQuestion, mDNSInterface_Any, (<span class="enscript-type">const</span> domainname *)<span class="enscript-string">&quot;\003com&quot;</span>, kDNSType_DS, DNSSECProbeCallback, mDNSNULL);
+    DNSSECProbeQuestion.ValidatingResponse = 0;
+    DNSSECProbeQuestion.ValidationRequired = DNSSEC_VALIDATION_SECURE;
+
+    BumpDNSSECStats(m, kStatsActionIncrement, kStatsTypeProbe, 1);
+    mDNS_StartQuery(m, &amp;DNSSECProbeQuestion);
+    mDNS_ReclaimLockAfterCallback(); 
+}
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span> &amp;&amp; !<span class="enscript-variable-name">TARGET_OS_IPHONE</span>
+
+<span class="enscript-comment">// For now we fetch the root trust anchor and update the local copy
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">UpdateTrustAnchors</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    <span class="enscript-comment">// Register for a notification to fire immediately which in turn will update
+</span>    <span class="enscript-comment">// the trust anchor
+</span>    <span class="enscript-keyword">if</span> (RegisterNotification(m, 1))
+    {
+        LogMsg(<span class="enscript-string">&quot;UpdateTrustAnchors: ERROR!! failed to register for notification&quot;</span>);
+    }
+}
+
+mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">RegisterNotification</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> interval)
+{
+    <span class="enscript-type">int</span> len = strlen(<span class="enscript-string">&quot;com.apple.system.notify.service.timer:+&quot;</span>) + 21; <span class="enscript-comment">// 21 bytes to accomodate the interval
+</span>    <span class="enscript-type">char</span> buffer[len];
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> blen;
+    <span class="enscript-type">int</span> status;
+
+    <span class="enscript-comment">// Starting &quot;interval&quot; second from now (+ below indicates relative) register for a notification
+</span>    blen = mDNS_snprintf(buffer, <span class="enscript-keyword">sizeof</span>(buffer), <span class="enscript-string">&quot;com.apple.system.notify.service.timer:+%us&quot;</span>, interval);
+    <span class="enscript-keyword">if</span> (blen &gt;= <span class="enscript-keyword">sizeof</span>(buffer))
+    {
+        LogMsg(<span class="enscript-string">&quot;RegisterNotification: Buffer too small blen %d, buffer size %d&quot;</span>, blen, <span class="enscript-keyword">sizeof</span>(buffer));
+        <span class="enscript-keyword">return</span> -1;
+    } 
+    LogInfo(<span class="enscript-string">&quot;RegisterNotification: buffer %s&quot;</span>, buffer);
+    <span class="enscript-keyword">if</span> (m-&gt;notifyToken)
+    {
+        notify_cancel(m-&gt;notifyToken);
+        m-&gt;notifyToken = 0;
+    }
+    status = notify_register_dispatch(buffer, &amp;m-&gt;notifyToken,
+                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+                ^(<span class="enscript-type">int</span> t) { (<span class="enscript-type">void</span>) t; FetchRootTA(m); });
+
+    <span class="enscript-keyword">if</span> (status != NOTIFY_STATUS_OK)
+    {
+        LogMsg(<span class="enscript-string">&quot;RegisterNotification: notify_register_dispatch failed&quot;</span>);
+        <span class="enscript-keyword">return</span> -1;
+    }
+    <span class="enscript-keyword">return</span> 0;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">DNSSECPlatformInit</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    <span class="enscript-type">int</span> diglen;
+
+    m-&gt;TrustAnchors = mDNSNULL;
+    m-&gt;notifyToken  = 0;
+
+    <span class="enscript-comment">// Add a couple of trust anchors for testing purposes.
+</span>    mDNSlocal <span class="enscript-type">const</span> domainname *testZone  = (<span class="enscript-type">const</span> domainname*)<span class="enscript-string">&quot;\007example&quot;</span>;
+
+    <span class="enscript-type">char</span> *digest = <span class="enscript-string">&quot;F122E47B5B7D2B6A5CC0A21EADA11D96BB9CC927&quot;</span>;
+    mDNSu8 *dig = ConvertDigest(digest, 1, &amp;diglen);
+    <span class="enscript-keyword">if</span> (dig) AddTrustAnchor(m, testZone, 23044, 5, 1, diglen, dig);
+
+    <span class="enscript-type">char</span> *digest1 = <span class="enscript-string">&quot;D795AE5E1AFB200C6139474199B70EAD3F3484553FD97BE5A43704B8A4791F21&quot;</span>;
+    dig = ConvertDigest(digest1, 2, &amp;diglen);
+    <span class="enscript-keyword">if</span> (dig) AddTrustAnchor(m, testZone, 23044, 5, 2, diglen, dig);
+
+    <span class="enscript-comment">// Add the TA for root zone manually here. We will dynamically fetch the root TA and
+</span>    <span class="enscript-comment">// update it shortly. If that fails e.g., disconnected from the network, we still
+</span>    <span class="enscript-comment">// have something to work with.
+</span>    <span class="enscript-type">char</span> *digest2 = <span class="enscript-string">&quot;49AAC11D7B6F6446702E54A1607371607A1A41855200FD2CE1CDDE32F24E8FB5&quot;</span>;
+    dig = ConvertDigest(digest2, 2, &amp;diglen);
+    <span class="enscript-keyword">if</span> (dig) AddTrustAnchor(m, (<span class="enscript-type">const</span> domainname *)<span class="enscript-string">&quot;\000&quot;</span>, 19036, 8, 2, diglen, dig);
+
+#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">TARGET_OS_IPHONE</span>
+    DNSSECProbeQuestion.ThisQInterval = -1;
+#<span class="enscript-reference">endif</span>
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+</pre>
+<hr />
+</body></html>

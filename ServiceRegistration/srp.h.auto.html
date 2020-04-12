@@ -1,0 +1,73 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>srp.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">srp.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="srp.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* srp.h
+ *
+ * Copyright (c) 2018 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Service Registration Protocol common definitions
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__SRP_H</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__SRP_H</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdint.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdbool.h&gt;</span>
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">__clang__</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NULLABLE</span> _Nullable
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NONNULL</span> _Nonnull
+#<span class="enscript-reference">else</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NULLABLE</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NONNULL</span>
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ERROR</span>(fmt, ...) fprintf(stderr, fmt <span class="enscript-string">&quot;\n&quot;</span>, ##__VA_ARGS__)
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">INFO</span>(fmt, ...)  fprintf(stderr, fmt <span class="enscript-string">&quot;\n&quot;</span>, ##__VA_ARGS__)
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DEBUG</span>(fmt, ...) fprintf(stderr, fmt <span class="enscript-string">&quot;\n&quot;</span>, ##__VA_ARGS__)
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> srp_key srp_key_t;
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

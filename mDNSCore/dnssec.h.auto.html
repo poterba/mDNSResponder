@@ -1,0 +1,182 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnssec.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnssec.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnssec.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2011-2013 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__DNSSEC_H</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__DNSSEC_H</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;CryptoAlg.h&quot;</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span>
+{
+    RRVS_rr, RRVS_rrsig, RRVS_key, RRVS_rrsig_key, RRVS_ds, RRVS_done,
+} RRVerifierSet;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> RRVerifier_struct RRVerifier;
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> DNSSECVerifier_struct DNSSECVerifier;
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> AuthChain_struct AuthChain;
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> InsecureContext_struct InsecureContext;
+
+<span class="enscript-type">struct</span> RRVerifier_struct
+{
+    RRVerifier *next;
+    mDNSu16 rrtype;
+    mDNSu16 rrclass;
+    mDNSu32 rroriginalttl;
+    mDNSu16 rdlength;
+    mDNSu16 found;
+    mDNSu32 namehash;
+    mDNSu32 rdatahash;
+    domainname name;
+    mDNSu8  *rdata;
+};
+
+<span class="enscript-comment">// Each AuthChain element has one rrset (with multiple resource records of same type), rrsig and key
+</span><span class="enscript-comment">// that validates the rrset.
+</span><span class="enscript-type">struct</span> AuthChain_struct
+{
+	AuthChain  *next;		<span class="enscript-comment">// Next element in the chain
+</span>	RRVerifier *rrset;		<span class="enscript-comment">// RRSET that is authenticated
+</span>	RRVerifier *rrsig;		<span class="enscript-comment">// Signature for that RRSET
+</span>	RRVerifier *key;		<span class="enscript-comment">// Public key for that RRSET
+</span>};
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ResetAuthChain</span>(dv) {    \
+    (dv)-&gt;ac = mDNSNULL;        \
+    (dv)-&gt;actail = &amp;((dv)-&gt;ac); \
+}
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSSECVerifierCallback</span> (mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, DNSSECStatus status);
+<span class="enscript-comment">//
+</span><span class="enscript-comment">// When we do a validation for a question, there might be additional validations that needs to be done e.g.,
+</span><span class="enscript-comment">// wildcard expanded answer. It is also possible that in the case of nsec we need to prove both that a wildcard
+</span><span class="enscript-comment">// does not apply and the closest encloser proves that name does not exist. We identify these with the following
+</span><span class="enscript-comment">// flags.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// Note: In the following, by &quot;marking the validation&quot;, we mean that as part of validation we need to prove
+</span><span class="enscript-comment">// the ones that are marked with.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// A wildcard may be used to answer a question. In that case, we need to verify that the right wildcard was
+</span><span class="enscript-comment">// used in answering the question. This is done by marking the validation with WILDCARD_PROVES_ANSWER_EXPANDED.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// Sometimes we get a NXDOMAIN response. In this case, we may have a wildcard where we need to prove
+</span><span class="enscript-comment">// that the wildcard proves that the name does not exist. This is done by marking the validation with
+</span><span class="enscript-comment">// WILDCARD_PROVES_NONAME_EXISTS.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// In the case of NODATA error, sometimes the name may exist but the query type does not exist. This is done by
+</span><span class="enscript-comment">// marking the validation with NSEC_PROVES_NOTYPE_EXISTS.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// In both NXDOMAIN and NODATA proofs, we may have to prove that the NAME does not exist. This is done by marking
+</span><span class="enscript-comment">// the validation with NSEC_PROVES_NONAME_EXISTS.
+</span><span class="enscript-comment">//
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">WILDCARD_PROVES_ANSWER_EXPANDED</span> 0x00000001
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">WILDCARD_PROVES_NONAME_EXISTS</span>   0x00000002
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NSEC_PROVES_NOTYPE_EXISTS</span>       0x00000004
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NSEC_PROVES_NONAME_EXISTS</span>       0x00000008
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NSEC3_OPT_OUT</span>					0x00000010 // OptOut was set in NSEC3
+
+<span class="enscript-type">struct</span> DNSSECVerifier_struct
+{
+    domainname origName;            <span class="enscript-comment">// Original question name that needs verification
+</span>    mDNSu16 origType;               <span class="enscript-comment">// Original question type corresponding to origName
+</span>    mDNSu16 currQtype;              <span class="enscript-comment">// Current question type that is being verified
+</span>    mDNSInterfaceID InterfaceID;    <span class="enscript-comment">// InterfaceID of the question
+</span>    DNSQuestion q;
+    mDNSu8 recursed;                <span class="enscript-comment">// Number of times recursed during validation
+</span>    mDNSu8 ValidationRequired;      <span class="enscript-comment">// Copy of the question's ValidationRequired status
+</span>    mDNSu8 InsecureProofDone;
+    mDNSu8 NumPackets;              <span class="enscript-comment">// Number of packets that we send on the wire for DNSSEC verification.
+</span>    mDNSs32 StartTime;              <span class="enscript-comment">// Time the DNSSEC verification starts
+</span>    mDNSu32 flags;
+    RRVerifierSet next;
+    domainname *wildcardName;       <span class="enscript-comment">// set if the answer is wildcard expanded
+</span>    RRVerifier *pendingNSEC;
+    DNSSECVerifierCallback *DVCallback;
+    DNSSECVerifier *parent;
+    RRVerifier *rrset;              <span class="enscript-comment">// rrset for which we have to verify
+</span>    RRVerifier *rrsig;              <span class="enscript-comment">// RRSIG for rrset
+</span>    RRVerifier *key;                <span class="enscript-comment">// DNSKEY for rrset
+</span>    RRVerifier *rrsigKey;           <span class="enscript-comment">// RRSIG for DNSKEY
+</span>    RRVerifier *ds;                 <span class="enscript-comment">// DS for DNSKEY set in parent zone
+</span>    AuthChain *saveac;
+    AuthChain *ac;
+    AuthChain **actail;
+    AlgContext *ctx;
+};
+
+
+<span class="enscript-type">struct</span> InsecureContext_struct
+{
+    DNSSECVerifier *dv;             <span class="enscript-comment">// dv for which we are doing the insecure proof
+</span>    mDNSu8 skip;                    <span class="enscript-comment">// labels to skip for forming the name from origName
+</span>    DNSSECStatus status;            <span class="enscript-comment">// status to deliver when done
+</span>    mDNSu8 triggerLabelCount;       <span class="enscript-comment">// Label count of the name that triggered the insecure proof
+</span>    DNSQuestion q;
+};
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">LogDNSSEC</span> LogOperation
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DNS_SERIAL_GT</span>(a, b) ((int)((a) - (b)) &gt; 0)
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">DNS_SERIAL_LT</span>(a, b) ((int)((a) - (b)) &lt; 0)
+
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">StartDNSSECVerification</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">void</span> *context);
+<span class="enscript-type">extern</span> RRVerifier* <span class="enscript-function-name">AllocateRRVerifier</span>(<span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> rr, mStatus *status);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">AddRRSetToVerifier</span>(DNSSECVerifier *dv, <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> rr, RRVerifier *rv, RRVerifierSet set);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">VerifySignature</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, DNSQuestion *q);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">FreeDNSSECVerifier</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv);
+<span class="enscript-type">extern</span> DNSSECVerifier *<span class="enscript-function-name">AllocateDNSSECVerifier</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> domainname *name, mDNSu16 rrtype, mDNSInterfaceID InterfaceID,
+                                              mDNSu8 ValidationRequired, DNSSECVerifierCallback dvcallback, mDNSQuestionCallback qcallback);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">InitializeQuestion</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *question, mDNSInterfaceID InterfaceID, <span class="enscript-type">const</span> domainname *qname,
+                               mDNSu16 qtype, mDNSQuestionCallback *callback, <span class="enscript-type">void</span> *context);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">ValidateRRSIG</span>(DNSSECVerifier *dv, RRVerifierSet type, <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> rr);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">AuthChainLink</span>(DNSSECVerifier *dv, AuthChain *ae);
+<span class="enscript-type">extern</span> mStatus <span class="enscript-function-name">DNSNameToLowerCase</span>(domainname *d, domainname *result);
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> <span class="enscript-function-name">DNSMemCmp</span>(<span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> m1, <span class="enscript-type">const</span> mDNSu8 *<span class="enscript-type">const</span> m2, <span class="enscript-type">int</span> len);
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> <span class="enscript-function-name">DNSSECCanonicalOrder</span>(<span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> d1, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> d2, <span class="enscript-type">int</span> *subdomain);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">ProveInsecure</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, InsecureContext *ic, domainname *trigger);
+<span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">BumpDNSSECStats</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECStatsAction action, DNSSECStatsType type, mDNSu32 value);
+<span class="enscript-type">extern</span> <span class="enscript-type">char</span> *<span class="enscript-function-name">DNSSECStatusName</span>(DNSSECStatus status);
+
+<span class="enscript-comment">// DNSSECProbe belongs in DNSSECSupport.h but then we don't want to expose yet another plaform specific dnssec file
+</span><span class="enscript-comment">// to other platforms where dnssec is not supported.
+</span><span class="enscript-type">extern</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSSECProbe</span>(mDNS *<span class="enscript-type">const</span> m);
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">__DNSSEC_H</span>
+</pre>
+<hr />
+</body></html>

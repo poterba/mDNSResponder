@@ -1,0 +1,66 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>DNS64State.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">DNS64State.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="DNS64State.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2017 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__DNS64State_h</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__DNS64State_h</span>
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span>
+{
+    kDNS64State_Initial             = 0,    <span class="enscript-comment">// Initial state.
+</span>    kDNS64State_PrefixDiscovery     = 1,    <span class="enscript-comment">// Querying for &quot;ipv4only.arpa.&quot; AAAA records to discover NAT64 IPv6 prefix(es).
+</span>    kDNS64State_PrefixDiscoveryPTR  = 2,    <span class="enscript-comment">// Same as PrefixDiscovery, but discoverying for &quot;ip6.arpa.&quot; PTR record queries.
+</span>    kDNS64State_QueryA              = 3,    <span class="enscript-comment">// Querying for A record with same QNAME as AAAA record query.
+</span>    kDNS64State_QueryA2             = 4,    <span class="enscript-comment">// Continuing A record query after being answered with a synthesizable A record.
+</span>    kDNS64State_QueryAAAA           = 5,    <span class="enscript-comment">// Querying for original AAAA record.
+</span>    kDNS64State_QueryPTR            = 6,    <span class="enscript-comment">// Determining whether to query for reverse IPV4 or reverse IPv6 PTR record.
+</span>    kDNS64State_ReverseIPv4         = 7,    <span class="enscript-comment">// Querying for reverse IPV4 (in-addr.arpa.) PTR record.
+</span>    kDNS64State_ReverseIPv6         = 8     <span class="enscript-comment">// Querying for the original reverse IPv6 (ip6.arpa.) PTR record.
+</span>
+}   DNS64State;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    DNS64State      state;          <span class="enscript-comment">// Current state.
+</span>    mDNSu8          qnameStash[15]; <span class="enscript-comment">// Temporary space to hold the up to 15 bytes that are displaced in a DNSQuestion's qname
+</span>                                    <span class="enscript-comment">// when it's set to &quot;ipv4only.arpa.&quot; during prefix discovery.
+</span>}   DNS64;
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">__DNS64State_h</span>
+</pre>
+<hr />
+</body></html>

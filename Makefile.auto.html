@@ -1,0 +1,129 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>Makefile</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">Makefile&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="Makefile">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">#
+</span><span class="enscript-comment"># Copyright (c) 2003-2018 Apple Inc. All rights reserved.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># Top level makefile for Build &amp; Integration (B&amp;I).
+</span><span class="enscript-comment"># 
+</span><span class="enscript-comment"># This file is used to facilitate checking the mDNSResponder project directly from git and submitting to B&amp;I at Apple.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># The various platform directories contain makefiles or projects specific to that platform.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment">#    B&amp;I builds must respect the following target:
+</span><span class="enscript-comment">#         install:
+</span><span class="enscript-comment">#         installsrc:
+</span><span class="enscript-comment">#         installhdrs:
+</span><span class="enscript-comment">#         installapi:
+</span><span class="enscript-comment">#         clean:
+</span><span class="enscript-comment">#
+</span>
+include $(<span class="enscript-reference">MAKEFILEPATH</span>)/pb_makefiles/platform.make
+
+MVERS = <span class="enscript-string">&quot;mDNSResponder-1096.40.7&quot;</span>
+
+VER =
+ifneq ($(<span class="enscript-reference">strip $(GCC_VERSION)</span>),)
+	VER = -- GCC_VERSION=$(<span class="enscript-reference">GCC_VERSION</span>)
+endif
+echo <span class="enscript-string">&quot;VER = $(VER)&quot;</span>
+
+projectdir	:= $(<span class="enscript-reference">SRCROOT</span>)/mDNSMacOSX
+buildsettings	:= OBJROOT=$(<span class="enscript-reference">OBJROOT</span>) SYMROOT=$(<span class="enscript-reference">SYMROOT</span>) DSTROOT=$(<span class="enscript-reference">DSTROOT</span>) MVERS=$(<span class="enscript-reference">MVERS</span>) SDKROOT=$(<span class="enscript-reference">SDKROOT</span>)
+
+<span class="enscript-keyword">.PHONY:</span> install installSome installEmpty installExtras SystemLibraries installhdrs installapi installsrc java clean
+
+<span class="enscript-comment"># B&amp;I install build targets
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># For the mDNSResponder build alias, the make target used by B&amp;I depends on the platform:
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment">#	Platform	Make Target
+</span><span class="enscript-comment">#	--------	-----------
+</span><span class="enscript-comment">#	osx		install
+</span><span class="enscript-comment">#	ios		installSome
+</span><span class="enscript-comment">#	atv		installSome
+</span><span class="enscript-comment">#	watch		installSome
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># For the mDNSResponderSystemLibraries and mDNSResponderSystemLibraries_sim build aliases, B&amp;I uses the SystemLibraries
+</span><span class="enscript-comment"># target for all platforms.
+</span>
+<span class="enscript-keyword">install:</span>
+ifeq ($(<span class="enscript-reference">RC_ProjectName</span>), mDNSResponderServices)
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) -target 'Build Services' $(<span class="enscript-reference">VER</span>)
+else
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) $(<span class="enscript-reference">VER</span>)
+endif
+
+<span class="enscript-keyword">installSome:</span>
+ifeq ($(<span class="enscript-reference">RC_ProjectName</span>), mDNSResponderServices)
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) -target 'Build Services' $(<span class="enscript-reference">VER</span>)
+else
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) $(<span class="enscript-reference">VER</span>)
+endif
+
+<span class="enscript-keyword">installEmpty:</span>
+	mkdir -p $(<span class="enscript-reference">DSTROOT</span>)/AppleInternal
+
+<span class="enscript-keyword">installExtras:</span>
+ifeq ($(<span class="enscript-reference">RC_PROJECT_COMPILATION_PLATFORM</span>), osx)
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) -target 'Build Extras-macOS' $(<span class="enscript-reference">VER</span>)
+else ifeq ($(<span class="enscript-reference">RC_PROJECT_COMPILATION_PLATFORM</span>), ios)
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) -target 'Build Extras-iOS' $(<span class="enscript-reference">VER</span>)
+else
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) -target 'Build Extras' $(<span class="enscript-reference">VER</span>)
+endif
+
+<span class="enscript-keyword">SystemLibraries:</span>
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) -target SystemLibraries $(<span class="enscript-reference">VER</span>)
+
+<span class="enscript-comment"># B&amp;I installhdrs build targets
+</span>
+<span class="enscript-keyword">installhdrs::</span>
+ifeq ($(<span class="enscript-reference">RC_ProjectName</span>), mDNSResponderServices)
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild installhdrs $(<span class="enscript-reference">buildsettings</span>) -target 'Build Services' $(<span class="enscript-reference">VER</span>)
+else ifneq ($(<span class="enscript-reference">findstring SystemLibraries,$(RC_ProjectName)</span>),)
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild installhdrs $(<span class="enscript-reference">buildsettings</span>) -target SystemLibraries $(<span class="enscript-reference">VER</span>)
+endif
+
+<span class="enscript-comment"># B&amp;I installapi build targets
+</span>
+<span class="enscript-keyword">installapi:</span>
+ifeq ($(<span class="enscript-reference">RC_ProjectName</span>), mDNSResponderServices)
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild installapi $(<span class="enscript-reference">buildsettings</span>) -target 'Build Services' $(<span class="enscript-reference">VER</span>)
+else ifneq ($(<span class="enscript-reference">findstring SystemLibraries,$(RC_ProjectName)</span>),)
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild installapi $(<span class="enscript-reference">buildsettings</span>) -target SystemLibrariesDynamic $(<span class="enscript-reference">VER</span>)
+endif
+
+<span class="enscript-comment"># Misc. targets
+</span>
+<span class="enscript-keyword">installsrc:</span>
+	ditto . '$(<span class="enscript-reference">SRCROOT</span>)'
+	rm -rf '$(<span class="enscript-reference">SRCROOT</span>)/mDNSWindows' '$(<span class="enscript-reference">SRCROOT</span>)/Clients/FirefoxExtension'
+
+<span class="enscript-keyword">java:</span>
+	cd '$(<span class="enscript-reference">projectdir</span>)'; xcodebuild install $(<span class="enscript-reference">buildsettings</span>) -target libjdns_sd.jnilib $(<span class="enscript-reference">VER</span>)
+
+<span class="enscript-keyword">clean::</span>
+	echo clean
+</pre>
+<hr />
+</body></html>

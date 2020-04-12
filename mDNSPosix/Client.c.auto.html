@@ -1,0 +1,249 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>Client.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">Client.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="Client.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2002-2004 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;assert.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;signal.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span> // Defines the interface to the mDNS core code
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSPosix.h&quot;</span>    // Defines the specific types needed to run mDNS on this platform
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;ExampleClientApp.h&quot;</span>
+
+<span class="enscript-comment">// Globals
+</span>mDNSexport mDNS mDNSStorage;       <span class="enscript-comment">// mDNS core uses this to store its globals
+</span><span class="enscript-type">static</span> mDNS_PlatformSupport PlatformStorage;  <span class="enscript-comment">// Stores this platform's globals
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">RR_CACHE_SIZE</span> 500
+<span class="enscript-type">static</span> CacheEntity gRRCache[RR_CACHE_SIZE];
+
+mDNSexport <span class="enscript-type">const</span> <span class="enscript-type">char</span> ProgramName[] = <span class="enscript-string">&quot;mDNSClientPosix&quot;</span>;
+
+<span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">char</span> *gProgramName = ProgramName;
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">BrowseCallback</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *question, <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> answer, QC_result AddRecord)
+<span class="enscript-comment">// A callback from the core mDNS code that indicates that we've received a
+</span><span class="enscript-comment">// response to our query.  Note that this code runs on the main thread
+</span><span class="enscript-comment">// (in fact, there is only one thread!), so we can safely printf the results.
+</span>{
+    domainlabel name;
+    domainname type;
+    domainname domain;
+    <span class="enscript-type">char</span> nameC  [MAX_DOMAIN_LABEL+1];           <span class="enscript-comment">// Unescaped name: up to 63 bytes plus C-string terminating NULL.
+</span>    <span class="enscript-type">char</span> typeC  [MAX_ESCAPED_DOMAIN_NAME];
+    <span class="enscript-type">char</span> domainC[MAX_ESCAPED_DOMAIN_NAME];
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *state;
+
+    (<span class="enscript-type">void</span>)m;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)question; <span class="enscript-comment">// Unused
+</span>
+    assert(answer-&gt;rrtype == kDNSType_PTR);
+
+    DeconstructServiceName(&amp;answer-&gt;rdata-&gt;u.name, &amp;name, &amp;type, &amp;domain);
+
+    ConvertDomainLabelToCString_unescaped(&amp;name, nameC);
+    ConvertDomainNameToCString(&amp;type, typeC);
+    ConvertDomainNameToCString(&amp;domain, domainC);
+
+    <span class="enscript-comment">// If the TTL has hit 0, the service is no longer available.
+</span>    <span class="enscript-keyword">if</span> (!AddRecord) {
+        state = <span class="enscript-string">&quot;Lost &quot;</span>;
+    } <span class="enscript-keyword">else</span> {
+        state = <span class="enscript-string">&quot;Found&quot;</span>;
+    }
+    fprintf(stderr, <span class="enscript-string">&quot;*** %s name = '%s', type = '%s', domain = '%s'\n&quot;</span>, state, nameC, typeC, domainC);
+}
+
+<span class="enscript-type">static</span> mDNSBool <span class="enscript-function-name">CheckThatServiceTypeIsUsable</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *serviceType, mDNSBool printExplanation)
+<span class="enscript-comment">// Checks that serviceType is a reasonable service type
+</span><span class="enscript-comment">// label and, if it isn't and printExplanation is true, prints
+</span><span class="enscript-comment">// an explanation of why not.
+</span>{
+    mDNSBool result;
+
+    result = mDNStrue;
+    <span class="enscript-keyword">if</span> (result &amp;&amp; strlen(serviceType) &gt; 63) {
+        <span class="enscript-keyword">if</span> (printExplanation) {
+            fprintf(stderr,
+                    <span class="enscript-string">&quot;%s: Service type specified by -t is too long (must be 63 characters or less)\n&quot;</span>,
+                    gProgramName);
+        }
+        result = mDNSfalse;
+    }
+    <span class="enscript-keyword">if</span> (result &amp;&amp; serviceType[0] == 0) {
+        <span class="enscript-keyword">if</span> (printExplanation) {
+            fprintf(stderr,
+                    <span class="enscript-string">&quot;%s: Service type specified by -t can't be empty\n&quot;</span>,
+                    gProgramName);
+        }
+        result = mDNSfalse;
+    }
+    <span class="enscript-keyword">return</span> result;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">char</span> kDefaultServiceType[] = <span class="enscript-string">&quot;_afpovertcp._tcp&quot;</span>;
+<span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">char</span> kDefaultDomain[]      = <span class="enscript-string">&quot;local.&quot;</span>;
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">PrintUsage</span>()
+{
+    fprintf(stderr,
+            <span class="enscript-string">&quot;Usage: %s [-v level] [-t type] [-d domain]\n&quot;</span>,
+            gProgramName);
+    fprintf(stderr, <span class="enscript-string">&quot;          -v verbose mode, level is a number from 0 to 2\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;             0 = no debugging info (default)\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;             1 = standard debugging info\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;             2 = intense debugging info\n&quot;</span>);
+    fprintf(stderr, <span class="enscript-string">&quot;          -t uses 'type' as the service type (default is '%s')\n&quot;</span>, kDefaultServiceType);
+    fprintf(stderr, <span class="enscript-string">&quot;          -d uses 'domain' as the domain to browse (default is '%s')\n&quot;</span>, kDefaultDomain);
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">char</span> *gServiceType      = kDefaultServiceType;
+<span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">char</span> *gServiceDomain    = kDefaultDomain;
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">ParseArguments</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+<span class="enscript-comment">// Parses our command line arguments into the global variables
+</span><span class="enscript-comment">// listed above.
+</span>{
+    <span class="enscript-type">int</span> ch;
+
+    <span class="enscript-comment">// Set gProgramName to the last path component of argv[0]
+</span>
+    gProgramName = strrchr(argv[0], <span class="enscript-string">'/'</span>);
+    <span class="enscript-keyword">if</span> (gProgramName == NULL) {
+        gProgramName = argv[0];
+    } <span class="enscript-keyword">else</span> {
+        gProgramName += 1;
+    }
+
+    <span class="enscript-comment">// Parse command line options using getopt.
+</span>
+    <span class="enscript-keyword">do</span> {
+        ch = getopt(argc, argv, <span class="enscript-string">&quot;v:t:d:&quot;</span>);
+        <span class="enscript-keyword">if</span> (ch != -1) {
+            <span class="enscript-keyword">switch</span> (ch) {
+            <span class="enscript-keyword">case</span> <span class="enscript-string">'v'</span>:
+                gMDNSPlatformPosixVerboseLevel = atoi(optarg);
+                <span class="enscript-keyword">if</span> (gMDNSPlatformPosixVerboseLevel &lt; 0 || gMDNSPlatformPosixVerboseLevel &gt; 2) {
+                    fprintf(stderr,
+                            <span class="enscript-string">&quot;%s: Verbose mode must be in the range 0..2\n&quot;</span>,
+                            gProgramName);
+                    exit(1);
+                }
+                <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-string">'t'</span>:
+                gServiceType = optarg;
+                <span class="enscript-keyword">if</span> ( !CheckThatServiceTypeIsUsable(gServiceType, mDNStrue) ) {
+                    exit(1);
+                }
+                <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-string">'d'</span>:
+                gServiceDomain = optarg;
+                <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-string">'?'</span>:
+            <span class="enscript-reference">default</span>:
+                PrintUsage();
+                exit(1);
+                <span class="enscript-keyword">break</span>;
+            }
+        }
+    } <span class="enscript-keyword">while</span> (ch != -1);
+
+    <span class="enscript-comment">// Check for any left over command line arguments.
+</span>
+    <span class="enscript-keyword">if</span> (optind != argc) {
+        fprintf(stderr, <span class="enscript-string">&quot;%s: Unexpected argument '%s'\n&quot;</span>, gProgramName, argv[optind]);
+        exit(1);
+    }
+}
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">main</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+<span class="enscript-comment">// The program's main entry point.  The program does a trivial
+</span><span class="enscript-comment">// mDNS query, looking for all AFP servers in the local domain.
+</span>{
+    <span class="enscript-type">int</span> result;
+    mStatus status;
+    DNSQuestion question;
+    domainname type;
+    domainname domain;
+
+    <span class="enscript-comment">// Parse our command line arguments.  This won't come back if there's an error.
+</span>    ParseArguments(argc, argv);
+
+    <span class="enscript-comment">// Initialise the mDNS core.
+</span>    status = mDNS_Init(&amp;mDNSStorage, &amp;PlatformStorage,
+                       gRRCache, RR_CACHE_SIZE,
+                       mDNS_Init_DontAdvertiseLocalAddresses,
+                       mDNS_Init_NoInitCallback, mDNS_Init_NoInitCallbackContext);
+    <span class="enscript-keyword">if</span> (status == mStatus_NoError) {
+
+        <span class="enscript-comment">// Construct and start the query.
+</span>
+        MakeDomainNameFromDNSNameString(&amp;type, gServiceType);
+        MakeDomainNameFromDNSNameString(&amp;domain, gServiceDomain);
+
+        status = mDNS_StartBrowse(&amp;mDNSStorage, &amp;question, &amp;type, &amp;domain, mDNSInterface_Any, 0, mDNSfalse, mDNSfalse, BrowseCallback, NULL);
+
+        <span class="enscript-comment">// Run the platform main event loop until the user types ^C.
+</span>        <span class="enscript-comment">// The BrowseCallback routine is responsible for printing
+</span>        <span class="enscript-comment">// any results that we find.
+</span>
+        <span class="enscript-keyword">if</span> (status == mStatus_NoError) {
+            fprintf(stderr, <span class="enscript-string">&quot;Hit ^C when you're bored waiting for responses.\n&quot;</span>);
+            ExampleClientEventLoop(&amp;mDNSStorage);
+            mDNS_StopQuery(&amp;mDNSStorage, &amp;question);
+            mDNS_Close(&amp;mDNSStorage);
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (status == mStatus_NoError) {
+        result = 0;
+    } <span class="enscript-keyword">else</span> {
+        result = 2;
+    }
+    <span class="enscript-keyword">if</span> ( (result != 0) || (gMDNSPlatformPosixVerboseLevel &gt; 0) ) {
+        fprintf(stderr, <span class="enscript-string">&quot;%s: Finished with status %d, result %d\n&quot;</span>, gProgramName, (<span class="enscript-type">int</span>)status, result);
+    }
+
+    <span class="enscript-keyword">return</span> 0;
+}
+</pre>
+<hr />
+</body></html>

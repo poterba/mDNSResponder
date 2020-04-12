@@ -1,0 +1,326 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>P2PPacketFilter.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">P2PPacketFilter.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="P2PPacketFilter.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2011 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;net/if.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;System/net/pfvar.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;fcntl.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/ioctl.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;AssertMacros.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;P2PPacketFilter.h&quot;</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">AIRDROP_ANCHOR_PATH</span> <span class="enscript-string">&quot;com.apple/200.AirDrop&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MDNS_ANCHOR_NAME</span>    <span class="enscript-string">&quot;Bonjour&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MDNS_ANCHOR_PATH</span>    AIRDROP_ANCHOR_PATH <span class="enscript-string">&quot;/&quot;</span> MDNS_ANCHOR_NAME
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">PF_DEV_PATH</span> <span class="enscript-string">&quot;/dev/pf&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">BONJOUR_PORT</span> 5353
+
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">openPFDevice</span>( <span class="enscript-type">int</span> * outFD )
+{
+    <span class="enscript-type">int</span> err;
+    <span class="enscript-type">int</span> fd = open( PF_DEV_PATH, O_RDWR );
+
+    <span class="enscript-keyword">if</span>( fd &gt;= 0 )
+    {
+        err = 0;
+        *outFD = fd;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        err = errno;
+    }
+
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">getTicket</span>( <span class="enscript-type">int</span> devFD, u_int32_t * outTicket, <span class="enscript-type">char</span> * anchorPath )
+{
+    <span class="enscript-type">struct</span> pfioc_trans_e trans_e;
+
+    trans_e.rs_num = PF_RULESET_FILTER;
+    strlcpy( trans_e.anchor, anchorPath, <span class="enscript-keyword">sizeof</span>( trans_e.anchor ) );
+
+    <span class="enscript-type">struct</span> pfioc_trans trans;
+
+    trans.size = 1;
+    trans.esize = <span class="enscript-keyword">sizeof</span>( trans_e );
+    trans.array = &amp;trans_e;
+
+    <span class="enscript-type">int</span> result, ioctlError;
+
+    ioctlError = ioctl( devFD, DIOCXBEGIN, &amp;trans );
+    <span class="enscript-keyword">if</span>( ioctlError )
+    {
+        result = errno;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        result = 0;
+        *outTicket = trans_e.ticket;
+    }
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">commitChange</span>( <span class="enscript-type">int</span> devFD, u_int32_t ticket, <span class="enscript-type">char</span> * anchorPath )
+{
+    <span class="enscript-type">struct</span> pfioc_trans_e trans_e;
+
+    trans_e.rs_num = PF_RULESET_FILTER;
+    strlcpy( trans_e.anchor, anchorPath, <span class="enscript-keyword">sizeof</span>( trans_e.anchor ) );
+    trans_e.ticket = ticket;
+
+    <span class="enscript-type">struct</span> pfioc_trans trans;
+
+    trans.size = 1;
+    trans.esize = <span class="enscript-keyword">sizeof</span>( trans_e );
+    trans.array = &amp;trans_e;
+
+    <span class="enscript-type">int</span> result, ioctlError;
+
+    ioctlError = ioctl( devFD, DIOCXCOMMIT, &amp;trans );
+    <span class="enscript-keyword">if</span>( ioctlError )
+        result = errno;
+    <span class="enscript-keyword">else</span>
+        result = 0;
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">getPoolTicket</span>( <span class="enscript-type">int</span> devFD, u_int32_t * outPoolTicket )
+{
+    <span class="enscript-type">struct</span> pfioc_pooladdr pp;
+
+    <span class="enscript-type">int</span> result, ioctlError;
+
+    ioctlError = ioctl( devFD, DIOCBEGINADDRS, &amp;pp );
+    <span class="enscript-keyword">if</span>( ioctlError )
+    {
+        result = errno;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        result = 0;
+        *outPoolTicket = pp.ticket;
+    }
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">int</span> <span class="enscript-function-name">addRule</span>( <span class="enscript-type">int</span> devFD, <span class="enscript-type">struct</span> pfioc_rule * pr )
+{
+    <span class="enscript-type">int</span> result, ioctlResult;
+
+    ioctlResult = ioctl( devFD, DIOCADDRULE, pr );
+    <span class="enscript-keyword">if</span>( ioctlResult )
+        result = errno;
+    <span class="enscript-keyword">else</span>
+        result = 0;
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">initRuleHeader</span>( <span class="enscript-type">struct</span> pfioc_rule * pr,
+                            u_int32_t ticket,
+                            u_int32_t poolTicket,
+                            <span class="enscript-type">char</span> * anchorPath )
+{
+    pr-&gt;action = PF_CHANGE_NONE;
+    pr-&gt;ticket = ticket;
+    pr-&gt;pool_ticket = poolTicket;
+    strlcpy( pr-&gt;anchor, anchorPath, <span class="enscript-keyword">sizeof</span>( pr-&gt;anchor ) );
+}
+
+<span class="enscript-comment">// allow inbound traffice on the Bonjour port (5353)
+</span><span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">initBonjourRule</span>( <span class="enscript-type">struct</span> pfioc_rule * pr,
+                             <span class="enscript-type">const</span> <span class="enscript-type">char</span> * interfaceName,
+                             u_int32_t ticket,
+                             u_int32_t poolTicket,
+                             <span class="enscript-type">char</span> * anchorPath )
+{
+    memset( pr, 0, <span class="enscript-keyword">sizeof</span>( *pr ) );
+
+    <span class="enscript-comment">// Header
+</span>    initRuleHeader( pr, ticket, poolTicket, anchorPath );
+
+    <span class="enscript-comment">// Rule
+</span>    pr-&gt;rule.dst.xport.range.port[0] = htons( BONJOUR_PORT );
+    pr-&gt;rule.dst.xport.range.op = PF_OP_EQ;
+
+    strlcpy( pr-&gt;rule.ifname, interfaceName, <span class="enscript-keyword">sizeof</span>( pr-&gt;rule.ifname ) );
+
+    pr-&gt;rule.action = PF_PASS;
+    pr-&gt;rule.direction = PF_IN;
+    pr-&gt;rule.keep_state = 1;
+    pr-&gt;rule.af = AF_INET6;
+    pr-&gt;rule.proto = IPPROTO_UDP;
+    pr-&gt;rule.extfilter = PF_EXTFILTER_APD;
+}
+
+<span class="enscript-comment">// allow outbound TCP connections and return traffic for those connections
+</span><span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">initOutboundTCPRule</span>( <span class="enscript-type">struct</span> pfioc_rule * pr,
+                                 <span class="enscript-type">const</span> <span class="enscript-type">char</span> * interfaceName,
+                                 u_int32_t ticket,
+                                 u_int32_t poolTicket,
+                                 <span class="enscript-type">char</span> * anchorPath )
+{
+    memset( pr, 0, <span class="enscript-keyword">sizeof</span>( *pr ) );
+
+    <span class="enscript-comment">// Header
+</span>    initRuleHeader( pr, ticket, poolTicket, anchorPath );
+
+    <span class="enscript-comment">// Rule
+</span>    strlcpy( pr-&gt;rule.ifname, interfaceName, <span class="enscript-keyword">sizeof</span>( pr-&gt;rule.ifname ) );
+
+    pr-&gt;rule.action = PF_PASS;
+    pr-&gt;rule.direction = PF_OUT;
+    pr-&gt;rule.keep_state = 1;
+    pr-&gt;rule.proto = IPPROTO_TCP;
+}
+
+<span class="enscript-comment">// allow inbound traffic on the specified port and protocol
+</span><span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">initPortRule</span>( <span class="enscript-type">struct</span> pfioc_rule * pr,
+                          <span class="enscript-type">const</span> <span class="enscript-type">char</span> * interfaceName,
+                          u_int32_t ticket,
+                          u_int32_t poolTicket,
+                          <span class="enscript-type">char</span> * anchorPath,
+                          u_int16_t port,
+                          u_int16_t protocol )
+{
+    memset( pr, 0, <span class="enscript-keyword">sizeof</span>( *pr ) );
+
+    <span class="enscript-comment">// Header
+</span>    initRuleHeader( pr, ticket, poolTicket, anchorPath );
+
+    <span class="enscript-comment">// Rule
+</span>    <span class="enscript-comment">// mDNSResponder passes the port in Network Byte Order, so htons(port) is not required
+</span>    pr-&gt;rule.dst.xport.range.port[0] = port;
+    pr-&gt;rule.dst.xport.range.op = PF_OP_EQ;
+
+    strlcpy( pr-&gt;rule.ifname, interfaceName, <span class="enscript-keyword">sizeof</span>( pr-&gt;rule.ifname ) );
+
+    pr-&gt;rule.action = PF_PASS;
+    pr-&gt;rule.direction = PF_IN;
+    pr-&gt;rule.keep_state = 1;
+    pr-&gt;rule.af = AF_INET6;
+    pr-&gt;rule.proto = protocol;
+    pr-&gt;rule.extfilter = PF_EXTFILTER_APD;
+}
+
+<span class="enscript-comment">// allow inbound traffic on the Bonjour port (5353) and the specified port and protocol sets
+</span><span class="enscript-type">int</span> <span class="enscript-function-name">P2PPacketFilterAddBonjourRuleSet</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> * interfaceName, u_int32_t count, pfArray_t portArray, pfArray_t protocolArray )
+{
+    <span class="enscript-type">int</span> result;
+    u_int32_t i;
+    u_int32_t ticket = 0;
+    u_int32_t poolTicket = 0;
+    <span class="enscript-type">int</span> devFD = -1;
+    <span class="enscript-type">char</span> * anchorPath = MDNS_ANCHOR_PATH;
+
+    result = openPFDevice( &amp;devFD );
+    require( result == 0, exit );
+
+    result = getTicket( devFD, &amp;ticket, anchorPath );
+    require( result == 0, exit );
+
+    result = getPoolTicket( devFD, &amp;poolTicket );
+    require( result == 0, exit );
+
+    <span class="enscript-type">struct</span> pfioc_rule pr;
+
+    <span class="enscript-comment">// allow inbound Bonjour traffice to port 5353
+</span>    initBonjourRule( &amp;pr, interfaceName, ticket, poolTicket, anchorPath);
+
+    result = addRule( devFD, &amp;pr );
+    require( result == 0, exit );
+
+    <span class="enscript-comment">// open inbound port for each service
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; count; i++)
+    {
+        initPortRule( &amp;pr, interfaceName, ticket, poolTicket, anchorPath, portArray[i], protocolArray[i] );
+        result = addRule( devFD, &amp;pr );
+        require( result == 0, exit );
+    }
+
+    <span class="enscript-comment">// allow outbound TCP connections and return traffic for those connections
+</span>    initOutboundTCPRule( &amp;pr, interfaceName, ticket, poolTicket, anchorPath);
+
+    result = addRule( devFD, &amp;pr );
+    require( result == 0, exit );
+
+    result = commitChange( devFD, ticket, anchorPath );
+    require( result == 0, exit );
+
+<span class="enscript-reference">exit</span>:
+
+    <span class="enscript-keyword">if</span>( devFD &gt;= 0 )
+        close( devFD );
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">P2PPacketFilterClearBonjourRules</span>()
+{
+    <span class="enscript-type">int</span> result;
+    <span class="enscript-type">int</span> pfDev = -1;
+    u_int32_t ticket = 0;
+    <span class="enscript-type">char</span> * anchorPath = MDNS_ANCHOR_PATH;
+
+    result = openPFDevice( &amp;pfDev );
+    require( result == 0, exit );
+
+    result = getTicket( pfDev, &amp;ticket, anchorPath );
+    require( result == 0, exit );
+
+    result = commitChange( pfDev, ticket, anchorPath );
+
+<span class="enscript-reference">exit</span>:
+
+    <span class="enscript-keyword">if</span>( pfDev &gt;= 0 )
+        close( pfDev );
+
+    <span class="enscript-keyword">return</span> result;
+}
+
+</pre>
+<hr />
+</body></html>

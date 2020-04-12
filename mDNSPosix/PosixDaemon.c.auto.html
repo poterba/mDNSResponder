@@ -1,0 +1,305 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>PosixDaemon.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">PosixDaemon.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="PosixDaemon.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2003-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+
+    File:		daemon.c
+
+    Contains:	main &amp; associated Application layer for mDNSResponder on Linux.
+
+ */</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">__APPLE__</span>
+<span class="enscript-comment">// In Mac OS X 10.5 and later trying to use the daemon function gives a “‘daemon’ is deprecated”
+</span><span class="enscript-comment">// error, which prevents compilation because we build with &quot;-Werror&quot;.
+</span><span class="enscript-comment">// Since this is supposed to be portable cross-platform code, we don't care that daemon is
+</span><span class="enscript-comment">// deprecated on Mac OS X 10.5, so we use this preprocessor trick to eliminate the error message.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">daemon</span> yes_we_know_that_daemon_is_deprecated_in_os_x_10_5_thankyou
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;signal.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;fcntl.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;pwd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/types.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">__APPLE__</span>
+#<span class="enscript-reference">undef</span> <span class="enscript-variable-name">daemon</span>
+<span class="enscript-type">extern</span> <span class="enscript-type">int</span> <span class="enscript-function-name">daemon</span>(<span class="enscript-type">int</span>, <span class="enscript-type">int</span>);
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSPosix.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSUNP.h&quot;</span>        // For daemon()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;uds_daemon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;PlatformCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;posix_utilities.h&quot;</span>    // For getLocalTimestamp()
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">CONFIG_FILE</span> <span class="enscript-string">&quot;/etc/mdnsd.conf&quot;</span>
+<span class="enscript-type">static</span> domainname DynDNSZone;                <span class="enscript-comment">// Default wide-area zone for service registration
+</span><span class="enscript-type">static</span> domainname DynDNSHostname;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">RR_CACHE_SIZE</span> 500
+<span class="enscript-type">static</span> CacheEntity gRRCache[RR_CACHE_SIZE];
+<span class="enscript-type">static</span> mDNS_PlatformSupport PlatformStorage;
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">mDNS_StatusCallback</span>(mDNS *<span class="enscript-type">const</span> m, mStatus result)
+{
+    (<span class="enscript-type">void</span>)m; <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">if</span> (result == mStatus_NoError)
+    {
+        <span class="enscript-comment">// On successful registration of dot-local mDNS host name, daemon may want to check if
+</span>        <span class="enscript-comment">// any name conflict and automatic renaming took place, and if so, record the newly negotiated
+</span>        <span class="enscript-comment">// name in persistent storage for next time. It should also inform the user of the name change.
+</span>        <span class="enscript-comment">// On Mac OS X we store the current dot-local mDNS host name in the SCPreferences store,
+</span>        <span class="enscript-comment">// and notify the user with a CFUserNotification.
+</span>    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (result == mStatus_ConfigChanged)
+    {
+        udsserver_handle_configchange(m);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (result == mStatus_GrowCache)
+    {
+        <span class="enscript-comment">// Allocate another chunk of cache storage
+</span>        CacheEntity *storage = malloc(<span class="enscript-keyword">sizeof</span>(CacheEntity) * RR_CACHE_SIZE);
+        <span class="enscript-keyword">if</span> (storage) mDNS_GrowCache(m, storage, RR_CACHE_SIZE);
+    }
+}
+
+<span class="enscript-comment">// %%% Reconfigure() probably belongs in the platform support layer (mDNSPosix.c), not the daemon cde
+</span><span class="enscript-comment">// -- all client layers running on top of mDNSPosix.c need to handle network configuration changes,
+</span><span class="enscript-comment">// not only the Unix Domain Socket Daemon
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">Reconfigure</span>(mDNS *m)
+{
+    mDNSAddr DynDNSIP;
+    <span class="enscript-type">const</span> mDNSAddr dummy = { mDNSAddrType_IPv4, { { { 1, 1, 1, 1 } } } };;
+    mDNS_SetPrimaryInterfaceInfo(m, NULL, NULL, NULL);
+    <span class="enscript-keyword">if</span> (ParseDNSServers(m, uDNS_SERVERS_FILE) &lt; 0)
+        LogMsg(<span class="enscript-string">&quot;Unable to parse DNS server list. Unicast DNS-SD unavailable&quot;</span>);
+    ReadDDNSSettingsFromConfFile(m, CONFIG_FILE, &amp;DynDNSHostname, &amp;DynDNSZone, NULL);
+    mDNSPlatformSourceAddrForDest(&amp;DynDNSIP, &amp;dummy);
+    <span class="enscript-keyword">if</span> (DynDNSHostname.c[0]) mDNS_AddDynDNSHostName(m, &amp;DynDNSHostname, NULL, NULL);
+    <span class="enscript-keyword">if</span> (DynDNSIP.type) mDNS_SetPrimaryInterfaceInfo(m, &amp;DynDNSIP, NULL, NULL);
+    mDNS_ConfigChanged(m);
+}
+
+<span class="enscript-comment">// Do appropriate things at startup with command line arguments. Calls exit() if unhappy.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">ParseCmdLinArgs</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+{
+    <span class="enscript-keyword">if</span> (argc &gt; 1)
+    {
+        <span class="enscript-keyword">if</span> (0 == strcmp(argv[1], <span class="enscript-string">&quot;-debug&quot;</span>)) mDNS_DebugMode = mDNStrue;
+        <span class="enscript-keyword">else</span> printf(<span class="enscript-string">&quot;Usage: %s [-debug]\n&quot;</span>, argv[0]);
+    }
+
+    <span class="enscript-keyword">if</span> (!mDNS_DebugMode)
+    {
+        <span class="enscript-type">int</span> result = daemon(0, 0);
+        <span class="enscript-keyword">if</span> (result != 0) { LogMsg(<span class="enscript-string">&quot;Could not run as daemon - exiting&quot;</span>); exit(result); }
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">__APPLE__</span>
+        LogMsg(<span class="enscript-string">&quot;The POSIX mdnsd should only be used on OS X for testing - exiting&quot;</span>);
+        exit(-1);
+#<span class="enscript-reference">endif</span>
+    }
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">DumpStateLog</span>()
+<span class="enscript-comment">// Dump a little log of what we've been up to.
+</span>{
+    <span class="enscript-type">char</span> timestamp[64]; <span class="enscript-comment">// 64 is enough to store the UTC timestmp
+</span>    
+    mDNSu32 major_version = _DNS_SD_H / 10000;
+    mDNSu32 minor_version1 = (_DNS_SD_H - major_version * 10000) / 100;
+    mDNSu32 minor_version2 = _DNS_SD_H % 100;
+
+    getLocalTimestamp(timestamp, <span class="enscript-keyword">sizeof</span>(timestamp));
+    LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_DEFAULT, <span class="enscript-string">&quot;---- BEGIN STATE LOG ---- (%s mDNSResponder Build %d.%02d.%02d)&quot;</span>, timestamp, major_version, minor_version1, minor_version2);
+
+    udsserver_info_dump_to_fd(STDERR_FILENO);
+
+    getLocalTimestamp(timestamp, <span class="enscript-keyword">sizeof</span>(timestamp));
+    LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_DEFAULT, <span class="enscript-string">&quot;---- END STATE LOG ---- (%s mDNSResponder Build %d.%02d.%02d)&quot;</span>, timestamp, major_version, minor_version1, minor_version2);
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">MainLoop</span>(mDNS *m) <span class="enscript-comment">// Loop until we quit.
+</span>{
+    sigset_t signals;
+    mDNSBool gotData = mDNSfalse;
+
+    mDNSPosixListenForSignalInEventLoop(SIGINT);
+    mDNSPosixListenForSignalInEventLoop(SIGTERM);
+    mDNSPosixListenForSignalInEventLoop(SIGUSR1);
+    mDNSPosixListenForSignalInEventLoop(SIGPIPE);
+    mDNSPosixListenForSignalInEventLoop(SIGHUP) ;
+
+    <span class="enscript-keyword">for</span> (; ;)
+    {
+        <span class="enscript-comment">// Work out how long we expect to sleep before the next scheduled task
+</span>        <span class="enscript-type">struct</span> timeval timeout;
+        mDNSs32 ticks;
+
+        <span class="enscript-comment">// Only idle if we didn't find any data the last time around
+</span>        <span class="enscript-keyword">if</span> (!gotData)
+        {
+            mDNSs32 nextTimerEvent = mDNS_Execute(m);
+            nextTimerEvent = udsserver_idle(nextTimerEvent);
+            ticks = nextTimerEvent - mDNS_TimeNow(m);
+            <span class="enscript-keyword">if</span> (ticks &lt; 1) ticks = 1;
+        }
+        <span class="enscript-keyword">else</span>    <span class="enscript-comment">// otherwise call EventLoop again with 0 timemout
+</span>            ticks = 0;
+
+        timeout.tv_sec = ticks / mDNSPlatformOneSecond;
+        timeout.tv_usec = (ticks % mDNSPlatformOneSecond) * 1000000 / mDNSPlatformOneSecond;
+
+        (<span class="enscript-type">void</span>) mDNSPosixRunEventLoopOnce(m, &amp;timeout, &amp;signals, &amp;gotData);
+
+        <span class="enscript-keyword">if</span> (sigismember(&amp;signals, SIGHUP )) Reconfigure(m);
+        <span class="enscript-keyword">if</span> (sigismember(&amp;signals, SIGUSR1)) DumpStateLog();
+        <span class="enscript-comment">// SIGPIPE happens when we try to write to a dead client; death should be detected soon in request_callback() and cleaned up.
+</span>        <span class="enscript-keyword">if</span> (sigismember(&amp;signals, SIGPIPE)) LogMsg(<span class="enscript-string">&quot;Received SIGPIPE - ignoring&quot;</span>);
+        <span class="enscript-keyword">if</span> (sigismember(&amp;signals, SIGINT) || sigismember(&amp;signals, SIGTERM)) <span class="enscript-keyword">break</span>;
+    }
+    <span class="enscript-keyword">return</span> EINTR;
+}
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">main</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+{
+    mStatus err;
+
+    ParseCmdLinArgs(argc, argv);
+
+    LogMsg(<span class="enscript-string">&quot;%s starting&quot;</span>, mDNSResponderVersionString);
+
+    err = mDNS_Init(&amp;mDNSStorage, &amp;PlatformStorage, gRRCache, RR_CACHE_SIZE, mDNS_Init_AdvertiseLocalAddresses,
+                    mDNS_StatusCallback, mDNS_Init_NoInitCallbackContext);
+
+    <span class="enscript-keyword">if</span> (mStatus_NoError == err)
+        err = udsserver_init(mDNSNULL, 0);
+
+    Reconfigure(&amp;mDNSStorage);
+
+    <span class="enscript-comment">// Now that we're finished with anything privileged, switch over to running as &quot;nobody&quot;
+</span>    <span class="enscript-keyword">if</span> (mStatus_NoError == err)
+    {
+        <span class="enscript-type">const</span> <span class="enscript-type">struct</span> passwd *pw = getpwnam(<span class="enscript-string">&quot;nobody&quot;</span>);
+        <span class="enscript-keyword">if</span> (pw != NULL)
+        {
+            <span class="enscript-keyword">if</span> (setgid(pw-&gt;pw_gid) &lt; 0)
+            {
+                LogRedact(MDNS_LOG_CATEGORY_DEFAULT, MDNS_LOG_ERROR,
+                          <span class="enscript-string">&quot;WARNING: mdnsd continuing as group root because setgid to \&quot;nobody\&quot; failed with &quot;</span> PUB_S, strerror(errno));
+            }
+            <span class="enscript-keyword">if</span> (setuid(pw-&gt;pw_uid) &lt; 0)
+            {
+                LogMsg(<span class="enscript-string">&quot;WARNING: mdnsd continuing as root because setuid to \&quot;nobody\&quot; failed with %s&quot;</span>, strerror(errno));
+            }
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogMsg(<span class="enscript-string">&quot;WARNING: mdnsd continuing as root because user \&quot;nobody\&quot; does not exist&quot;</span>);
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (mStatus_NoError == err)
+        err = MainLoop(&amp;mDNSStorage);
+
+    LogMsg(<span class="enscript-string">&quot;%s stopping&quot;</span>, mDNSResponderVersionString);
+
+    mDNS_Close(&amp;mDNSStorage);
+
+    <span class="enscript-keyword">if</span> (udsserver_exit() &lt; 0)
+        LogMsg(<span class="enscript-string">&quot;ExitCallback: udsserver_exit failed&quot;</span>);
+
+ #<span class="enscript-keyword">if</span> MDNS_DEBUGMSGS &gt; 0
+    printf(<span class="enscript-string">&quot;mDNSResponder exiting normally with %d\n&quot;</span>, err);
+ #endif
+
+    <span class="enscript-keyword">return</span> err;
+}
+
+<span class="enscript-comment">//		uds_daemon support		////////////////////////////////////////////////////////////
+</span>
+mStatus <span class="enscript-function-name">udsSupportAddFDToEventLoop</span>(<span class="enscript-type">int</span> fd, udsEventCallback callback, <span class="enscript-type">void</span> *context, <span class="enscript-type">void</span> **platform_data)
+<span class="enscript-comment">/* Support routine for uds_daemon.c */</span>
+{
+    <span class="enscript-comment">// Depends on the fact that udsEventCallback == mDNSPosixEventCallback
+</span>    (<span class="enscript-type">void</span>) platform_data;
+    <span class="enscript-keyword">return</span> mDNSPosixAddFDToEventLoop(fd, callback, context);
+}
+
+<span class="enscript-type">int</span> <span class="enscript-function-name">udsSupportReadFD</span>(dnssd_sock_t fd, <span class="enscript-type">char</span> *buf, <span class="enscript-type">int</span> len, <span class="enscript-type">int</span> flags, <span class="enscript-type">void</span> *platform_data)
+{
+    (<span class="enscript-type">void</span>) platform_data;
+    <span class="enscript-keyword">return</span> recv(fd, buf, len, flags);
+}
+
+mStatus <span class="enscript-function-name">udsSupportRemoveFDFromEventLoop</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">void</span> *platform_data)        <span class="enscript-comment">// Note: This also CLOSES the file descriptor
+</span>{
+    mStatus err = mDNSPosixRemoveFDFromEventLoop(fd);
+    (<span class="enscript-type">void</span>) platform_data;
+    close(fd);
+    <span class="enscript-keyword">return</span> err;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">RecordUpdatedNiceLabel</span>(mDNSs32 delay)
+{
+    (<span class="enscript-type">void</span>)delay;
+    <span class="enscript-comment">// No-op, for now
+</span>}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">_BUILDING_XCODE_PROJECT_</span>
+<span class="enscript-comment">// If the process crashes, then this string will be magically included in the automatically-generated crash log
+</span><span class="enscript-type">const</span> <span class="enscript-type">char</span> *__crashreporter_info__ = mDNSResponderVersionString_SCCS + 5;
+<span class="enscript-function-name">asm</span> (<span class="enscript-string">&quot;.desc ___crashreporter_info__, 0x10&quot;</span>);
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// For convenience when using the &quot;strings&quot; command, this is the last thing in the file
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">mDNSResponderVersion</span> &gt; 1
+mDNSexport <span class="enscript-type">const</span> <span class="enscript-type">char</span> mDNSResponderVersionString_SCCS[] = <span class="enscript-string">&quot;@(#) mDNSResponder-&quot;</span> STRINGIFY(mDNSResponderVersion) <span class="enscript-string">&quot; (&quot;</span> __DATE__ <span class="enscript-string">&quot; &quot;</span> __TIME__ <span class="enscript-string">&quot;)&quot;</span>;
+#<span class="enscript-reference">elif</span> <span class="enscript-variable-name">MDNS_VERSIONSTR_NODTS</span>
+mDNSexport <span class="enscript-type">const</span> <span class="enscript-type">char</span> mDNSResponderVersionString_SCCS[] = <span class="enscript-string">&quot;@(#) mDNSResponder (Engineering Build)&quot;</span>;
+#<span class="enscript-reference">else</span>
+mDNSexport <span class="enscript-type">const</span> <span class="enscript-type">char</span> mDNSResponderVersionString_SCCS[] = <span class="enscript-string">&quot;@(#) mDNSResponder (Engineering Build) (&quot;</span> __DATE__ <span class="enscript-string">&quot; &quot;</span> __TIME__ <span class="enscript-string">&quot;)&quot;</span>;
+#<span class="enscript-reference">endif</span>
+</pre>
+<hr />
+</body></html>

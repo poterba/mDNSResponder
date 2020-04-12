@@ -1,0 +1,91 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>Makefile</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">Makefile&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="Makefile">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment"># -*- tab-width: 4 -*-
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># Copyright (c) 2002-2004, 2015 Apple Computer, Inc. All rights reserved.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+</span><span class="enscript-comment"># you may not use this file except in compliance with the License.
+</span><span class="enscript-comment"># You may obtain a copy of the License at
+</span><span class="enscript-comment"># 
+</span><span class="enscript-comment">#     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+</span><span class="enscript-comment"># 
+</span><span class="enscript-comment"># Unless required by applicable law or agreed to in writing, software
+</span><span class="enscript-comment"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+</span><span class="enscript-comment"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+</span><span class="enscript-comment"># See the License for the specific language governing permissions and
+</span><span class="enscript-comment"># limitations under the License.
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># Notes:
+</span><span class="enscript-comment"># $@ means &quot;The file name of the target of the rule&quot;
+</span><span class="enscript-comment"># $&lt; means &quot;The name of the first prerequisite&quot;
+</span><span class="enscript-comment"># $+ means &quot;The names of all the prerequisites, with spaces between them, exactly as given&quot;
+</span><span class="enscript-comment"># For more magic automatic variables, see
+</span><span class="enscript-comment"># &lt;<a href="http://www.gnu.org/software/make/manual/html_chapter/make_10.html#SEC111">http://www.gnu.org/software/make/manual/html_chapter/make_10.html#SEC111</a>&gt;
+</span><span class="enscript-comment">#
+</span><span class="enscript-comment"># This makefile uses $(CC) for compilation and linking, which is
+</span><span class="enscript-comment"># an automatic implicit gcc variable that defaults to &quot;cc&quot;
+</span><span class="enscript-comment"># &lt;<a href="https://www.gnu.org/software/make/manual/html_node/Implicit-Variables.html">https://www.gnu.org/software/make/manual/html_node/Implicit-Variables.html</a>&gt;
+</span>
+<span class="enscript-comment">#############################################################################
+</span>
+<span class="enscript-comment"># On OS X the dns_sd library functions are included in libSystem, which is implicitly linked with every executable
+</span><span class="enscript-comment"># If /usr/lib/libSystem.dylib exists, then we're on OS X, so we don't need also to link the &quot;dns_sd&quot; shared library
+</span>ifeq <span class="enscript-string">&quot;$(DEBUG)&quot;</span> <span class="enscript-string">&quot;1&quot;</span>
+DEBUGFLAGS = -g
+BUILDDIR = build/debug
+else
+DEBUGFLAGS = -Os
+BUILDDIR = build/prod
+endif
+
+ifneq <span class="enscript-string">&quot;$(wildcard /usr/lib/libSystem.dylib)&quot;</span> <span class="enscript-string">&quot;&quot;</span>
+TARGETS = build/dns-sd build/dns-sd64
+LIBS =
+else
+TARGETS = build/dns-sd
+LIBS = -L../mDNSPosix/$(<span class="enscript-reference">BUILDDIR</span>)/ -ldns_sd
+endif
+
+<span class="enscript-keyword">all:</span> $(<span class="enscript-reference">TARGETS</span>)
+
+<span class="enscript-keyword">clean:</span>
+	rm -rf build
+
+<span class="enscript-keyword">build:</span>
+	mkdir build
+
+<span class="enscript-keyword">build/dns-sd:</span> build dns-sd.c ClientCommon.c
+	$(<span class="enscript-reference">CC</span>) $(<span class="enscript-reference">SUPMAKE_CFLAGS</span>) $(<span class="enscript-reference">filter %.c %.o, $+</span>) $(<span class="enscript-reference">LIBS</span>) -I../mDNSShared -Wall -o $@
+
+<span class="enscript-keyword">build/dns-sd64:</span> build dns-sd.c ClientCommon.c
+	$(<span class="enscript-reference">CC</span>) $(<span class="enscript-reference">SUPMAKE_CFLAGS</span>) $(<span class="enscript-reference">filter %.c %.o, $+</span>) $(<span class="enscript-reference">LIBS</span>) -I../mDNSShared -Wall -o $@ -m64
+
+<span class="enscript-comment"># Note, we can make a 'fat' version of dns-sd using 'lipo', as shown below, but we
+</span><span class="enscript-comment"># don't, because we don't want or need a 'fat' version of dns-sd, because it will
+</span><span class="enscript-comment"># never need to access more than 4GB of data. We build the 64-bit version purely so
+</span><span class="enscript-comment"># we have a test tool for making sure that the APIs work properly from 64-bit clients.
+</span><span class="enscript-comment"># lipo -create dns-sd dns-sd64 -output dns-sd-fat
+</span></pre>
+<hr />
+</body></html>

@@ -1,0 +1,568 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>DNSProxySupport.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">DNSProxySupport.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="DNSProxySupport.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2011-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/types.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/time.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/event.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/tcp.h&gt;</span>
+
+<span class="enscript-type">extern</span> mDNS mDNSStorage;
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ValidSocket</span>(s) ((s) &gt;= 0)
+
+<span class="enscript-comment">// Global to store the 4 DNS Proxy Listeners (UDPv4/6, TCPv4/6)
+</span><span class="enscript-type">static</span> <span class="enscript-type">int</span> dp_listener[4];
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">NUM_PROXY_TCP_CONNS</span> 100
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    TCPSocket   sock;
+    DNSMessage  *reply;
+    mDNSu16     replyLen;
+    mDNSu32     nread;
+} ProxyTCPInfo_t;
+
+<span class="enscript-comment">// returns -1 for failures including the other end closing the socket
+</span><span class="enscript-comment">// returns 0 if successful in reading data, but still not read the data fully
+</span><span class="enscript-comment">// returns 1 if successful in reading all the data
+</span>mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">ProxyTCPRead</span>(ProxyTCPInfo_t *tcpInfo)
+{
+    <span class="enscript-type">long</span> n;
+    mDNSBool closed; 
+
+    <span class="enscript-keyword">if</span> (tcpInfo-&gt;nread &lt; 2)         <span class="enscript-comment">// First read the two-byte length preceeding the DNS message
+</span>    {
+        mDNSu8 *lenptr = (mDNSu8 *)&amp;tcpInfo-&gt;replyLen;
+        n = mDNSPlatformReadTCP(&amp;tcpInfo-&gt;sock, lenptr + tcpInfo-&gt;nread, 2 - tcpInfo-&gt;nread, &amp;closed);
+        <span class="enscript-keyword">if</span> (n &lt; 0 || closed)
+        {
+            LogMsg(<span class="enscript-string">&quot;ProxyTCPRead: attempt to read message length failed&quot;</span>);
+            <span class="enscript-keyword">return</span> -1;
+        }
+
+        tcpInfo-&gt;nread += n;
+        <span class="enscript-keyword">if</span> (tcpInfo-&gt;nread &lt; 2)
+        {
+            LogMsg(<span class="enscript-string">&quot;ProxyTCPRead: nread %d, n %d&quot;</span>, tcpInfo-&gt;nread, n);
+            <span class="enscript-keyword">return</span> 0;
+        }
+
+        tcpInfo-&gt;replyLen = (mDNSu16)((mDNSu16)lenptr[0] &lt;&lt; 8 | lenptr[1]);
+        <span class="enscript-keyword">if</span> (tcpInfo-&gt;replyLen &lt; <span class="enscript-keyword">sizeof</span>(DNSMessageHeader))
+        {
+            LogMsg(<span class="enscript-string">&quot;ProxyTCPRead: Message length too short (%d bytes)&quot;</span>, tcpInfo-&gt;replyLen);
+            <span class="enscript-keyword">return</span> -1;
+        }
+
+        tcpInfo-&gt;reply = (DNSMessage *) mallocL(<span class="enscript-string">&quot;ProxyTCPInfo&quot;</span>, tcpInfo-&gt;replyLen);
+        <span class="enscript-keyword">if</span> (!tcpInfo-&gt;reply)
+        {
+            LogMsg(<span class="enscript-string">&quot;ProxyTCPRead: Memory failure&quot;</span>);
+            <span class="enscript-keyword">return</span> -1;
+        }
+    }
+
+    n = mDNSPlatformReadTCP(&amp;tcpInfo-&gt;sock, ((<span class="enscript-type">char</span> *)tcpInfo-&gt;reply) + (tcpInfo-&gt;nread - 2), tcpInfo-&gt;replyLen - (tcpInfo-&gt;nread - 2), &amp;closed);
+
+    <span class="enscript-keyword">if</span> (n &lt; 0 || closed)
+    {
+        LogMsg(<span class="enscript-string">&quot;ProxyTCPRead: read failure n %d, closed %d&quot;</span>, n, closed);
+        <span class="enscript-keyword">return</span> -1;
+    }
+    tcpInfo-&gt;nread += n;
+    <span class="enscript-keyword">if</span> ((tcpInfo-&gt;nread - 2) != tcpInfo-&gt;replyLen)
+        <span class="enscript-keyword">return</span> 0;
+    <span class="enscript-keyword">else</span> 
+        <span class="enscript-keyword">return</span> 1;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">ProxyTCPSocketCallBack</span>(<span class="enscript-type">int</span> s1, <span class="enscript-type">short</span> filter, <span class="enscript-type">void</span> *context, __unused mDNSBool encounteredEOF)
+{
+    <span class="enscript-type">int</span> ret;
+    <span class="enscript-type">struct</span> sockaddr_storage from;
+    <span class="enscript-type">struct</span> sockaddr_storage to;
+    mDNSAddr senderAddr, destAddr;
+    mDNSIPPort senderPort;
+    ProxyTCPInfo_t *ti = (ProxyTCPInfo_t *)context;
+    TCPSocket *sock = &amp;ti-&gt;sock;
+    <span class="enscript-type">struct</span> tcp_info tcp_if;
+    socklen_t size = <span class="enscript-keyword">sizeof</span>(tcp_if);
+    int32_t intf_id = 0;
+
+    (<span class="enscript-type">void</span>) filter;
+
+    ret = ProxyTCPRead(ti);
+    <span class="enscript-keyword">if</span> (ret == -1)
+    {
+        mDNSPlatformDisposeProxyContext(ti);
+        <span class="enscript-keyword">return</span>; 
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!ret)
+    {
+        debugf(<span class="enscript-string">&quot;ProxyTCPReceive: Not yet read completely Actual length %d, Read length %d&quot;</span>, ti-&gt;replyLen, ti-&gt;nread);
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-comment">// We read all the data and hence not interested in read events anymore
+</span>    KQueueSet(s1, EV_DELETE, EVFILT_READ, &amp;sock-&gt;kqEntry);
+
+    mDNSPlatformMemZero(&amp;to, <span class="enscript-keyword">sizeof</span>(to));
+    mDNSPlatformMemZero(&amp;from, <span class="enscript-keyword">sizeof</span>(from));
+    socklen_t len = <span class="enscript-keyword">sizeof</span>(to);
+    ret = getsockname(s1, (<span class="enscript-type">struct</span> sockaddr*) &amp;to, &amp;len);
+    <span class="enscript-keyword">if</span> (ret &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;ProxyTCPReceive: getsockname(fd=%d) errno %d&quot;</span>, s1, errno);
+        mDNSPlatformDisposeProxyContext(ti);
+        <span class="enscript-keyword">return</span>;
+    }
+    ret = getpeername(s1, (<span class="enscript-type">struct</span> sockaddr*) &amp;from, &amp;len);
+    <span class="enscript-keyword">if</span> (ret &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;ProxyTCPReceive: getpeername(fd=%d) errno %d&quot;</span>, s1, errno);
+        mDNSPlatformDisposeProxyContext(ti);
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-keyword">if</span> (getsockopt(s1, IPPROTO_TCP, TCP_INFO, &amp;tcp_if, &amp;size) != 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;ProxyTCPReceive: getsockopt for TCP_INFO failed (fd=%d) errno %d&quot;</span>, s1, errno);
+        <span class="enscript-keyword">return</span>;
+    }
+    intf_id = tcp_if.tcpi_last_outif;
+
+    <span class="enscript-keyword">if</span> (from.ss_family == AF_INET)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in *s = (<span class="enscript-type">struct</span> sockaddr_in*)&amp;from;
+
+        senderAddr.type = mDNSAddrType_IPv4;
+        senderAddr.ip.v4.NotAnInteger = s-&gt;sin_addr.s_addr;
+        senderPort.NotAnInteger = s-&gt;sin_port;
+
+        s = (<span class="enscript-type">struct</span> sockaddr_in *)&amp;to;
+        destAddr.type = mDNSAddrType_IPv4;
+        destAddr.ip.v4.NotAnInteger = s-&gt;sin_addr.s_addr;
+
+        LogInfo(<span class="enscript-string">&quot;ProxyTCPReceive received IPv4 packet(len %d) from %#-15a to %#-15a on skt %d %s ifindex %d&quot;</span>,
+                ti-&gt;replyLen, &amp;senderAddr, &amp;destAddr, s1, NULL, intf_id);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (from.ss_family == AF_INET6)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in6 *sin6 = (<span class="enscript-type">struct</span> sockaddr_in6*)&amp;from;
+        senderAddr.type = mDNSAddrType_IPv6;
+        senderAddr.ip.v6 = *(mDNSv6Addr*)&amp;sin6-&gt;sin6_addr;
+        senderPort.NotAnInteger = sin6-&gt;sin6_port;
+
+        sin6 = (<span class="enscript-type">struct</span> sockaddr_in6 *)&amp;to;
+        destAddr.type = mDNSAddrType_IPv6;
+        destAddr.ip.v6 = *(mDNSv6Addr*)&amp;sin6-&gt;sin6_addr;
+
+        LogInfo(<span class="enscript-string">&quot;ProxyTCPReceive received IPv6 packet(len %d) from %#-15a to %#-15a on skt %d %s ifindex %d&quot;</span>,
+                ti-&gt;replyLen, &amp;senderAddr, &amp;destAddr, s1, NULL, intf_id);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogMsg(<span class="enscript-string">&quot;ProxyTCPReceive from is unknown address family %d&quot;</span>, from.ss_family);
+        mDNSPlatformDisposeProxyContext(ti);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// We pass sock for the TCPSocket and the &quot;ti&quot; for context as that's what we want to free at the end.
+</span>    <span class="enscript-comment">// In the UDP case, there is just a single socket and nothing to free. Hence, the context (last argument)
+</span>    <span class="enscript-comment">// would be NULL.
+</span>    ti-&gt;sock.m-&gt;p-&gt;TCPProxyCallback(sock, ti-&gt;reply, (mDNSu8 *)ti-&gt;reply + ti-&gt;replyLen, &amp;senderAddr, senderPort, &amp;destAddr,
+        UnicastDNSPort, (mDNSInterfaceID)(uintptr_t)intf_id, ti);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">ProxyTCPAccept</span>(<span class="enscript-type">int</span> s1, <span class="enscript-type">short</span> filter, <span class="enscript-type">void</span> *context, __unused mDNSBool encounteredEOF)
+{
+    <span class="enscript-type">int</span> newfd;
+    <span class="enscript-type">struct</span> sockaddr_storage ss;
+    socklen_t sslen = <span class="enscript-keyword">sizeof</span>(ss);
+    <span class="enscript-type">const</span> <span class="enscript-type">int</span> on = 1;
+    TCPSocket *listenSock = (TCPSocket *)context;
+
+    (<span class="enscript-type">void</span>) filter;
+
+    <span class="enscript-keyword">while</span> ((newfd = accept(s1, (<span class="enscript-type">struct</span> sockaddr *)&amp;ss, &amp;sslen)) != -1)
+    {
+        <span class="enscript-type">int</span> err;
+
+        <span class="enscript-comment">// Even though we just need a single KQueueEntry, for simplicity we re-use
+</span>        <span class="enscript-comment">// the KQSocketSet
+</span>        ProxyTCPInfo_t * <span class="enscript-type">const</span> ti = (ProxyTCPInfo_t *)callocL(<span class="enscript-string">&quot;ProxyTCPContext&quot;</span>, <span class="enscript-keyword">sizeof</span>(*ti));
+        <span class="enscript-keyword">if</span> (!ti)
+        {
+            LogMsg(<span class="enscript-string">&quot;ProxyTCPAccept: cannot allocate TCPSocket&quot;</span>);
+            close(newfd);
+            <span class="enscript-keyword">return</span>;
+        }
+        TCPSocket * <span class="enscript-type">const</span> sock = &amp;ti-&gt;sock;
+        sock-&gt;fd = -1;
+        sock-&gt;m  = listenSock-&gt;m;
+
+        fcntl(newfd, F_SETFL, fcntl(newfd, F_GETFL, 0) | O_NONBLOCK); <span class="enscript-comment">// set non-blocking
+</span>        <span class="enscript-keyword">if</span> (ss.ss_family == AF_INET)
+        {
+            <span class="enscript-comment">// Receive interface identifiers
+</span>            err = setsockopt(newfd, IPPROTO_IP, IP_RECVIF, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+            <span class="enscript-keyword">if</span> (err)
+            {
+                LogMsg(<span class="enscript-string">&quot;ProxyTCPAccept: IP_RECVIF %d errno %d (%s)&quot;</span>, newfd, errno, strerror(errno));
+                mDNSPlatformDisposeProxyContext(ti);
+                close(newfd);
+                <span class="enscript-keyword">return</span>;
+            }
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-comment">// We want to receive destination addresses and receive interface identifiers
+</span>            err = setsockopt(newfd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+            <span class="enscript-keyword">if</span> (err)
+            {
+                LogMsg(<span class="enscript-string">&quot;ProxyTCPAccept: IP_RECVPKTINFO %d errno %d (%s)&quot;</span>, newfd, errno, strerror(errno));
+                mDNSPlatformDisposeProxyContext(ti);
+                close(newfd);
+                <span class="enscript-keyword">return</span>;
+            }
+        }
+        <span class="enscript-comment">// mDNSPlatformReadTCP/WriteTCP (unlike the UDP counterpart) does not provide the destination address
+</span>        <span class="enscript-comment">// from which we can infer the destination address family. Hence we need to remember that here.
+</span>        <span class="enscript-comment">// Instead of remembering the address family, we remember the right fd.
+</span>        sock-&gt;fd = newfd;
+        sock-&gt;kqEntry.KQcallback = ProxyTCPSocketCallBack;
+        sock-&gt;kqEntry.KQcontext  = ti;
+        sock-&gt;kqEntry.KQtask     = <span class="enscript-string">&quot;TCP Proxy packet reception&quot;</span>;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+        sock-&gt;kqEntry.readSource = mDNSNULL;
+        sock-&gt;kqEntry.writeSource = mDNSNULL;
+        sock-&gt;kqEntry.fdClosed = mDNSfalse;
+#<span class="enscript-reference">endif</span>
+        sock-&gt;connected = mDNStrue;
+        sock-&gt;m = listenSock-&gt;m;
+        KQueueSet(newfd, EV_ADD, EVFILT_READ, &amp;sock-&gt;kqEntry);
+    }
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">SetupUDPProxySocket</span>(<span class="enscript-type">int</span> skt, KQSocketSet *cp, u_short sa_family, mDNSBool useBackgroundTrafficClass)
+{
+    <span class="enscript-type">int</span>         *s        = (sa_family == AF_INET) ? &amp;cp-&gt;sktv4 : &amp;cp-&gt;sktv6;
+    KQueueEntry *k        = (sa_family == AF_INET) ? &amp;cp-&gt;kqsv4 : &amp;cp-&gt;kqsv6;
+    <span class="enscript-type">const</span> <span class="enscript-type">int</span> on = 1;
+    mStatus err = mStatus_NoError;
+
+    cp-&gt;m = &amp;mDNSStorage;
+    cp-&gt;closeFlag = mDNSNULL;
+
+    <span class="enscript-comment">// set default traffic class
+</span>    <span class="enscript-comment">// setTrafficClass(skt, mDNSfalse);
+</span>    (<span class="enscript-type">void</span>) useBackgroundTrafficClass;
+
+    <span class="enscript-keyword">if</span> (sa_family == AF_INET)
+    {
+        err = setsockopt(skt, IPPROTO_IP, IP_RECVDSTADDR, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+        <span class="enscript-keyword">if</span> (err &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;SetupUDPProxySocket: IP_RECVDSTADDR %d errno %d (%s)&quot;</span>, skt, errno, strerror(errno));
+            <span class="enscript-keyword">return</span> err;
+        }
+
+        <span class="enscript-comment">// We want to receive interface identifiers
+</span>        err = setsockopt(skt, IPPROTO_IP, IP_RECVIF, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+        <span class="enscript-keyword">if</span> (err &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;SetupUDPProxySocket: IP_RECVIF %d errno %d (%s)&quot;</span>, skt, errno, strerror(errno));
+            <span class="enscript-keyword">return</span> err;
+        }
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (sa_family == AF_INET6)
+    {
+        <span class="enscript-comment">// We want to receive destination addresses and receive interface identifiers
+</span>        err = setsockopt(skt, IPPROTO_IPV6, IPV6_RECVPKTINFO, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+        <span class="enscript-keyword">if</span> (err &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;SetupUDPProxySocket: IPV6_RECVPKTINFO %d errno %d (%s)&quot;</span>, skt, errno, strerror(errno));
+            <span class="enscript-keyword">return</span> err;
+        }
+
+        <span class="enscript-comment">// We want to receive packet hop count value so we can check it
+</span>        err = setsockopt(skt, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+        <span class="enscript-keyword">if</span> (err &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;SetupUDPProxySocket: IPV6_RECVHOPLIMIT %d errno %d (%s)&quot;</span>, skt, errno, strerror(errno));
+            <span class="enscript-keyword">return</span> err;
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogMsg(<span class="enscript-string">&quot;SetupUDPProxySocket: wrong family %d&quot;</span>, sa_family);
+        <span class="enscript-keyword">return</span> -1;
+    }
+
+    <span class="enscript-keyword">if</span> (fcntl(skt, F_SETFL, fcntl(skt, F_GETFL, 0) | O_NONBLOCK) &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;SetupUDPProxySocket: fnctl failed %d&quot;</span>, errno);
+        <span class="enscript-keyword">return</span> -1;
+    }
+
+    *s = skt;
+    <span class="enscript-comment">//k-&gt;KQcallback = ProxyUDPSocketCallBack;
+</span>    k-&gt;KQcallback  = myKQSocketCallBack;
+    k-&gt;KQcontext   = cp;
+    k-&gt;KQtask      = <span class="enscript-string">&quot;UDP Proxy packet reception&quot;</span>;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+    k-&gt;readSource  = mDNSNULL;
+    k-&gt;writeSource = mDNSNULL;
+    k-&gt;fdClosed    = mDNSfalse;
+#<span class="enscript-reference">endif</span>
+
+    KQueueSet(*s, EV_ADD, EVFILT_READ, k);
+
+    <span class="enscript-keyword">return</span>(err);
+}
+
+mDNSlocal mStatus <span class="enscript-function-name">SetupTCPProxySocket</span>(<span class="enscript-type">int</span> skt, TCPSocket *sock, u_short sa_family, mDNSBool useBackgroundTrafficClass)
+{
+    mStatus err;
+    mDNS *m = &amp;mDNSStorage;
+
+    <span class="enscript-comment">// for TCP sockets, the traffic class is set once and not changed
+</span>    <span class="enscript-comment">// setTrafficClass(skt, useBackgroundTrafficClass);
+</span>    (<span class="enscript-type">void</span>) useBackgroundTrafficClass;
+    (<span class="enscript-type">void</span>) sa_family;
+
+    <span class="enscript-comment">// All the socket setup has already been done 
+</span>    err = listen(skt, NUM_PROXY_TCP_CONNS);
+    <span class="enscript-keyword">if</span> (err)
+    {
+        LogMsg(<span class="enscript-string">&quot;SetupTCPProxySocket: listen %d errno %d (%s)&quot;</span>, skt, errno, strerror(errno));
+        <span class="enscript-keyword">return</span> err;
+    }
+    fcntl(skt, F_SETFL, fcntl(skt, F_GETFL, 0) | O_NONBLOCK); <span class="enscript-comment">// set non-blocking
+</span>    
+    sock-&gt;fd = skt;
+    sock-&gt;kqEntry.KQcallback  = ProxyTCPAccept;
+    sock-&gt;kqEntry.KQcontext   = sock;
+    sock-&gt;kqEntry.KQtask      = <span class="enscript-string">&quot;TCP Accept&quot;</span>;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MDNSRESPONDER_USES_LIB_DISPATCH_AS_PRIMARY_EVENT_LOOP_MECHANISM</span>
+    sock-&gt;kqEntry.readSource  = mDNSNULL;
+    sock-&gt;kqEntry.writeSource = mDNSNULL;
+    sock-&gt;kqEntry.fdClosed    = mDNSfalse;
+#<span class="enscript-reference">endif</span>
+    sock-&gt;m = m;
+    KQueueSet(skt, EV_ADD, EVFILT_READ, &amp;sock-&gt;kqEntry);
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">BindDPSocket</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">int</span> sa_family)
+{
+    <span class="enscript-type">int</span> err;
+    <span class="enscript-type">const</span> <span class="enscript-type">int</span> on = 1;
+
+    <span class="enscript-keyword">if</span> (sa_family == AF_INET)
+    {
+        <span class="enscript-type">struct</span> sockaddr_in addr;
+
+        err = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+        <span class="enscript-keyword">if</span> (err &lt; 0) 
+            LogMsg(<span class="enscript-string">&quot;BindDPSocket: setsockopt SO_REUSEPORT failed for IPv4 %d errno %d (%s)&quot;</span>, fd, errno, strerror(errno));
+
+        memset(&amp;addr, 0, <span class="enscript-keyword">sizeof</span>(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(53);
+
+        err = bind(fd, (<span class="enscript-type">struct</span> sockaddr*) &amp;addr, <span class="enscript-keyword">sizeof</span>(addr));
+        <span class="enscript-keyword">if</span> (err)
+        {
+            LogMsg(<span class="enscript-string">&quot;BindDPSocket: bind %d errno %d (%s)&quot;</span>, fd, errno, strerror(errno));
+            <span class="enscript-keyword">return</span>;
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-type">struct</span> sockaddr_in6 addr6;
+
+        <span class="enscript-comment">// We want to receive only IPv6 packets. Without this option we get IPv4 packets too,
+</span>        <span class="enscript-comment">// with mapped addresses of the form 0:0:0:0:0:FFFF:xxxx:xxxx, where xxxx:xxxx is the IPv4 address
+</span>        err = setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+        <span class="enscript-keyword">if</span> (err &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;DPFBindSocket: setsockopt IPV6_V6ONLY %d errno %d (%s)&quot;</span>, fd, errno, strerror(errno));
+            <span class="enscript-keyword">return</span>;
+        }
+        err = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &amp;on, <span class="enscript-keyword">sizeof</span>(on));
+        <span class="enscript-keyword">if</span> (err &lt; 0)
+            LogMsg(<span class="enscript-string">&quot;BindDPSocket: setsockopt SO_REUSEPORT failed for V6 %d errno %d (%s)&quot;</span>, fd, errno, strerror(errno));
+
+        memset(&amp;addr6, 0, <span class="enscript-keyword">sizeof</span>(addr6));
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_port = htons(53);
+
+        err = bind(fd, (<span class="enscript-type">struct</span> sockaddr*) &amp;addr6, <span class="enscript-keyword">sizeof</span>(addr6));
+        <span class="enscript-keyword">if</span> (err)
+        {
+            LogMsg(<span class="enscript-string">&quot;BindDPSocket: bind6 %d errno %d (%s)&quot;</span>, fd, errno, strerror(errno));
+            <span class="enscript-keyword">return</span>;
+        }
+    }
+}
+
+<span class="enscript-comment">// Setup DNS Proxy Skts in main kevent loop and set the skt options
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">SetupDNSProxySkts</span>(<span class="enscript-type">int</span> fd[4])
+{
+    mDNS *<span class="enscript-type">const</span> m = &amp;mDNSStorage;
+    <span class="enscript-type">int</span> i;
+    mStatus err;
+    KQSocketSet *udpSS;
+    TCPSocket *v4, *v6;
+
+    udpSS       = &amp;m-&gt;p-&gt;UDPProxy.ss;
+    udpSS-&gt;port = UnicastDNSPort;
+    v4 = &amp;m-&gt;p-&gt;TCPProxyV4;
+    v6 = &amp;m-&gt;p-&gt;TCPProxyV6;
+    v4-&gt;m = m;
+    v4-&gt;port = UnicastDNSPort;
+    v6-&gt;m = m;
+    v6-&gt;port = UnicastDNSPort;
+
+    LogMsg(<span class="enscript-string">&quot;SetupDNSProxySkts: %d, %d, %d, %d&quot;</span>, fd[0], fd[1], fd[2], fd[3]);
+
+    <span class="enscript-comment">// myKQSocketCallBack checks for proxy and calls the m-&gt;p-&gt;ProxyCallback instead of mDNSCoreReceive
+</span>    udpSS-&gt;proxy = mDNStrue;
+    err = SetupUDPProxySocket(fd[0], udpSS, AF_INET, mDNSfalse);
+    <span class="enscript-keyword">if</span> (err)
+        LogMsg(<span class="enscript-string">&quot;SetupDNSProxySkts: ERROR!! UDPv4 Socket&quot;</span>);
+
+    err = SetupUDPProxySocket(fd[1], udpSS, AF_INET6, mDNSfalse);
+    <span class="enscript-keyword">if</span> (err)
+        LogMsg(<span class="enscript-string">&quot;SetupDNSProxySkts: ERROR!! UDPv6 Socket&quot;</span>);
+
+    err = SetupTCPProxySocket(fd[2], v4, AF_INET, mDNSfalse);
+    <span class="enscript-keyword">if</span> (err)
+        LogMsg(<span class="enscript-string">&quot;SetupDNSProxySkts: ERROR!! TCPv4 Socket&quot;</span>);
+
+    err = SetupTCPProxySocket(fd[3], v6, AF_INET6, mDNSfalse);
+    <span class="enscript-keyword">if</span> (err)
+        LogMsg(<span class="enscript-string">&quot;SetupDNSProxySkts: ERROR!! TCPv6 Socket&quot;</span>);
+
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; 4; i++)
+        dp_listener[i] = fd[i];   
+} 
+
+<span class="enscript-comment">// Create and bind the DNS Proxy Skts for use
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformInitDNSProxySkts</span>(ProxyCallback UDPCallback, ProxyCallback TCPCallback)
+{
+    <span class="enscript-type">int</span> dpskt[4];
+    
+    dpskt[0] = socket(AF_INET,  SOCK_DGRAM,  IPPROTO_UDP);
+    dpskt[1] = socket(AF_INET6, SOCK_DGRAM,  IPPROTO_UDP);
+    dpskt[2] = socket(AF_INET,  SOCK_STREAM, IPPROTO_TCP);
+    dpskt[3] = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+
+    <span class="enscript-comment">// Close all DNS Proxy skts in case any of them are invalid
+</span>    <span class="enscript-keyword">if</span> (!ValidSocket(dpskt[0]) || !ValidSocket(dpskt[1]) ||
+        !ValidSocket(dpskt[2]) || !ValidSocket(dpskt[3]))
+    {   
+        <span class="enscript-keyword">if</span> (ValidSocket(dpskt[0]))
+            close(dpskt[0]);
+        <span class="enscript-keyword">if</span> (ValidSocket(dpskt[1]))
+            close(dpskt[1]);
+        <span class="enscript-keyword">if</span> (ValidSocket(dpskt[2]))
+            close(dpskt[2]);
+        <span class="enscript-keyword">if</span> (ValidSocket(dpskt[3]))
+            close(dpskt[3]);
+    }
+
+    BindDPSocket(dpskt[0], AF_INET);
+    BindDPSocket(dpskt[1], AF_INET6);
+    BindDPSocket(dpskt[2], AF_INET);
+    BindDPSocket(dpskt[3], AF_INET6);
+
+    LogInfo(<span class="enscript-string">&quot;mDNSPlatformInitDNSProxySkts: Opened Listener Sockets for DNS Proxy : %d, %d, %d, %d&quot;</span>, 
+             dpskt[0], dpskt[1], dpskt[2], dpskt[3]);
+
+    mDNSStorage.p-&gt;UDPProxyCallback = UDPCallback;
+    mDNSStorage.p-&gt;TCPProxyCallback = TCPCallback;
+
+    SetupDNSProxySkts(dpskt);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformCloseDNSProxySkts</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    (<span class="enscript-type">void</span>) m;
+    <span class="enscript-type">int</span> i;
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; 4; i++)
+        close(dp_listener[i]);
+    LogInfo(<span class="enscript-string">&quot;mDNSPlatformCloseDNSProxySkts: Closing DNS Proxy Listener Sockets&quot;</span>);  
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformDisposeProxyContext</span>(<span class="enscript-type">void</span> *context)
+{
+    ProxyTCPInfo_t *ti;
+    TCPSocket *sock;
+
+    <span class="enscript-keyword">if</span> (!context)
+        <span class="enscript-keyword">return</span>;
+
+    ti = (ProxyTCPInfo_t *)context;
+    sock = &amp;ti-&gt;sock;
+
+    <span class="enscript-keyword">if</span> (sock-&gt;fd &gt;= 0)
+    {
+        mDNSPlatformCloseFD(&amp;sock-&gt;kqEntry, sock-&gt;fd);
+        sock-&gt;fd = -1;
+    }
+
+    <span class="enscript-keyword">if</span> (ti-&gt;reply)
+        freeL(<span class="enscript-string">&quot;ProxyTCPInfoLen&quot;</span>, ti-&gt;reply);
+    freeL(<span class="enscript-string">&quot;ProxyTCPContext&quot;</span>, ti);
+}
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

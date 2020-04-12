@@ -1,0 +1,236 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dso.h</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dso.h&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dso.h">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* dso.h
+ *
+ * Copyright (c) 2018-2019 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */</span>
+
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">__DSO_H</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__DSO_H</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdbool.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdint.h&gt;</span>
+
+<span class="enscript-comment">// Maximum number of additional TLVs we support in a DSO message.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_ADDITLS</span>           10
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">enum</span> {
+    kDSOType_Keepalive = 1,
+    kDSOType_RetryDelay = 2,
+    kDSOType_EncryptionPadding = 3,
+    kDSOType_DNSPushSubscribe = 0x40,
+    kDSOType_DNSPushUpdate = 0x41,
+    kDSOType_DNSPushUnsubscribe = 0x42,
+    kDSOType_DNSPushReconfirm = 0x43,
+    kDSOType_mDNSLinkRequest = 0xF901,
+    kDSOType_mDNSLinkDiscontinue = 0xF902,
+    kDSOType_mDNSMessage = 0xF903,
+    kDSOType_LinkIdentifier = 0xF904,
+    kDSOType_L2SourceAddress = 0xF905,
+    kDSOType_IPSourceAddress = 0xF906,
+    kDSOType_mDNSReportLinkChanges = 0xF907,
+    kDSOType_mDNSStopLinkChanges = 0xF908,
+    kDSOType_mDNSLinkAvailable = 0xF900,
+    kDSOType_mDNSLinkUnavailable = 0xF90a,
+    kDSOType_LinkPrefix = 0xf90b
+} dso_message_types_t;
+
+<span class="enscript-comment">// When a DSO message arrives, or one that was sent is acknowledged, or the state of the DSO connection
+</span><span class="enscript-comment">// changes, we need to call the user of the DSO connection.
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">enum</span> {
+    kDSOEventType_DNSMessage,      <span class="enscript-comment">// A DNS message that is not a DSO message
+</span>    kDSOEventType_DNSResponse,     <span class="enscript-comment">// A DNS response that is not a DSO response
+</span>    kDSOEventType_DSOMessage,      <span class="enscript-comment">// DSOState.primary and DSOState.additl will contain the message TLVs;
+</span>                                   <span class="enscript-comment">// header will contain the DNS header
+</span>    kDSOEventType_Finalize,        <span class="enscript-comment">// The DSO connection to the other DSO endpoint has terminated and we are
+</span>                                   <span class="enscript-comment">// in the idle loop.
+</span>    kDSOEventType_DSOResponse,     <span class="enscript-comment">// DSOState.primary and DSOState.additl contain any TLVs in the response;
+</span>                                   <span class="enscript-comment">// header contains the DNS header
+</span>    kDSOEventType_Connected,       <span class="enscript-comment">// We succeeded in making a connection
+</span>    kDSOEventType_ConnectFailed,   <span class="enscript-comment">// We failed to get a connection
+</span>    kDSOEventType_Disconnected,    <span class="enscript-comment">// We were connected, but have disconnected or been disconnected
+</span>    kDSOEventType_ShouldReconnect, <span class="enscript-comment">// We are disconnected, and a scheduled reconnect timer has gone off.
+</span>    							   <span class="enscript-comment">// Recipient is responsible for reconnecting, or deciding not to.
+</span>    kDSOEventType_Inactive,		   <span class="enscript-comment">// We went inactive and the inactivity timeout expired, so it's time to drop the connection.
+</span>    kDSOEventType_Keepalive,       <span class="enscript-comment">// It's time to send a keepalive message, here are the values to send
+</span>    kDSOEventType_KeepaliveRcvd,   <span class="enscript-comment">// We just received a keepalive from a client, here are the values.
+</span>    kDSOEventType_RetryDelay       <span class="enscript-comment">// We got a RetryDelay from the server.   Have to shut down.
+</span>} dso_event_type_t;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_outstanding_query {
+    uint16_t id;
+    <span class="enscript-type">void</span> *context;
+} dso_outstanding_query_t;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_outstanding_query_state {
+    <span class="enscript-type">int</span> outstanding_query_count;
+    <span class="enscript-type">int</span> max_outstanding_queries;
+    dso_outstanding_query_t queries[0];
+} dso_outstanding_query_state_t;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_query_receive_context {
+    <span class="enscript-type">void</span> *query_context;
+    uint16_t rcode;
+} dso_query_receive_context_t;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_disconnect_context {
+    uint32_t reconnect_delay;
+} dso_disconnect_context_t;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_keepalive_context {
+    uint32_t inactivity_timeout;
+    uint32_t keepalive_interval;
+} dso_keepalive_context_t;
+
+<span class="enscript-comment">// Structure to represent received DSO TLVs
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dsotlv {
+    uint16_t opcode;
+    uint16_t length;
+    <span class="enscript-type">const</span> uint8_t *payload;
+} dso_tlv_t;
+
+<span class="enscript-comment">// DSO message under construction
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_message {
+    uint8_t *buf;                 <span class="enscript-comment">// The buffer in which we are constructing the message
+</span>    size_t max;                   <span class="enscript-comment">// Size of the buffer
+</span>    size_t cur;                   <span class="enscript-comment">// Current position in the buffer
+</span>    bool building_tlv;            <span class="enscript-comment">// True if we have started and not finished building a TLV
+</span>    <span class="enscript-type">int</span> outstanding_query_number; <span class="enscript-comment">// Number of the outstanding query state entry for this message, or -1
+</span>    size_t tlv_len;               <span class="enscript-comment">// Current length of the TLV we are building.
+</span>    size_t tlv_len_offset;        <span class="enscript-comment">// Where to store the length of the current TLV when finished.
+</span>    <span class="enscript-type">const</span> uint8_t *no_copy_bytes; <span class="enscript-comment">// One TLV can have data that isn't copied into the buffer
+</span>    size_t no_copy_bytes_len;     <span class="enscript-comment">// Length of that data, if any.
+</span>    size_t no_copy_bytes_offset;  <span class="enscript-comment">// Where in the buffer the data should be interposed.
+</span>} dso_message_t;
+
+<span class="enscript-comment">// Record of ongoing activity
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_activity dso_activity_t;
+<span class="enscript-type">struct</span> dso_activity {
+    dso_activity_t *next;
+    <span class="enscript-type">void</span> (*finalize)(dso_activity_t *activity);
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *activity_type;  <span class="enscript-comment">// Name of the activity type, must be the same pointer for all activities of a type.
+</span>    <span class="enscript-type">void</span> *context;              <span class="enscript-comment">// Activity implementation's context (if any).
+</span>    <span class="enscript-type">char</span> *name;                 <span class="enscript-comment">// Name of the individual activity
+</span>};
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_transport dso_transport_t;
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dso_state dso_state_t;
+<span class="enscript-type">typedef</span> int64_t event_time_t;
+
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*dso_event_callback_t)(<span class="enscript-type">void</span> *context, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *header,
+                                     dso_state_t *dso, dso_event_type_t eventType);
+<span class="enscript-type">typedef</span> <span class="enscript-function-name">void</span> (*dso_transport_finalize_t)(dso_transport_t *transport);
+
+<span class="enscript-comment">// DNS Stateless Operations state
+</span><span class="enscript-type">struct</span> dso_state {
+    dso_state_t *next;
+    <span class="enscript-type">void</span> *context;                   <span class="enscript-comment">// The context of the next layer up (e.g., a Discovery Proxy)
+</span>    dso_event_callback_t cb;         <span class="enscript-comment">// Called when an event happens
+</span>
+    <span class="enscript-comment">// Transport state; handled separately for reusability
+</span>    dso_transport_t *transport;		 <span class="enscript-comment">// The transport (e.g., dso-transport.c or other).
+</span>    dso_transport_finalize_t transport_finalize;
+
+    uint32_t serial;                 <span class="enscript-comment">// Unique serial number which can be used after the DSO has been dropped.
+</span>    bool is_server;                  <span class="enscript-comment">// True if the endpoint represented by this DSO state is a server
+</span>                                     <span class="enscript-comment">// (according to the DSO spec)
+</span>    bool has_session;                <span class="enscript-comment">// True if DSO session establishment has happened for this DSO endpoint
+</span>    event_time_t response_awaited;   <span class="enscript-comment">// If we are waiting for a session-establishing response, when it's
+</span>                                     <span class="enscript-comment">// expected; otherwise zero.
+</span>    uint32_t keepalive_interval;     <span class="enscript-comment">// Time between keepalives (to be sent, on client, expected, on server)
+</span>    uint32_t inactivity_timeout;     <span class="enscript-comment">// Session can't be inactive more than this amount of time.
+</span>    event_time_t keepalive_due;      <span class="enscript-comment">// When the next keepalive is due (to be received or sent)
+</span>    event_time_t inactivity_due;     <span class="enscript-comment">// When next activity has to happen for connection to remain active
+</span>    dso_activity_t *activities;      <span class="enscript-comment">// Outstanding DSO activities.
+</span>
+    dso_tlv_t primary;               <span class="enscript-comment">// Primary TLV for current message
+</span>    dso_tlv_t additl[MAX_ADDITLS];   <span class="enscript-comment">// Additional TLVs
+</span>    <span class="enscript-type">int</span> num_additls;                 <span class="enscript-comment">// Number of additional TLVs in this message
+</span>
+    <span class="enscript-type">char</span> *remote_name;
+
+    dso_outstanding_query_state_t *outstanding_queries;
+};
+
+<span class="enscript-comment">// Provided by dso.c
+</span>dso_state_t *<span class="enscript-function-name">dso_create</span>(bool is_server, <span class="enscript-type">int</span> max_outstanding_queries, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *remote_name,
+                        dso_event_callback_t callback, <span class="enscript-type">void</span> *context, dso_transport_t *transport);
+dso_state_t *<span class="enscript-function-name">dso_find_by_serial</span>(uint32_t serial);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_drop</span>(dso_state_t *dso);
+int64_t <span class="enscript-function-name">dso_idle</span>(<span class="enscript-type">void</span> *context, int64_t now, int64_t next_timer_event);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_release</span>(dso_state_t **dsop);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_start_tlv</span>(dso_message_t *state, <span class="enscript-type">int</span> opcode);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_bytes</span>(dso_message_t *state, <span class="enscript-type">const</span> uint8_t *bytes, size_t len);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_bytes_no_copy</span>(dso_message_t *state, <span class="enscript-type">const</span> uint8_t *bytes, size_t len);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_byte</span>(dso_message_t *state, uint8_t byte);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_u16</span>(dso_message_t *state, uint16_t u16);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_add_tlv_u32</span>(dso_message_t *state, uint32_t u32);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_finish_tlv</span>(dso_message_t *state);
+dso_activity_t *<span class="enscript-function-name">dso_find_activity</span>(dso_state_t *dso, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *name, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *activity_type, <span class="enscript-type">void</span> *context);
+dso_activity_t *<span class="enscript-function-name">dso_add_activity</span>(dso_state_t *dso, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *name, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *activity_type,
+                                            <span class="enscript-type">void</span> *context, <span class="enscript-type">void</span> (*finalize)(dso_activity_t *));
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_drop_activity</span>(dso_state_t *dso, dso_activity_t *activity);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_ignore_response</span>(dso_state_t *dso, <span class="enscript-type">void</span> *context);
+bool <span class="enscript-function-name">dso_make_message</span>(dso_message_t *state, uint8_t *outbuf, size_t outbuf_size,
+                      dso_state_t *dso, bool unidirectional, <span class="enscript-type">void</span> *callback_state);
+size_t <span class="enscript-function-name">dso_message_length</span>(dso_message_t *state);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_retry_delay</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_keepalive</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_message_received</span>(dso_state_t *dso, <span class="enscript-type">const</span> uint8_t *message, size_t message_length);
+<span class="enscript-type">void</span> <span class="enscript-function-name">dns_message_received</span>(dso_state_t *dso, <span class="enscript-type">const</span> uint8_t *message, size_t message_length);
+
+<span class="enscript-comment">// Provided by DSO transport implementation for use by dso.c:
+</span>int64_t <span class="enscript-function-name">dso_transport_idle</span>(<span class="enscript-type">void</span> *context, int64_t now, int64_t next_timer_event);
+bool <span class="enscript-function-name">dso_send_simple_response</span>(dso_state_t *dso, <span class="enscript-type">int</span> rcode, <span class="enscript-type">const</span> DNSMessageHeader *header, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *pres);
+bool <span class="enscript-function-name">dso_send_not_implemented</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header);
+bool <span class="enscript-function-name">dso_send_refused</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header);
+bool <span class="enscript-function-name">dso_send_formerr</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header);
+bool <span class="enscript-function-name">dso_send_servfail</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header);
+bool <span class="enscript-function-name">dso_send_name_error</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header);
+bool <span class="enscript-function-name">dso_send_no_error</span>(dso_state_t *dso, <span class="enscript-type">const</span> DNSMessageHeader *header);
+#<span class="enscript-reference">endif</span> // !<span class="enscript-reference">defined</span>(<span class="enscript-variable-name">__DSO_H</span>)
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

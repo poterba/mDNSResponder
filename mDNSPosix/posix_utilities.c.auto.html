@@ -1,0 +1,53 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>posix_utilities.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">posix_utilities.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="posix_utilities.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">//
+</span><span class="enscript-comment">//  posix_utilities.c
+</span><span class="enscript-comment">//  mDNSResponder
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">//  Copyright (c) 2019 Apple Inc. All rights reserved.
+</span><span class="enscript-comment">//
+</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;posix_utilities.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>                 // for NULL
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>                  // for snprintf
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;time.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/time.h&gt;</span>               // for gettimeofday
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">getLocalTimestamp</span>(<span class="enscript-type">char</span> * <span class="enscript-type">const</span> buffer, mDNSu32 buffer_len)
+{
+    <span class="enscript-type">struct</span> timeval      now;
+    <span class="enscript-type">struct</span> tm           local_time;
+    <span class="enscript-type">char</span>                date_time_str[32];
+    <span class="enscript-type">char</span>                time_zone_str[32];
+
+    gettimeofday(&amp;now, NULL);
+    localtime_r(&amp;now.tv_sec, &amp;local_time);
+
+    strftime(date_time_str, <span class="enscript-keyword">sizeof</span>(date_time_str), <span class="enscript-string">&quot;%F %T&quot;</span>, &amp;local_time);
+    strftime(time_zone_str, <span class="enscript-keyword">sizeof</span>(time_zone_str), <span class="enscript-string">&quot;%z&quot;</span>, &amp;local_time);
+    snprintf(buffer, buffer_len, <span class="enscript-string">&quot;%s.%06lu%s&quot;</span>, date_time_str, (<span class="enscript-type">unsigned</span> <span class="enscript-type">long</span>)now.tv_usec, time_zone_str);
+}
+</pre>
+<hr />
+</body></html>

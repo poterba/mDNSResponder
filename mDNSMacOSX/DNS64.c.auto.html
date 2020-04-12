@@ -1,0 +1,600 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>DNS64.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">DNS64.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="DNS64.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2017-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNS64.h&quot;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">DNS64</span>)
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;AssertMacros.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;nw/private.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd_internal.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;uDNS.h&quot;</span>
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  Constants
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDNS64IPv4OnlyFQDNString</span>    <span class="enscript-string">&quot;\x8&quot;</span> <span class="enscript-string">&quot;ipv4only&quot;</span> <span class="enscript-string">&quot;\x4&quot;</span> <span class="enscript-string">&quot;arpa&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDNS64IPv4OnlyFQDN</span>          ((const domainname *) kDNS64IPv4OnlyFQDNString)
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kDNS64IPv4OnlyFQDNLength</span>    15  // 9 bytes for first label, 5 bytes for second label, and 1 byte for the root label.
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">sizeof_field</span>(TYPE, FIELD)   sizeof(((TYPE *)0)-&gt;FIELD)    // From CoreUtils.h
+
+<span class="enscript-function-name">check_compile_time</span>(<span class="enscript-keyword">sizeof</span>(kDNS64IPv4OnlyFQDNString) == kDNS64IPv4OnlyFQDNLength);
+<span class="enscript-function-name">check_compile_time</span>(sizeof_field(DNSQuestion, qname) &gt;= kDNS64IPv4OnlyFQDNLength);
+<span class="enscript-function-name">check_compile_time</span>(sizeof_field(DNS64, qnameStash)  == kDNS64IPv4OnlyFQDNLength);
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  Local Prototypes
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSlocal mStatus   <span class="enscript-function-name">_DNS64GetIPv6Addrs</span>(mDNS *m, mDNSu32 inResGroupID, <span class="enscript-type">struct</span> in6_addr **outAddrs, uint32_t *outAddrCount);
+mDNSlocal mStatus   <span class="enscript-function-name">_DNS64GetPrefixes</span>(mDNS *m, mDNSu32 inResGroupID, nw_nat64_prefix_t **outPrefixes, uint32_t *outPrefixCount);
+mDNSlocal mDNSBool  <span class="enscript-function-name">_DNS64GetReverseIPv6Addr</span>(<span class="enscript-type">const</span> domainname *inQName, <span class="enscript-type">struct</span> in6_addr *outAddr);
+mDNSlocal mDNSu32   <span class="enscript-function-name">_DNS64IPv4OnlyFQDNHash</span>(<span class="enscript-type">void</span>);
+mDNSlocal <span class="enscript-type">void</span>      <span class="enscript-function-name">_DNS64RestartQuestion</span>(mDNS *m, DNSQuestion *q, DNS64State newState);
+mDNSlocal mDNSBool  <span class="enscript-function-name">_DNS64InterfaceSupportsNAT64</span>(uint32_t inIfIndex);
+mDNSlocal mDNSBool  <span class="enscript-function-name">_DNS64TestIPv6Synthesis</span>(mDNS *m, mDNSu32 inResGroupID, <span class="enscript-type">const</span> mDNSv4Addr *inV4Addr);
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  DNS64StateMachine
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSexport mDNSBool <span class="enscript-function-name">DNS64StateMachine</span>(mDNS *m, DNSQuestion *inQ, <span class="enscript-type">const</span> ResourceRecord *inRR, QC_result inResult)
+{
+    <span class="enscript-comment">// If this is an mDNS question, then exit early. DNS64 is only for unicast DNS questions.
+</span>
+    <span class="enscript-keyword">if</span> (mDNSOpaque16IsZero(inQ-&gt;TargetQID)) <span class="enscript-keyword">return</span> (mDNSfalse);
+
+    <span class="enscript-keyword">switch</span> (inQ-&gt;dns64.state)
+    {
+    <span class="enscript-comment">// If this question is going to be answered with a negative AAAA record and the question is not for &quot;ipv4only.arpa.&quot; and
+</span>    <span class="enscript-comment">// the question's DNS server's interface supports NAT64, then restart the question as an &quot;ipv4only.arpa.&quot; AAAA question.
+</span>    <span class="enscript-comment">// Otherwise, do nothing.
+</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_Initial</span>:
+        <span class="enscript-keyword">if</span> ((inRR-&gt;RecordType == kDNSRecordTypePacketNegative) &amp;&amp; (inResult == QC_add))
+        {
+            <span class="enscript-keyword">if</span> ((inQ-&gt;qtype      == kDNSType_AAAA) &amp;&amp;
+                (inRR-&gt;rrtype    == kDNSType_AAAA) &amp;&amp;
+                (inRR-&gt;rrclass   == kDNSClass_IN) &amp;&amp;
+                ((inQ-&gt;qnamehash != _DNS64IPv4OnlyFQDNHash()) || !SameDomainName(&amp;inQ-&gt;qname, kDNS64IPv4OnlyFQDN)) &amp;&amp;
+                inQ-&gt;qDNSServer &amp;&amp;
+                _DNS64InterfaceSupportsNAT64((uint32_t)((uintptr_t)inQ-&gt;qDNSServer-&gt;interface)))
+            {
+                _DNS64RestartQuestion(m, inQ, kDNS64State_PrefixDiscovery);
+                <span class="enscript-keyword">return</span> (mDNStrue);
+            }
+            <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((inQ-&gt;qtype == kDNSType_PTR) &amp;&amp;
+                (inRR-&gt;rrtype    == kDNSType_PTR) &amp;&amp;
+                (inRR-&gt;rrclass   == kDNSClass_IN) &amp;&amp;
+                inQ-&gt;qDNSServer &amp;&amp;
+                _DNS64InterfaceSupportsNAT64((uint32_t)((uintptr_t)inQ-&gt;qDNSServer-&gt;interface)) &amp;&amp;
+                _DNS64GetReverseIPv6Addr(&amp;inQ-&gt;qname, NULL))
+            {
+                _DNS64RestartQuestion(m, inQ, kDNS64State_PrefixDiscoveryPTR);
+                <span class="enscript-keyword">return</span> (mDNStrue);
+            }
+        }
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-comment">// If the &quot;ipv4only.arpa.&quot; question is going to be answered with a positive AAAA record, then restart it as a question
+</span>    <span class="enscript-comment">// for an A record with the original AAAA qname.
+</span>    <span class="enscript-comment">// Otherwise, restart the question for the original AAAA record.
+</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_PrefixDiscovery</span>:
+        <span class="enscript-keyword">if</span> ((inRR-&gt;RecordType != kDNSRecordTypePacketNegative) &amp;&amp;
+            (inResult         == QC_add) &amp;&amp;
+            (inRR-&gt;rrtype     == kDNSType_AAAA) &amp;&amp;
+            (inRR-&gt;rrclass    == kDNSClass_IN))
+        {
+            _DNS64RestartQuestion(m, inQ, kDNS64State_QueryA);
+            <span class="enscript-keyword">return</span> (mDNStrue);
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            _DNS64RestartQuestion(m, inQ, kDNS64State_QueryAAAA);
+            <span class="enscript-keyword">return</span> (mDNStrue);
+        }
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-comment">// The &quot;ipv4only.arpa.&quot; question is going to be answered. Restart the question now. DNS64HandleNewQuestion() will decide
+</span>    <span class="enscript-comment">// whether or not to change it to a reverse IPv4 question.
+</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_PrefixDiscoveryPTR</span>:
+        _DNS64RestartQuestion(m, inQ, kDNS64State_QueryPTR);
+        <span class="enscript-keyword">return</span> (mDNStrue);
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-comment">// If this question is going to be answered with a CNAME, then do nothing.
+</span>    <span class="enscript-comment">// If this question is going to be answered with a positive A record that's synthesizable, then set the state to
+</span>    <span class="enscript-comment">// QueryARecord2.
+</span>    <span class="enscript-comment">// Otherwise, restart the question for the original AAAA record.
+</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryA</span>:
+        <span class="enscript-keyword">if</span> (inRR-&gt;rrtype != kDNSType_CNAME)
+        {
+            <span class="enscript-keyword">if</span> ((inRR-&gt;RecordType != kDNSRecordTypePacketNegative) &amp;&amp;
+                (inResult         == QC_add) &amp;&amp;
+                (inRR-&gt;rrtype     == kDNSType_A) &amp;&amp;
+                (inRR-&gt;rrclass    == kDNSClass_IN) &amp;&amp;
+                inQ-&gt;qDNSServer &amp;&amp;
+                _DNS64TestIPv6Synthesis(m, inQ-&gt;qDNSServer-&gt;resGroupID, &amp;inRR-&gt;rdata-&gt;u.ipv4))
+            {
+                inQ-&gt;dns64.state = kDNS64State_QueryA2;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                _DNS64RestartQuestion(m, inQ, kDNS64State_QueryAAAA);
+                <span class="enscript-keyword">return</span> (mDNStrue);
+            }
+        }
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-comment">// For all other states, do nothing.
+</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryA2</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryAAAA</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryPTR</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_ReverseIPv4</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_ReverseIPv6</span>:
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-reference">default</span>:
+        LogMsg(<span class="enscript-string">&quot;DNS64StateMachine: unrecognized DNS64 state %d&quot;</span>, inQ-&gt;dns64.state);
+        <span class="enscript-keyword">break</span>;
+    }
+
+    <span class="enscript-keyword">return</span> (mDNSfalse);
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  DNS64AnswerCurrentQuestion
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSexport mStatus <span class="enscript-function-name">DNS64AnswerCurrentQuestion</span>(mDNS *m, <span class="enscript-type">const</span> ResourceRecord *inRR, QC_result inResult)
+{
+    mStatus                 err;
+    ResourceRecord          newRR;
+    RData                   rdata;
+    nw_nat64_prefix_t *     prefixes = NULL;
+    uint32_t                prefixCount;
+    uint32_t                i;
+    <span class="enscript-type">struct</span> in_addr          v4Addr;
+    <span class="enscript-type">struct</span> in6_addr         synthV6;
+    DNSQuestion * <span class="enscript-type">const</span>     q = m-&gt;CurrentQuestion;
+
+    require_action_quiet(q-&gt;qDNSServer, exit, err = mStatus_BadParamErr);
+
+    err = _DNS64GetPrefixes(m, q-&gt;qDNSServer-&gt;resGroupID, &amp;prefixes, &amp;prefixCount);
+    require_noerr_quiet(err, exit);
+
+    newRR               = *inRR;
+    newRR.rrtype        = kDNSType_AAAA;
+    newRR.rdlength      = 16;
+    rdata.MaxRDLength   = newRR.rdlength;
+    newRR.rdata         = &amp;rdata;
+
+    memcpy(&amp;v4Addr.s_addr, inRR-&gt;rdata-&gt;u.ipv4.b, 4);
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; prefixCount; i++)
+    {
+        <span class="enscript-keyword">if</span> (nw_nat64_synthesize_v6(&amp;prefixes[i], &amp;v4Addr, &amp;synthV6))
+        {
+            memcpy(rdata.u.ipv6.b, synthV6.s6_addr, 16);
+            q-&gt;QuestionCallback(m, q, &amp;newRR, inResult);
+            <span class="enscript-keyword">if</span> (m-&gt;CurrentQuestion != q) <span class="enscript-keyword">break</span>;
+        }
+    }
+    err = mStatus_NoError;
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">if</span> (prefixes) free(prefixes);
+    <span class="enscript-keyword">return</span> (err);
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  DNS64HandleNewQuestion
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNS64HandleNewQuestion</span>(mDNS *m, DNSQuestion *inQ)
+{
+    <span class="enscript-keyword">if</span> (inQ-&gt;dns64.state == kDNS64State_QueryPTR)
+    {
+        <span class="enscript-type">struct</span> in6_addr     v6Addr;
+
+        inQ-&gt;dns64.state = kDNS64State_ReverseIPv6;
+        <span class="enscript-keyword">if</span> (inQ-&gt;qDNSServer &amp;&amp; _DNS64GetReverseIPv6Addr(&amp;inQ-&gt;qname, &amp;v6Addr))
+        {
+            mStatus                 err;
+            nw_nat64_prefix_t *     prefixes;
+            uint32_t                prefixCount;
+            uint32_t                i;
+            <span class="enscript-type">struct</span> in_addr          v4Addr;
+            <span class="enscript-type">char</span>                    qnameStr[MAX_REVERSE_MAPPING_NAME_V4];
+
+            err = _DNS64GetPrefixes(m, inQ-&gt;qDNSServer-&gt;resGroupID, &amp;prefixes, &amp;prefixCount);
+            require_noerr_quiet(err, exit);
+
+            <span class="enscript-keyword">for</span> (i = 0; i &lt; prefixCount; i++)
+            {
+                <span class="enscript-keyword">if</span> (nw_nat64_extract_v4(&amp;prefixes[i], &amp;v6Addr, &amp;v4Addr))
+                {
+                    <span class="enscript-type">const</span> mDNSu8 * <span class="enscript-type">const</span>        a = (<span class="enscript-type">const</span> mDNSu8 *)&amp;v4Addr.s_addr;
+
+                    snprintf(qnameStr, <span class="enscript-keyword">sizeof</span>(qnameStr), <span class="enscript-string">&quot;%u.%u.%u.%u.in-addr.arpa.&quot;</span>, a[3], a[2], a[1], a[0]);
+                    MakeDomainNameFromDNSNameString(&amp;inQ-&gt;qname, qnameStr);
+                    inQ-&gt;qnamehash   = DomainNameHashValue(&amp;inQ-&gt;qname);
+                    inQ-&gt;dns64.state = kDNS64State_ReverseIPv4;
+                    <span class="enscript-keyword">break</span>;
+                }
+            }
+            free(prefixes);
+        }
+    }
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">return</span>;
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  DNS64ResetState
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+<span class="enscript-comment">// Called from mDNS_StopQuery_internal().
+</span>
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNS64ResetState</span>(DNSQuestion *inQ)
+{
+    <span class="enscript-keyword">switch</span> (inQ-&gt;dns64.state)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_PrefixDiscoveryPTR</span>:
+        inQ-&gt;qtype = kDNSType_PTR;  <span class="enscript-comment">// Restore qtype to PTR and fall through.
+</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_PrefixDiscovery</span>:
+        memcpy(&amp;inQ-&gt;qname, inQ-&gt;dns64.qnameStash, <span class="enscript-keyword">sizeof</span>(inQ-&gt;dns64.qnameStash));  <span class="enscript-comment">// Restore the previous qname.
+</span>        inQ-&gt;qnamehash = DomainNameHashValue(&amp;inQ-&gt;qname);
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryA</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryA2</span>:
+        inQ-&gt;qtype = kDNSType_AAAA; <span class="enscript-comment">// Restore qtype to AAAA.
+</span>        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-comment">// Do nothing for the other states.
+</span>
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_Initial</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryAAAA</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryPTR</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_ReverseIPv4</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_ReverseIPv6</span>:
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-reference">default</span>:
+        LogMsg(<span class="enscript-string">&quot;DNS64ResetState: unrecognized DNS64 state %d&quot;</span>, inQ-&gt;dns64.state);
+        <span class="enscript-keyword">break</span>;
+    }
+    inQ-&gt;dns64.state = kDNS64State_Initial;
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  DNS64RestartQuestions
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">DNS64RestartQuestions</span>(mDNS *m)
+{
+    DNSQuestion *       q;
+    DNSQuestion *       restartList = NULL;
+    DNSServer *         newServer;
+
+    m-&gt;RestartQuestion = m-&gt;Questions;
+    <span class="enscript-keyword">while</span> (m-&gt;RestartQuestion)
+    {
+        q = m-&gt;RestartQuestion;
+        m-&gt;RestartQuestion = q-&gt;next;
+        <span class="enscript-keyword">if</span> (q-&gt;dns64.state != kDNS64State_Initial)
+        {
+            SetValidDNSServers(m, q);
+            q-&gt;triedAllServersOnce = mDNSfalse;
+            newServer = GetServerForQuestion(m, q);
+            <span class="enscript-keyword">if</span> (q-&gt;qDNSServer != newServer)
+            {
+                <span class="enscript-keyword">if</span> (!CacheRecordRmvEventsForQuestion(m, q))
+                {
+                    LogInfo(<span class="enscript-string">&quot;DNS64RestartQuestions: Question deleted while delivering RMV events from cache&quot;</span>);
+                }
+                <span class="enscript-keyword">else</span>
+                {
+                    LogInfo(<span class="enscript-string">&quot;DNS64RestartQuestions: Stop question %p %##s (%s)&quot;</span>, q, q-&gt;qname.c, DNSTypeName(q-&gt;qtype));
+                    mDNS_StopQuery_internal(m, q);
+                    q-&gt;next = restartList;
+                    restartList = q;
+                }
+            }
+        }
+    }
+    <span class="enscript-keyword">while</span> ((q = restartList) != NULL)
+    {
+        restartList = restartList-&gt;next;
+        q-&gt;next = NULL;
+        LogInfo(<span class="enscript-string">&quot;DNS64RestartQuestions: Start question %p %##s (%s)&quot;</span>, q, q-&gt;qname.c, DNSTypeName(q-&gt;qtype));
+        mDNS_StartQuery_internal(m, q);
+    }
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  _DNS64GetIPv6Addrs
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">IsPositiveAAAAFromResGroup</span>(RR, RES_GROUP_ID)        \
+    ((RR)-&gt;rDNSServer &amp;&amp;                                    \
+    ((RR)-&gt;rDNSServer-&gt;resGroupID == RES_GROUP_ID) &amp;&amp;       \
+    ((RR)-&gt;rrtype == kDNSType_AAAA) &amp;&amp;                      \
+    ((RR)-&gt;RecordType != kDNSRecordTypePacketNegative) &amp;&amp;   \
+    !(RR)-&gt;InterfaceID)
+
+mDNSlocal mStatus <span class="enscript-function-name">_DNS64GetIPv6Addrs</span>(mDNS *m, <span class="enscript-type">const</span> mDNSu32 inResGroupID, <span class="enscript-type">struct</span> in6_addr **outAddrs, uint32_t *outAddrCount)
+{
+    mStatus                 err;
+    <span class="enscript-type">const</span> CacheGroup *      cg;
+    <span class="enscript-type">const</span> CacheRecord *     cr;
+    <span class="enscript-type">struct</span> in6_addr *       addrs = NULL;
+    uint32_t                addrCount;
+    uint32_t                recordCount;
+
+    cg = CacheGroupForName(m, _DNS64IPv4OnlyFQDNHash(), kDNS64IPv4OnlyFQDN);
+    require_action_quiet(cg, exit, err = mStatus_NoSuchRecord);
+
+    recordCount = 0;
+    <span class="enscript-keyword">for</span> (cr = cg-&gt;members; cr; cr = cr-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (IsPositiveAAAAFromResGroup(&amp;cr-&gt;resrec, inResGroupID))
+        {
+            recordCount++;
+        }
+    }
+    require_action_quiet(recordCount &gt; 0, exit, err = mStatus_NoSuchRecord);
+
+    addrs = (<span class="enscript-type">struct</span> in6_addr *)calloc(recordCount, <span class="enscript-keyword">sizeof</span>(*addrs));
+    require_action_quiet(addrs, exit, err = mStatus_NoMemoryErr);
+
+    addrCount = 0;
+    <span class="enscript-keyword">for</span> (cr = cg-&gt;members; cr &amp;&amp; (addrCount &lt; recordCount); cr = cr-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (IsPositiveAAAAFromResGroup(&amp;cr-&gt;resrec, inResGroupID))
+        {
+            memcpy(addrs[addrCount].s6_addr, cr-&gt;resrec.rdata-&gt;u.ipv6.b, 16);
+            addrCount++;
+        }
+    }
+
+    *outAddrs = addrs;
+    addrs = NULL;
+    *outAddrCount = addrCount;
+    err = mStatus_NoError;
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">if</span> (addrs) free(addrs);
+    <span class="enscript-keyword">return</span> (err);
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  _DNS64GetPrefixes
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSlocal mStatus <span class="enscript-function-name">_DNS64GetPrefixes</span>(mDNS *m, mDNSu32 inResGroupID, nw_nat64_prefix_t **outPrefixes, uint32_t *outPrefixCount)
+{
+    mStatus                 err;
+    <span class="enscript-type">struct</span> in6_addr *       v6Addrs;
+    uint32_t                v6AddrCount;
+    nw_nat64_prefix_t *     prefixes;
+    int32_t                 prefixCount;
+
+    err = _DNS64GetIPv6Addrs(m, inResGroupID, &amp;v6Addrs, &amp;v6AddrCount);
+    require_noerr_quiet(err, exit);
+
+    prefixCount = nw_nat64_copy_prefixes_from_ipv4only_records(v6Addrs, v6AddrCount, &amp;prefixes);
+    free(v6Addrs);
+    require_action_quiet(prefixCount &gt; 0, exit, err = mStatus_UnknownErr);
+
+    *outPrefixes    = prefixes;
+    *outPrefixCount = prefixCount;
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">return</span> (err);
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  _DNS64GetReverseIPv6Addr
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kReverseIPv6Domain</span>  ((const domainname *) <span class="enscript-string">&quot;\x3&quot;</span> <span class="enscript-string">&quot;ip6&quot;</span> <span class="enscript-string">&quot;\x4&quot;</span> <span class="enscript-string">&quot;arpa&quot;</span>)
+
+mDNSlocal mDNSBool <span class="enscript-function-name">_DNS64GetReverseIPv6Addr</span>(<span class="enscript-type">const</span> domainname *inQName, <span class="enscript-type">struct</span> in6_addr *outAddr)
+{
+    <span class="enscript-type">const</span> mDNSu8 *      ptr;
+    <span class="enscript-type">int</span>                 i;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span>        c;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span>        nl;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span>        nu;
+
+    <span class="enscript-comment">// If the name is of the form &quot;x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.x.ip6.arpa.&quot;, where each x
+</span>    <span class="enscript-comment">// is a hex digit, then the sequence of 32 hex digit labels represents the nibbles of an IPv6 address in reverse order.
+</span>    <span class="enscript-comment">// See &lt;<a href="https://tools.ietf.org/html/rfc3596#section-2.5">https://tools.ietf.org/html/rfc3596#section-2.5</a>&gt;.
+</span>
+    ptr = (<span class="enscript-type">const</span> mDNSu8 *)inQName;
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; 16; i++)
+    {
+        <span class="enscript-keyword">if</span> (*ptr++ != 1) <span class="enscript-keyword">return</span> (mDNSfalse);                    <span class="enscript-comment">// If this label's length is not 1, then fail.
+</span>        c = *ptr++;                                             <span class="enscript-comment">// Get label byte.
+</span>        <span class="enscript-keyword">if</span> (     (c &gt;= <span class="enscript-string">'0'</span>) &amp;&amp; (c &lt;= <span class="enscript-string">'9'</span>)) nl =  c - <span class="enscript-string">'0'</span>;       <span class="enscript-comment">// If it's a hex digit, get its numeric value.
+</span>        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((c &gt;= <span class="enscript-string">'a'</span>) &amp;&amp; (c &lt;= <span class="enscript-string">'f'</span>)) nl = (c - <span class="enscript-string">'a'</span>) + 10;
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((c &gt;= <span class="enscript-string">'A'</span>) &amp;&amp; (c &lt;= <span class="enscript-string">'F'</span>)) nl = (c - <span class="enscript-string">'A'</span>) + 10;
+        <span class="enscript-keyword">else</span>                               <span class="enscript-keyword">return</span> (mDNSfalse);  <span class="enscript-comment">// Otherwise, fail.
+</span>
+        <span class="enscript-keyword">if</span> (*ptr++ != 1) <span class="enscript-keyword">return</span> (mDNSfalse);                    <span class="enscript-comment">// If this label's length is not 1, then fail.
+</span>        c = *ptr++;                                             <span class="enscript-comment">// Get label byte.
+</span>        <span class="enscript-keyword">if</span> (     (c &gt;= <span class="enscript-string">'0'</span>) &amp;&amp; (c &lt;= <span class="enscript-string">'9'</span>)) nu =  c - <span class="enscript-string">'0'</span>;       <span class="enscript-comment">// If it's a hex digit, get its numeric value.
+</span>        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((c &gt;= <span class="enscript-string">'a'</span>) &amp;&amp; (c &lt;= <span class="enscript-string">'f'</span>)) nu = (c - <span class="enscript-string">'a'</span>) + 10;
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((c &gt;= <span class="enscript-string">'A'</span>) &amp;&amp; (c &lt;= <span class="enscript-string">'F'</span>)) nu = (c - <span class="enscript-string">'A'</span>) + 10;
+        <span class="enscript-keyword">else</span>                               <span class="enscript-keyword">return</span> (mDNSfalse);  <span class="enscript-comment">// Otherwise, fail.
+</span>
+        <span class="enscript-keyword">if</span> (outAddr) outAddr-&gt;s6_addr[15 - i] = (mDNSu8)((nu &lt;&lt; 4) | nl);
+    }
+
+    <span class="enscript-comment">// The rest of the name needs to be &quot;ip6.arpa.&quot;. If it isn't, fail.
+</span>
+    <span class="enscript-keyword">if</span> (!SameDomainName((<span class="enscript-type">const</span> domainname *)ptr, kReverseIPv6Domain)) <span class="enscript-keyword">return</span> (mDNSfalse);
+
+    <span class="enscript-keyword">return</span> (mDNStrue);
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  _DNS64IPv4OnlyFQDNHash
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSlocal mDNSu32 <span class="enscript-function-name">_DNS64IPv4OnlyFQDNHash</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-type">static</span> dispatch_once_t      sHashOnce;
+    <span class="enscript-type">static</span> mDNSu32              sHash;
+
+    dispatch_once(&amp;sHashOnce, ^{ sHash = DomainNameHashValue(kDNS64IPv4OnlyFQDN); });
+
+    <span class="enscript-keyword">return</span> (sHash);
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  _DNS64RestartQuestion
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">_DNS64RestartQuestion</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *inQ, DNS64State inNewState)
+{
+    mDNS_StopQuery_internal(m, inQ);
+
+    inQ-&gt;dns64.state = inNewState;
+    <span class="enscript-keyword">switch</span> (inQ-&gt;dns64.state)
+    {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_Initial</span>:
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_PrefixDiscovery</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_PrefixDiscoveryPTR</span>:
+        <span class="enscript-comment">// Save the first 15 bytes from the original qname that are displaced by setting qname to &quot;ipv4only.arpa.&quot;.
+</span>
+        memcpy(inQ-&gt;dns64.qnameStash, &amp;inQ-&gt;qname, <span class="enscript-keyword">sizeof</span>(inQ-&gt;dns64.qnameStash));
+        AssignDomainName(&amp;inQ-&gt;qname, kDNS64IPv4OnlyFQDN);
+        inQ-&gt;qnamehash = _DNS64IPv4OnlyFQDNHash();
+        inQ-&gt;qtype = kDNSType_AAAA;
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryA</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryA2</span>:
+        inQ-&gt;qtype = kDNSType_A;
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryPTR</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_ReverseIPv4</span>:
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_ReverseIPv6</span>:
+        inQ-&gt;qtype = kDNSType_PTR;
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDNS64State_QueryAAAA</span>:
+        inQ-&gt;qtype = kDNSType_AAAA;
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-reference">default</span>:
+        LogMsg(<span class="enscript-string">&quot;DNS64RestartQuestion: unrecognized DNS64 state %d&quot;</span>, inQ-&gt;dns64.state);
+        <span class="enscript-keyword">break</span>;
+    }
+
+    mDNS_StartQuery_internal(m, inQ);
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  _DNS64InterfaceSupportsNAT64
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSlocal mDNSBool <span class="enscript-function-name">_DNS64InterfaceSupportsNAT64</span>(uint32_t inIfIndex)
+{
+    mdns_interface_monitor_t monitor = GetInterfaceMonitorForIndex(inIfIndex);
+    <span class="enscript-keyword">if</span> (monitor &amp;&amp; !mdns_interface_monitor_has_ipv4_connectivity(monitor) &amp;&amp;
+        mdns_interface_monitor_has_ipv6_connectivity(monitor))
+    {
+        <span class="enscript-keyword">return</span> (mDNStrue);
+    }
+    <span class="enscript-keyword">return</span> (mDNSfalse);
+}
+
+<span class="enscript-comment">//===========================================================================================================================
+</span><span class="enscript-comment">//  _DNS64TestIPv6Synthesis
+</span><span class="enscript-comment">//===========================================================================================================================
+</span>
+mDNSlocal mDNSBool <span class="enscript-function-name">_DNS64TestIPv6Synthesis</span>(mDNS *m, mDNSu32 inResGroupID, <span class="enscript-type">const</span> mDNSv4Addr *inV4Addr)
+{
+    mStatus                 err;
+    nw_nat64_prefix_t *     prefixes    = NULL;
+    uint32_t                prefixCount;
+    uint32_t                i;
+    <span class="enscript-type">struct</span> in_addr          v4Addr;
+    <span class="enscript-type">struct</span> in6_addr         synthV6;
+    mDNSBool                result      = mDNSfalse;
+
+    err = _DNS64GetPrefixes(m, inResGroupID, &amp;prefixes, &amp;prefixCount);
+    require_noerr_quiet(err, exit);
+
+    memcpy(&amp;v4Addr.s_addr, inV4Addr-&gt;b, 4);
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; prefixCount; i++)
+    {
+        <span class="enscript-keyword">if</span> (nw_nat64_synthesize_v6(&amp;prefixes[i], &amp;v4Addr, &amp;synthV6))
+        {
+            result = mDNStrue;
+            <span class="enscript-keyword">break</span>;
+        }
+    }
+
+<span class="enscript-reference">exit</span>:
+    <span class="enscript-keyword">if</span> (prefixes) free(prefixes);
+    <span class="enscript-keyword">return</span> (result);
+}
+#<span class="enscript-reference">endif</span>  // <span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">DNS64</span>)
+</pre>
+<hr />
+</body></html>

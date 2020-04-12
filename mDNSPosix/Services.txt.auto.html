@@ -1,0 +1,61 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>Services.txt</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">Services.txt&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="Services.txt">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+#
+# Example services file parsed by mDNSResponderPosix.
+# 
+# Lines beginning with '#' are comments/ignored.
+# Blank lines indicate the end of a service record specification.
+# The first character of the service name can be a '#' if you escape it with 
+# backslash to distinguish if from a comment line.
+# ie, &quot;\#serviceName&quot; will be registered as &quot;#serviceName&quot;.
+# Note that any line beginning with white space is considered a blank line.
+#
+# The record format is:
+# 
+# &lt;service name&gt;
+# &lt;type&gt;.&lt;protocol&gt; &lt;optional domain&gt;
+# &lt;port number&gt;
+# &lt;zero or more strings for the text record, one string per line&gt;
+#
+# &lt;One or more blank lines between records&gt;
+# 
+# Examples shown below.
+
+serviceName1
+_afpovertcp._tcp.
+548
+name=val1
+
+serviceName2
+_afpovertcp._tcp. local.
+548
+name=val2
+name2=anotherattribute
+
+serviceName3
+_afpovertcp._tcp.
+548
+name=val3
+</pre>
+<hr />
+</body></html>

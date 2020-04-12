@@ -1,0 +1,1288 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>nsec.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">nsec.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="nsec.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2011-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+<span class="enscript-comment">// ***************************************************************************
+</span><span class="enscript-comment">// nsec.c: This file contains support functions to validate NSEC records for
+</span><span class="enscript-comment">// NODATA and NXDOMAIN error.
+</span><span class="enscript-comment">// ***************************************************************************
+</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;nsec.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;nsec3.h&quot;</span>
+
+<span class="enscript-comment">// Define DNSSEC_DISABLED to remove all the DNSSEC functionality
+</span><span class="enscript-comment">// and use the stub functions implemented later in this file.
+</span>
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">DNSSEC_DISABLED</span>
+
+<span class="enscript-comment">// Implementation Notes
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// NSEC records in DNSSEC are used for authenticated denial of existence i.e., if the response to a query
+</span><span class="enscript-comment">// results in NXDOMAIN or NODATA error, the response also contains NSEC records in the additional section
+</span><span class="enscript-comment">// to prove the non-existence of the original name. In most of the cases, NSEC records don't have any
+</span><span class="enscript-comment">// relationship to the original name queried i.e, if they are cached based on the name like other records,
+</span><span class="enscript-comment">// it can't be located to prove the non-existence of the original name. Hence, we create a negative cache
+</span><span class="enscript-comment">// record like we do for the NXDOMAIN/NODATA error and then cache the NSEC records as part of that. Sometimes,
+</span><span class="enscript-comment">// NSEC records are also used for wildcard expanded answer in which case they are cached with the cache record
+</span><span class="enscript-comment">// that is created for the original name. NSEC records are freed when the parent cache (the record that they
+</span><span class="enscript-comment">// are attached to is expired).
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// NSEC records also can be queried like any other record and hence can exist independent of the negative
+</span><span class="enscript-comment">// cache record. It exists as part of negative cache record only when we get a NXDOMAIN/NODATA error with
+</span><span class="enscript-comment">// NSEC records. When a query results in NXDOMAIN/NODATA error and needs to be validated, the NSEC
+</span><span class="enscript-comment">// records (and its RRSIGS) are cached as part of the negative cache record. The NSEC records that
+</span><span class="enscript-comment">// exist separately from the negative cache record should not be used to answer ValidationRequired/
+</span><span class="enscript-comment">// ValidatingResponse questions as it may not be sufficient to prove the non-existence of the name.
+</span><span class="enscript-comment">// The exception is when the NSEC record is looked up explicitly. See DNSSECRecordAnswersQuestion
+</span><span class="enscript-comment">// for more details.
+</span><span class="enscript-comment">//
+</span>
+mDNSlocal CacheRecord *<span class="enscript-function-name">NSECParentForQuestion</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *q)
+{
+    CacheGroup *cg;
+    CacheRecord *cr;
+    mDNSu32 namehash;
+
+    namehash = DomainNameHashValue(&amp;q-&gt;qname);
+    cg = CacheGroupForName(m, namehash, &amp;q-&gt;qname);
+    <span class="enscript-keyword">if</span> (!cg)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NSECParentForQuestion: Cannot find cg for %##s (%s)&quot;</span>, q-&gt;qname.c, DNSTypeName(q-&gt;qtype));
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+    <span class="enscript-keyword">for</span> (cr = cg-&gt;members; cr; cr = cr-&gt;next)
+        <span class="enscript-keyword">if</span> (SameNameCacheRecordAnswersQuestion(cr, q))
+            <span class="enscript-keyword">return</span> cr;
+    <span class="enscript-keyword">return</span> mDNSNULL;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">UpdateParent</span>(DNSSECVerifier *dv)
+{
+    AuthChainLink(dv-&gt;parent, dv-&gt;ac);
+    ResetAuthChain(dv);
+    dv-&gt;parent-&gt;NumPackets += dv-&gt;NumPackets;
+}
+
+<span class="enscript-comment">// Note: This should just call the parent callback which will free the DNSSECVerifier.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">VerifyNSECCallback</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, DNSSECStatus status)
+{
+    <span class="enscript-keyword">if</span> (!dv-&gt;parent)
+    {
+        LogMsg(<span class="enscript-string">&quot;VerifyNSECCCallback: ERROR!! no parent DV\n&quot;</span>);
+        FreeDNSSECVerifier(m, dv);
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-keyword">if</span> (dv-&gt;ac)
+    {
+        <span class="enscript-comment">// Before we free the &quot;dv&quot;, we need to update the
+</span>        <span class="enscript-comment">// parent with our AuthChain information
+</span>        UpdateParent(dv);
+    }
+    <span class="enscript-comment">// &quot;status&quot; indicates whether we are able to successfully verify
+</span>    <span class="enscript-comment">// the NSEC/NSEC3 signatures. For NSEC3, the OptOut flag may be set
+</span>    <span class="enscript-comment">// for which we need to deliver insecure result.
+</span>    <span class="enscript-keyword">if</span> ((dv-&gt;parent-&gt;flags &amp; NSEC3_OPT_OUT) &amp;&amp; (status == DNSSEC_Secure))
+    {
+        dv-&gt;parent-&gt;DVCallback(m, dv-&gt;parent, DNSSEC_Insecure);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        dv-&gt;parent-&gt;DVCallback(m, dv-&gt;parent, status);
+    }
+    <span class="enscript-comment">// The callback we called in the previous line should recursively
+</span>    <span class="enscript-comment">// free all the DNSSECVerifiers starting from dv-&gt;parent and above.
+</span>    <span class="enscript-comment">// So, set that to NULL and free the &quot;dv&quot; itself here.
+</span>    dv-&gt;parent = mDNSNULL;
+    FreeDNSSECVerifier(m, dv);
+}
+
+<span class="enscript-comment">// If the caller provides a callback, it takes the responsibility of calling the original callback
+</span><span class="enscript-comment">// in &quot;pdv&quot; when it is done.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// INPUT:
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// rr: The NSEC record that should be verified
+</span><span class="enscript-comment">// rv: The NSEC record can also be provided like this
+</span><span class="enscript-comment">// pdv: Parent DNSSECVerifier which will be called when the verification is done.
+</span><span class="enscript-comment">// callback:  As part of the proof, we need multiple NSEC verifications before we call the &quot;pdv&quot; callback in
+</span><span class="enscript-comment">// which case a intermediate &quot;callback&quot; is provided which can be used to do multiple verifications.
+</span><span class="enscript-comment">// ncr: The cache record where the RRSIGS are cached
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// NSEC records and signatures are cached along with the cache record so that we can expire them all together. We can't cache
+</span><span class="enscript-comment">// them based on the name hash like other records as in most cases the returned NSECs has a different name than we asked for
+</span><span class="enscript-comment">// (except for NODATA error where the name exists but type does not exist).
+</span><span class="enscript-comment">//
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">VerifyNSEC</span>(mDNS *<span class="enscript-type">const</span> m, ResourceRecord *rr, RRVerifier *rv, DNSSECVerifier *pdv, CacheRecord *ncr, DNSSECVerifierCallback callback)
+{
+    DNSSECVerifier *dv = mDNSNULL;
+    CacheRecord **rp;
+    <span class="enscript-type">const</span> domainname *name;
+    mDNSu16 rrtype;
+
+    <span class="enscript-keyword">if</span> (!rv &amp;&amp; !rr)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;VerifyNSEC: Both rr and rv are NULL&quot;</span>);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+    <span class="enscript-keyword">if</span> (!pdv)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;VerifyNSEC: ERROR!! pdv is NULL&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-comment">// Remember the name and type for which we are verifying, so that when we are done processing all
+</span>    <span class="enscript-comment">// the verifications, we can trace it back.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// Note: Currently it is not used because when the verification completes as we just
+</span>    <span class="enscript-comment">// call the &quot;pdv&quot; callback which has its origName and origType.
+</span>    <span class="enscript-keyword">if</span> (rr)
+    {
+        name = rr-&gt;name;
+        rrtype = rr-&gt;rrtype;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        name = &amp;rv-&gt;name;
+        rrtype = rv-&gt;rrtype;
+    }
+
+    dv = AllocateDNSSECVerifier(m, name, rrtype, pdv-&gt;q.InterfaceID, DNSSEC_VALIDATION_SECURE,
+        (callback ? callback : VerifyNSECCallback), mDNSNULL);
+    <span class="enscript-keyword">if</span> (!dv)
+    {
+        LogMsg(<span class="enscript-string">&quot;VerifyNSEC: mDNSPlatformMemAlloc failed&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    dv-&gt;parent = pdv;
+
+    <span class="enscript-keyword">if</span> (AddRRSetToVerifier(dv, rr, rv, RRVS_rr) != mStatus_NoError)
+    {
+        LogMsg(<span class="enscript-string">&quot;VerifyNSEC: ERROR!! AddRRSetToVerifier failed to add NSEC&quot;</span>);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+
+    <span class="enscript-comment">// Add the signatures after validating them
+</span>    rp = &amp;(ncr-&gt;nsec);
+    <span class="enscript-keyword">while</span> (*rp)
+    {
+        <span class="enscript-keyword">if</span> ((*rp)-&gt;resrec.rrtype == kDNSType_RRSIG)
+        {
+            ValidateRRSIG(dv, RRVS_rrsig, &amp;(*rp)-&gt;resrec);
+        }
+        rp=&amp;(*rp)-&gt;next;
+    }
+
+    <span class="enscript-keyword">if</span> (!dv-&gt;rrset)
+    {
+        LogMsg(<span class="enscript-string">&quot;VerifyNSEC: ERROR!! AddRRSetToVerifier missing rrset&quot;</span>);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+    <span class="enscript-comment">// Expired signatures.
+</span>    <span class="enscript-keyword">if</span> (!dv-&gt;rrsig)
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+
+    <span class="enscript-comment">// Next step is to fetch the keys
+</span>    dv-&gt;next = RRVS_key;
+
+    StartDNSSECVerification(m, dv);
+    <span class="enscript-keyword">return</span>;
+<span class="enscript-reference">error</span>:
+    pdv-&gt;DVCallback(m, pdv, DNSSEC_Bogus);
+    <span class="enscript-keyword">if</span> (dv)
+    {
+        dv-&gt;parent = mDNSNULL;
+        FreeDNSSECVerifier(m, dv);
+    }
+    <span class="enscript-keyword">return</span>;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">DeleteCachedNSECS</span>(mDNS *<span class="enscript-type">const</span> m, CacheRecord *cr)
+{
+    CacheRecord *rp, *next;
+
+    <span class="enscript-keyword">if</span> (cr-&gt;nsec) LogDNSSEC(<span class="enscript-string">&quot;DeleteCachedNSECS: Deleting NSEC Records\n&quot;</span>);
+    <span class="enscript-keyword">for</span> (rp = cr-&gt;nsec; rp; rp = next)
+    {
+        next  = rp-&gt;next;
+        ReleaseCacheRecord(m, rp);
+    }
+    cr-&gt;nsec = mDNSNULL;
+}
+
+<span class="enscript-comment">// Returns success if it adds the nsecs and the rrsigs to the cache record. Otherwise, it returns
+</span><span class="enscript-comment">// failure (mDNSfalse)
+</span>mDNSexport mDNSBool <span class="enscript-function-name">AddNSECSForCacheRecord</span>(mDNS *<span class="enscript-type">const</span> m, CacheRecord *crlist, CacheRecord *negcr, mDNSu8 rcode)
+{
+    CacheRecord *cr;
+    mDNSBool nsecs_seen = mDNSfalse;
+    mDNSBool nsec3s_seen = mDNSfalse;
+
+    <span class="enscript-keyword">if</span> (rcode != kDNSFlag1_RC_NoErr &amp;&amp; rcode != kDNSFlag1_RC_NXDomain)
+    {
+        LogMsg(<span class="enscript-string">&quot;AddNSECSForCacheRecord: Addings nsecs for rcode %d&quot;</span>, rcode);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+
+    <span class="enscript-comment">// Sanity check the list to see if we have anything else other than
+</span>    <span class="enscript-comment">// NSECs and its RRSIGs
+</span>    <span class="enscript-keyword">for</span> (cr = crlist; cr; cr = cr-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (cr-&gt;resrec.rrtype != kDNSType_NSEC &amp;&amp; cr-&gt;resrec.rrtype != kDNSType_NSEC3 &amp;&amp;
+            cr-&gt;resrec.rrtype != kDNSType_SOA &amp;&amp; cr-&gt;resrec.rrtype != kDNSType_RRSIG)
+        {
+            LogMsg(<span class="enscript-string">&quot;AddNSECSForCacheRecord: ERROR!! Adding Wrong record %s&quot;</span>, CRDisplayString(m, cr));
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+        <span class="enscript-keyword">if</span> (cr-&gt;resrec.rrtype == kDNSType_RRSIG)
+        {
+            RDataBody2 *<span class="enscript-type">const</span> rdb = (RDataBody2 *)cr-&gt;smallrdatastorage.data;
+            rdataRRSig *rrsig = &amp;rdb-&gt;rrsig;
+            mDNSu16 tc = swap16(rrsig-&gt;typeCovered);
+            <span class="enscript-keyword">if</span> (tc != kDNSType_NSEC &amp;&amp; tc != kDNSType_NSEC3 &amp;&amp; tc != kDNSType_SOA)
+            {
+                LogMsg(<span class="enscript-string">&quot;AddNSECSForCacheRecord:ERROR!! Adding RRSIG with Wrong type %s&quot;</span>, CRDisplayString(m, cr));
+                <span class="enscript-keyword">return</span> mDNSfalse;
+            }
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (cr-&gt;resrec.rrtype == kDNSType_NSEC)
+        {
+            nsecs_seen = mDNStrue;
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (cr-&gt;resrec.rrtype == kDNSType_NSEC3)
+        {
+            nsec3s_seen = mDNStrue;
+        }
+        LogDNSSEC(<span class="enscript-string">&quot;AddNSECSForCacheRecord: Found a valid record %s&quot;</span>, CRDisplayString(m, cr));
+    }
+    <span class="enscript-keyword">if</span> ((nsecs_seen &amp;&amp; nsec3s_seen) || (!nsecs_seen &amp;&amp; !nsec3s_seen))
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;AddNSECSForCacheRecord:ERROR  nsecs_seen %d, nsec3s_seen %d&quot;</span>, nsecs_seen, nsec3s_seen);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    DeleteCachedNSECS(m, negcr);
+    LogDNSSEC(<span class="enscript-string">&quot;AddNSECSForCacheRecord: Adding NSEC Records for %s&quot;</span>, CRDisplayString(m, negcr));
+    negcr-&gt;nsec = crlist;
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+<span class="enscript-comment">// Return the number of labels that matches starting from the right (excluding the
+</span><span class="enscript-comment">// root label)
+</span>mDNSexport <span class="enscript-type">int</span> <span class="enscript-function-name">CountLabelsMatch</span>(<span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> d1, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> d2)
+{
+    <span class="enscript-type">int</span> count, c1, c2;
+    <span class="enscript-type">int</span> match, i, skip1, skip2;
+
+    c1 = CountLabels(d1);
+    skip1 = c1 - 1;
+    c2 = CountLabels(d2);
+    skip2 = c2 - 1;
+
+    <span class="enscript-comment">// Root label always matches. And we don't include it here to
+</span>    <span class="enscript-comment">// match CountLabels
+</span>    match = 0;
+
+    <span class="enscript-comment">// Compare as many labels as possible starting from the rightmost
+</span>    count = c1 &lt; c2 ? c1 : c2;
+    <span class="enscript-keyword">for</span> (i = count; i &gt; 0; i--)
+    {
+        <span class="enscript-type">const</span> domainname *da, *db;
+
+        da = SkipLeadingLabels(d1, skip1);
+        db = SkipLeadingLabels(d2, skip2);
+        <span class="enscript-keyword">if</span> (!SameDomainName(da, db)) <span class="enscript-keyword">return</span> match;
+        skip1--;
+        skip2--;
+        match++;
+    }
+    <span class="enscript-keyword">return</span> match;
+}
+
+<span class="enscript-comment">// Empty Non-Terminal (ENT): if the qname is bigger than nsec owner's name and a
+</span><span class="enscript-comment">// subdomain of the nsec's nxt field, then the qname is a empty non-terminal. For
+</span><span class="enscript-comment">// example, if you are looking for (in RFC 4035 example zone) &quot;y.w.example  A&quot;
+</span><span class="enscript-comment">// record, if it is a ENT, then it would return
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// x.w.example. 3600 NSEC x.y.w.example. MX RRSIG NSEC
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// This function is normally called before checking for wildcard matches. If you
+</span><span class="enscript-comment">// find this NSEC, there is no need to look for a wildcard record
+</span><span class="enscript-comment">// that could possibly answer the question.
+</span>mDNSlocal mDNSBool <span class="enscript-function-name">NSECAnswersENT</span>(<span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> rr, domainname *qname)
+{
+    <span class="enscript-type">const</span> domainname *oname = rr-&gt;name;
+    <span class="enscript-type">const</span> RDataBody2 *<span class="enscript-type">const</span> rdb = (RDataBody2 *)rr-&gt;rdata-&gt;u.data;
+    <span class="enscript-type">const</span> domainname *nxt = (<span class="enscript-type">const</span> domainname *)&amp;rdb-&gt;data;
+    <span class="enscript-type">int</span> ret;
+    <span class="enscript-type">int</span> subdomain;
+
+    <span class="enscript-comment">// Is the owner name smaller than qname?
+</span>    ret = DNSSECCanonicalOrder(oname, qname, mDNSNULL);
+    <span class="enscript-keyword">if</span> (ret &lt; 0)
+    {
+        <span class="enscript-comment">// Is the next domain field a subdomain of qname ?
+</span>        ret = DNSSECCanonicalOrder(nxt, qname, &amp;subdomain);
+        <span class="enscript-keyword">if</span> (subdomain)
+        {
+            <span class="enscript-keyword">if</span> (ret &lt;= 0)
+            {
+                LogMsg(<span class="enscript-string">&quot;NSECAnswersENT: ERROR!! DNSSECCanonicalOrder subdomain set &quot;</span>
+                       <span class="enscript-string">&quot; qname %##s, NSEC %##s&quot;</span>, qname-&gt;c, rr-&gt;name-&gt;c);
+            }
+            <span class="enscript-keyword">return</span> mDNStrue;
+        }
+    }
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+mDNSlocal <span class="enscript-type">const</span> domainname *<span class="enscript-function-name">NSECClosestEncloser</span>(ResourceRecord *rr, domainname *qname)
+{
+    <span class="enscript-type">const</span> domainname *oname = rr-&gt;name;
+    <span class="enscript-type">const</span> RDataBody2 *<span class="enscript-type">const</span> rdb = (RDataBody2 *)rr-&gt;rdata-&gt;u.data;
+    <span class="enscript-type">const</span> domainname *nxt = (<span class="enscript-type">const</span> domainname *)&amp;rdb-&gt;data;
+    <span class="enscript-type">int</span> match1, match2;
+
+    match1 = CountLabelsMatch(oname, qname);
+    match2 = CountLabelsMatch(nxt, qname);
+    <span class="enscript-comment">// Return the closest i.e the one that matches more labels
+</span>    <span class="enscript-keyword">if</span> (match1 &gt; match2)
+        <span class="enscript-keyword">return</span> SkipLeadingLabels(oname, CountLabels(oname) - match1);
+    <span class="enscript-keyword">else</span>
+        <span class="enscript-keyword">return</span> SkipLeadingLabels(nxt, CountLabels(nxt) - match2);
+}
+
+<span class="enscript-comment">// Assumption: NSEC has been validated outside of this function
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// Does the name exist given the name and NSEC rr ?
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// Returns -1 if it is an inappropriate nsec
+</span><span class="enscript-comment">// Returns 1 if the name exists
+</span><span class="enscript-comment">// Returns 0 if the name does not exist
+</span><span class="enscript-comment">//
+</span>mDNSlocal <span class="enscript-type">int</span> <span class="enscript-function-name">NSECNameExists</span>(mDNS *<span class="enscript-type">const</span> m, ResourceRecord *rr, domainname *name, mDNSu16 qtype)
+{
+    <span class="enscript-type">const</span> RDataBody2 *<span class="enscript-type">const</span> rdb = (RDataBody2 *)rr-&gt;rdata-&gt;u.data;
+    <span class="enscript-type">const</span> domainname *nxt = (<span class="enscript-type">const</span> domainname *)&amp;rdb-&gt;data;
+    <span class="enscript-type">const</span> domainname *oname = rr-&gt;name; <span class="enscript-comment">// owner name
+</span>    <span class="enscript-type">int</span> ret1, subdomain1;
+    <span class="enscript-type">int</span> ret2, subdomain2;
+    <span class="enscript-type">int</span> ret3, subdomain3;
+
+    ret1 = DNSSECCanonicalOrder(oname, name, &amp;subdomain1);
+    <span class="enscript-keyword">if</span> (ret1 &gt; 0)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: owner name %##s is bigger than name %##s&quot;</span>, oname-&gt;c, name-&gt;c);
+        <span class="enscript-keyword">return</span> -1;
+    }
+
+    <span class="enscript-comment">// Section 4.1 of draft-ietf-dnsext-dnssec-bis-updates-14:
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">//   Ancestor delegation NSEC or NSEC3 RRs MUST NOT be used to assume non-
+</span>    <span class="enscript-comment">//   existence of any RRs below that zone cut, which include all RRs at
+</span>    <span class="enscript-comment">//   that (original) owner name other than DS RRs, and all RRs below that
+</span>    <span class="enscript-comment">//   owner name regardless of type.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// This also implies that we can't use the child side NSEC for DS question.
+</span>
+    <span class="enscript-keyword">if</span> (!ret1)
+    {
+        mDNSBool soa = RRAssertsExistence(rr, kDNSType_SOA);
+        mDNSBool ns = RRAssertsExistence(rr, kDNSType_NS);
+
+        <span class="enscript-comment">// We are here because the owner name is the same as &quot;name&quot;. Make sure the
+</span>        <span class="enscript-comment">// NSEC has the right NS and SOA bits set.
+</span>        <span class="enscript-keyword">if</span> (qtype != kDNSType_DS &amp;&amp; ns &amp;&amp; !soa)
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: Parent side NSEC %s can't be used for question %##s (%s)&quot;</span>,
+                      RRDisplayString(m, rr), name-&gt;c, DNSTypeName(qtype));
+            <span class="enscript-keyword">return</span> -1;
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (qtype == kDNSType_DS &amp;&amp; soa)
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: Child side NSEC %s can't be used for question %##s (%s)&quot;</span>,
+                      RRDisplayString(m, rr), name-&gt;c, DNSTypeName(qtype));
+            <span class="enscript-keyword">return</span> -1;
+        }
+        LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: owner name %##s is same as name %##s&quot;</span>, oname-&gt;c, name-&gt;c);
+        <span class="enscript-keyword">return</span> 1;
+    }
+
+    <span class="enscript-comment">// If the name is a.b.com and NSEC's owner name is b.com i.e., a subdomain
+</span>    <span class="enscript-comment">// and nsec comes from the parent (NS is set and SOA is not set), then this
+</span>    <span class="enscript-comment">// NSEC can't be used for names below the owner name.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// Similarly if DNAME is set, we can't use it here. See RFC2672-bis-dname
+</span>    <span class="enscript-comment">// appendix.
+</span>    <span class="enscript-keyword">if</span> (subdomain1 &amp;&amp; (RRAssertsExistence(rr, kDNSType_DNAME) ||
+                       (RRAssertsNonexistence(rr, kDNSType_SOA) &amp;&amp; RRAssertsExistence(rr, kDNSType_NS))))
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: NSEC %s comes from the parent, can't use it here&quot;</span>,
+                  RRDisplayString(m, rr));
+        <span class="enscript-keyword">return</span> -1;
+    }
+
+    <span class="enscript-comment">// At this stage, we know that name is greater than the owner name and
+</span>    <span class="enscript-comment">// the nsec is not from the parent side.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// Compare with the next field in the nsec.
+</span>    <span class="enscript-comment">//
+</span>    ret2 = DNSSECCanonicalOrder(name, nxt, &amp;subdomain2);
+
+    <span class="enscript-comment">// Exact match with the nsec next name
+</span>    <span class="enscript-keyword">if</span> (!ret2)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: name %##s is same as nxt name %##s&quot;</span>, name-&gt;c, nxt-&gt;c);
+        <span class="enscript-keyword">return</span> 1;
+    }
+
+    ret3 = DNSSECCanonicalOrder(oname, nxt, &amp;subdomain3);
+
+    <span class="enscript-keyword">if</span> (!ret3)
+    {
+        <span class="enscript-comment">// Pathological case of a single name in the domain. This means only the
+</span>        <span class="enscript-comment">// apex of the zone itself exists. Nothing below it. &quot;subdomain2&quot; indicates
+</span>        <span class="enscript-comment">// that name is a subdmain of &quot;next&quot; and hence below the zone.
+</span>        <span class="enscript-keyword">if</span> (subdomain2)
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: owner name %##s subdomain of nxt name %##s&quot;</span>, oname-&gt;c, nxt-&gt;c);
+            <span class="enscript-keyword">return</span> 0;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: Single name in zone, owner name %##s is same as nxt name %##s&quot;</span>, oname-&gt;c, nxt-&gt;c);
+            <span class="enscript-keyword">return</span> -1;
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (ret3 &lt; 0)
+    {
+        <span class="enscript-comment">// Regular NSEC in the zone. Make sure that the &quot;name&quot; lies within
+</span>        <span class="enscript-comment">// oname and next. oname &lt; name and name &lt; next
+</span>        <span class="enscript-keyword">if</span> (ret1 &lt; 0 &amp;&amp; ret2 &lt; 0)
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: Normal NSEC name %##s lies within owner %##s and nxt name %##s&quot;</span>,
+                      name-&gt;c, oname-&gt;c, nxt-&gt;c);
+            <span class="enscript-keyword">return</span> 0;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: Normal NSEC name %##s does not lie within owner %##s and nxt name %##s&quot;</span>,
+                      name-&gt;c, oname-&gt;c, nxt-&gt;c);
+            <span class="enscript-keyword">return</span> -1;
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-comment">// Last NSEC in the zone. The &quot;next&quot; is pointing to the apex. All names
+</span>        <span class="enscript-comment">// should be a subdomain of that and the name should be bigger than
+</span>        <span class="enscript-comment">// oname
+</span>        <span class="enscript-keyword">if</span> (ret1 &lt; 0 &amp;&amp; subdomain2)
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: Last NSEC name %##s lies within owner %##s and nxt name %##s&quot;</span>,
+                      name-&gt;c, oname-&gt;c, nxt-&gt;c);
+            <span class="enscript-keyword">return</span> 0;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: Last NSEC name %##s does not lie within owner %##s and nxt name %##s&quot;</span>,
+                      name-&gt;c, oname-&gt;c, nxt-&gt;c);
+            <span class="enscript-keyword">return</span> -1;
+        }
+    }
+
+    LogDNSSEC(<span class="enscript-string">&quot;NSECNameExists: NSEC %s did not match any case&quot;</span>, RRDisplayString(m, rr));
+    <span class="enscript-keyword">return</span> -1;
+}
+
+<span class="enscript-comment">// If the answer was result of a wildcard match, then this function proves
+</span><span class="enscript-comment">// that a proper wildcard was used to answer the question and that the
+</span><span class="enscript-comment">// original name does not exist
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">WildcardAnswerProof</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv)
+{
+    CacheRecord *ncr;
+    CacheRecord **rp;
+    <span class="enscript-type">const</span> domainname *ce;
+    DNSQuestion q;
+    CacheRecord **nsec3 = mDNSNULL;
+
+    LogDNSSEC(<span class="enscript-string">&quot;WildcardAnswerProof: Question %##s (%s)&quot;</span>, dv-&gt;origName.c, DNSTypeName(dv-&gt;origType));
+    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// RFC 4035: Section 3.1.3.3
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// 1) We used a wildcard because the qname does not exist, so verify
+</span>    <span class="enscript-comment">//    that the qname does not exist
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// 2) Is the wildcard the right one ?
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// Unfortunately, this is not well explained in that section. Refer to
+</span>    <span class="enscript-comment">// RFC 5155 section 7.2.6.
+</span>
+    <span class="enscript-comment">// Walk the list of nsecs we received and see if they prove that
+</span>    <span class="enscript-comment">// the name does not exist
+</span>
+    mDNSPlatformMemZero(&amp;q, <span class="enscript-keyword">sizeof</span>(DNSQuestion));
+    q.ThisQInterval = -1;
+    InitializeQuestion(m, &amp;q, dv-&gt;InterfaceID, &amp;dv-&gt;origName, dv-&gt;origType, mDNSNULL, mDNSNULL);
+
+    ncr = NSECParentForQuestion(m, &amp;q);
+    <span class="enscript-keyword">if</span> (!ncr)
+    {
+        LogMsg(<span class="enscript-string">&quot;WildcardAnswerProof: Can't find NSEC Parent for %##s (%s)&quot;</span>, q.qname.c, DNSTypeName(q.qtype));
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;WildcardAnswerProof: found %s&quot;</span>, CRDisplayString(m, ncr));
+    }
+    rp = &amp;(ncr-&gt;nsec);
+    <span class="enscript-keyword">while</span> (*rp)
+    {
+        <span class="enscript-keyword">if</span> ((*rp)-&gt;resrec.rrtype == kDNSType_NSEC)
+        {
+            CacheRecord *cr = *rp;
+            <span class="enscript-keyword">if</span> (!NSECNameExists(m, &amp;cr-&gt;resrec, &amp;dv-&gt;origName, dv-&gt;origType))
+                <span class="enscript-keyword">break</span>;
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((*rp)-&gt;resrec.rrtype == kDNSType_NSEC3)
+        {
+            nsec3 = rp;
+        }
+        rp=&amp;(*rp)-&gt;next;
+    }
+    <span class="enscript-keyword">if</span> (!(*rp))
+    {
+        mDNSBool ret = mDNSfalse;
+        <span class="enscript-keyword">if</span> (nsec3)
+        {
+            ret = NSEC3WildcardAnswerProof(m, ncr, dv);
+        }
+        <span class="enscript-keyword">if</span> (!ret)
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;WildcardAnswerProof: NSEC3 wildcard proof failed for %##s (%s)&quot;</span>, q.qname.c, DNSTypeName(q.qtype));
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+        }
+        rp = nsec3;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        ce = NSECClosestEncloser(&amp;((*rp)-&gt;resrec), &amp;dv-&gt;origName);
+        <span class="enscript-keyword">if</span> (!ce)
+        {
+            LogMsg(<span class="enscript-string">&quot;WildcardAnswerProof: ERROR!! Closest Encloser NULL for %##s (%s)&quot;</span>, q.qname.c, DNSTypeName(q.qtype));
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+        }
+        <span class="enscript-keyword">if</span> (!SameDomainName(ce, dv-&gt;wildcardName))
+        {
+            LogMsg(<span class="enscript-string">&quot;WildcardAnswerProof: ERROR!! Closest Encloser %##s does not match wildcard name %##s&quot;</span>, q.qname.c, dv-&gt;wildcardName-&gt;c);
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+        }
+    }
+
+    VerifyNSEC(m, &amp;((*rp)-&gt;resrec), mDNSNULL, dv, ncr, mDNSNULL);
+    <span class="enscript-keyword">return</span>;
+<span class="enscript-reference">error</span>:
+    dv-&gt;DVCallback(m, dv, DNSSEC_Bogus);
+}
+
+<span class="enscript-comment">// We have a NSEC. Need to see if it proves that NODATA exists for the given name. Note that this
+</span><span class="enscript-comment">// function does not prove anything as proof may require more than one NSEC and this function
+</span><span class="enscript-comment">// processes only one NSEC at a time.
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// Returns mDNSfalse if the NSEC does not prove the NODATA error
+</span><span class="enscript-comment">// Returns mDNStrue if the NSEC proves the NODATA error
+</span><span class="enscript-comment">//
+</span>mDNSlocal mDNSBool <span class="enscript-function-name">NSECNoDataError</span>(mDNS *<span class="enscript-type">const</span> m, ResourceRecord *rr, domainname *name, mDNSu16 qtype, domainname **wildcard)
+{
+    <span class="enscript-type">const</span> domainname *oname = rr-&gt;name; <span class="enscript-comment">// owner name
+</span>
+    *wildcard = mDNSNULL;
+    <span class="enscript-comment">// RFC 4035
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// section 3.1.3.1 : Name matches. Prove that the type does not exist and also CNAME is
+</span>    <span class="enscript-comment">// not set as in that case CNAME should have been returned ( CNAME part is mentioned in
+</span>    <span class="enscript-comment">// section 4.3 of dnssec-bis-updates.) Without the CNAME check, a positive response can
+</span>    <span class="enscript-comment">// be converted to a NODATA/NOERROR response.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// section 3.1.3.4 : No exact match for the name but there is a wildcard that could match
+</span>    <span class="enscript-comment">// the name but not the type. There are two NSECs in this case. One of them is a wildcard
+</span>    <span class="enscript-comment">// NSEC and another NSEC proving that the qname does not exist. We are called with one
+</span>    <span class="enscript-comment">// NSEC at a time. We return what we matched and the caller should decide whether all
+</span>    <span class="enscript-comment">// conditions are met for the proof.
+</span>    <span class="enscript-keyword">if</span> (SameDomainName(oname, name))
+    {
+        mDNSBool soa = RRAssertsExistence(rr, kDNSType_SOA);
+        mDNSBool ns = RRAssertsExistence(rr, kDNSType_NS);
+        <span class="enscript-keyword">if</span> (qtype != kDNSType_DS)
+        {
+            <span class="enscript-comment">// For non-DS type questions, we don't want to use the parent side records to
+</span>            <span class="enscript-comment">// answer it
+</span>            <span class="enscript-keyword">if</span> (ns &amp;&amp; !soa)
+            {
+                LogDNSSEC(<span class="enscript-string">&quot;NSECNoDataError: Parent side NSEC %s, can't use for child qname %##s (%s)&quot;</span>,
+                          RRDisplayString(m, rr), name-&gt;c, DNSTypeName(qtype));
+                <span class="enscript-keyword">return</span> mDNSfalse;
+            }
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-keyword">if</span> (soa)
+            {
+                LogDNSSEC(<span class="enscript-string">&quot;NSECNoDataError: Child side NSEC %s, can't use for parent qname %##s (%s)&quot;</span>,
+                          RRDisplayString(m, rr), name-&gt;c, DNSTypeName(qtype));
+                <span class="enscript-keyword">return</span> mDNSfalse;
+            }
+        }
+        <span class="enscript-keyword">if</span> (RRAssertsExistence(rr, qtype) || RRAssertsExistence(rr, kDNSType_CNAME))
+        {
+            LogMsg(<span class="enscript-string">&quot;NSECNoDataError: ERROR!! qtype %s exists in %s&quot;</span>, DNSTypeName(qtype), RRDisplayString(m, rr));
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+        LogDNSSEC(<span class="enscript-string">&quot;NSECNoDataError: qype %s does not exist in %s&quot;</span>, DNSTypeName(qtype), RRDisplayString(m, rr));
+        <span class="enscript-keyword">return</span> mDNStrue;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-comment">// Name does not exist. Before we check for a wildcard match, make sure that
+</span>        <span class="enscript-comment">// this is not an ENT.
+</span>        <span class="enscript-keyword">if</span> (NSECAnswersENT(rr, name))
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;NSECNoDataError: name %##s exists %s&quot;</span>, name-&gt;c, RRDisplayString(m, rr));
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+
+        <span class="enscript-comment">// Wildcard check. If this is a wildcard NSEC, then check to see if we could
+</span>        <span class="enscript-comment">// have answered the question using this wildcard and it should not have the
+</span>        <span class="enscript-comment">// &quot;qtype&quot; passed in with its bitmap.
+</span>        <span class="enscript-comment">//
+</span>        <span class="enscript-comment">// See RFC 4592, on how wildcards are used to synthesize answers. Find the
+</span>        <span class="enscript-comment">// closest encloser and the qname should be a subdomain i.e if the wildcard
+</span>        <span class="enscript-comment">// is *.x.example, x.example is the closest encloser and the qname should be
+</span>        <span class="enscript-comment">// a subdomain e.g., y.x.example or z.y.x.example and so on.
+</span>        <span class="enscript-keyword">if</span> (oname-&gt;c[0] == 1 &amp;&amp; oname-&gt;c[1] == <span class="enscript-string">'*'</span>)
+        {
+            <span class="enscript-type">int</span> s;
+            <span class="enscript-type">const</span> domainname *ce = SkipLeadingLabels(oname, 1);
+
+            DNSSECCanonicalOrder(name, ce, &amp;s);
+            <span class="enscript-keyword">if</span> (s)
+            {
+                <span class="enscript-keyword">if</span> (RRAssertsExistence(rr, qtype) || RRAssertsExistence(rr, kDNSType_CNAME))
+                {
+                    LogMsg(<span class="enscript-string">&quot;NSECNoDataError: ERROR!! qtype %s exists in wildcard %s&quot;</span>, DNSTypeName(qtype), RRDisplayString(m, rr));
+                    <span class="enscript-keyword">return</span> mDNSfalse;
+                }
+                <span class="enscript-keyword">if</span> (qtype == kDNSType_DS &amp;&amp; RRAssertsExistence(rr, kDNSType_SOA))
+                {
+                    LogDNSSEC(<span class="enscript-string">&quot;NSECNoDataError: Child side wildcard NSEC %s, can't use for parent qname %##s (%s)&quot;</span>,
+                              RRDisplayString(m, rr), name-&gt;c, DNSTypeName(qtype));
+                    <span class="enscript-keyword">return</span> mDNSfalse;
+                }
+                <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (qtype != kDNSType_DS &amp;&amp; RRAssertsNonexistence(rr, kDNSType_SOA) &amp;&amp;
+                    RRAssertsExistence(rr, kDNSType_NS))
+                {
+                    <span class="enscript-comment">// Don't use the parent side record for this
+</span>                    LogDNSSEC(<span class="enscript-string">&quot;NSECNoDataError: Parent side wildcard NSEC %s, can't use for child qname %##s (%s)&quot;</span>,
+                              RRDisplayString(m, rr), name-&gt;c, DNSTypeName(qtype));
+                    <span class="enscript-keyword">return</span> mDNSfalse;
+                }
+                *wildcard = (domainname *)ce;
+                LogDNSSEC(<span class="enscript-string">&quot;NSECNoDataError: qtype %s does not exist in wildcard %s&quot;</span>, DNSTypeName(qtype), RRDisplayString(m, rr));
+                <span class="enscript-keyword">return</span> mDNStrue;
+            }
+        }
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">NoDataNSECCallback</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, DNSSECStatus status)
+{
+    RRVerifier *rv;
+    DNSSECVerifier *pdv;
+    CacheRecord *ncr;
+
+    LogDNSSEC(<span class="enscript-string">&quot;NoDataNSECCallback: called&quot;</span>);
+    <span class="enscript-keyword">if</span> (!dv-&gt;parent)
+    {
+        LogMsg(<span class="enscript-string">&quot;NoDataNSECCCallback: no parent DV&quot;</span>);
+        FreeDNSSECVerifier(m, dv);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (dv-&gt;ac)
+    {
+        <span class="enscript-comment">// Before we free the &quot;dv&quot;, we need to update the
+</span>        <span class="enscript-comment">// parent with our AuthChain information
+</span>        UpdateParent(dv);
+    }
+
+    pdv = dv-&gt;parent;
+
+    <span class="enscript-comment">// We don't care about the &quot;dv&quot; that was allocated in VerifyNSEC
+</span>    <span class="enscript-comment">// as it just verifies one of the nsecs. Get the original verifier and
+</span>    <span class="enscript-comment">// verify the other NSEC like we did the first time.
+</span>    dv-&gt;parent = mDNSNULL;
+    FreeDNSSECVerifier(m, dv);
+
+    <span class="enscript-keyword">if</span> (status != DNSSEC_Secure)
+    {
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+
+    ncr = NSECParentForQuestion(m, &amp;pdv-&gt;q);
+    <span class="enscript-keyword">if</span> (!ncr)
+    {
+        LogMsg(<span class="enscript-string">&quot;NoDataNSECCallback: Can't find NSEC Parent for %##s (%s)&quot;</span>, pdv-&gt;q.qname.c, DNSTypeName(pdv-&gt;q.qtype));
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+    rv = pdv-&gt;pendingNSEC;
+    pdv-&gt;pendingNSEC = rv-&gt;next;
+    <span class="enscript-comment">// We might have more than one pendingNSEC in the case of NSEC3. If this is the last one,
+</span>    <span class="enscript-comment">// we don't need to come back here; let the regular NSECCallback call the original callback.
+</span>    rv-&gt;next = mDNSNULL;
+    LogDNSSEC(<span class="enscript-string">&quot;NoDataNSECCallback: Verifying %##s (%s)&quot;</span>, rv-&gt;name.c, DNSTypeName(rv-&gt;rrtype));
+    <span class="enscript-keyword">if</span> (!pdv-&gt;pendingNSEC)
+        VerifyNSEC(m, mDNSNULL, rv, pdv, ncr, mDNSNULL);
+    <span class="enscript-keyword">else</span>
+        VerifyNSEC(m, mDNSNULL, rv, pdv, ncr, NoDataNSECCallback);
+    <span class="enscript-keyword">return</span>;
+
+<span class="enscript-reference">error</span>:
+    pdv-&gt;DVCallback(m, pdv, status);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">NameErrorNSECCallback</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, DNSSECStatus status)
+{
+    RRVerifier *rv;
+    DNSSECVerifier *pdv;
+    CacheRecord *ncr;
+
+    LogDNSSEC(<span class="enscript-string">&quot;NameErrorNSECCallback: called&quot;</span>);
+    <span class="enscript-keyword">if</span> (!dv-&gt;parent)
+    {
+        LogMsg(<span class="enscript-string">&quot;NameErrorNSECCCallback: no parent DV&quot;</span>);
+        FreeDNSSECVerifier(m, dv);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (dv-&gt;ac)
+    {
+        <span class="enscript-comment">// Before we free the &quot;dv&quot;, we need to update the
+</span>        <span class="enscript-comment">// parent with our AuthChain information
+</span>        UpdateParent(dv);
+    }
+
+    pdv = dv-&gt;parent;
+    <span class="enscript-comment">// We don't care about the &quot;dv&quot; that was allocated in VerifyNSEC
+</span>    <span class="enscript-comment">// as it just verifies one of the nsecs. Get the original verifier and
+</span>    <span class="enscript-comment">// verify the other NSEC like we did the first time.
+</span>    dv-&gt;parent = mDNSNULL;
+    FreeDNSSECVerifier(m, dv);
+
+    <span class="enscript-keyword">if</span> (status != DNSSEC_Secure)
+    {
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+
+    ncr = NSECParentForQuestion(m, &amp;pdv-&gt;q);
+    <span class="enscript-keyword">if</span> (!ncr)
+    {
+        LogMsg(<span class="enscript-string">&quot;NameErrorNSECCallback: Can't find NSEC Parent for %##s (%s)&quot;</span>, pdv-&gt;q.qname.c, DNSTypeName(pdv-&gt;q.qtype));
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+    rv = pdv-&gt;pendingNSEC;
+    pdv-&gt;pendingNSEC = rv-&gt;next;
+    <span class="enscript-comment">// We might have more than one pendingNSEC in the case of NSEC3. If this is the last one,
+</span>    <span class="enscript-comment">// we don't need to come back here; let the regular NSECCallback call the original callback.
+</span>    rv-&gt;next = mDNSNULL;
+    LogDNSSEC(<span class="enscript-string">&quot;NameErrorNSECCallback: Verifying %##s (%s)&quot;</span>, rv-&gt;name.c, DNSTypeName(rv-&gt;rrtype));
+    <span class="enscript-keyword">if</span> (!pdv-&gt;pendingNSEC)
+        VerifyNSEC(m, mDNSNULL, rv, pdv, ncr, mDNSNULL);
+    <span class="enscript-keyword">else</span>
+        VerifyNSEC(m, mDNSNULL, rv, pdv, ncr, NameErrorNSECCallback);
+
+    <span class="enscript-keyword">return</span>;
+
+<span class="enscript-reference">error</span>:
+    pdv-&gt;DVCallback(m, pdv, status);
+}
+
+<span class="enscript-comment">// We get a NODATA error with no records in answer section. This proves
+</span><span class="enscript-comment">// that qname does not exist.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">NoDataProof</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, CacheRecord *ncr)
+{
+    CacheRecord **rp;
+    domainname *wildcard = mDNSNULL;
+    <span class="enscript-type">const</span> domainname *ce = mDNSNULL;
+    ResourceRecord *nsec_wild = mDNSNULL;
+    ResourceRecord *nsec_noname = mDNSNULL;
+
+    <span class="enscript-comment">// NODATA Error could mean two things. The name exists with no type or there is a
+</span>    <span class="enscript-comment">// wildcard that matches the name but no type. This is done by NSECNoDataError.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// If it is the case of wildcard, there are two NSECs. One is the wildcard NSEC and
+</span>    <span class="enscript-comment">// the other NSEC to prove that there is no other closer match.
+</span>
+    wildcard = mDNSNULL;
+    rp = &amp;(ncr-&gt;nsec);
+    <span class="enscript-keyword">while</span> (*rp)
+    {
+        <span class="enscript-keyword">if</span> ((*rp)-&gt;resrec.rrtype == kDNSType_NSEC)
+        {
+            CacheRecord *cr = *rp;
+            <span class="enscript-keyword">if</span> (NSECNoDataError(m, &amp;cr-&gt;resrec, &amp;dv-&gt;q.qname, dv-&gt;q.qtype, &amp;wildcard))
+            {
+                <span class="enscript-keyword">if</span> (wildcard)
+                {
+                    dv-&gt;flags |= WILDCARD_PROVES_NONAME_EXISTS;
+                    LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: NSEC %s proves NODATA error for %##s (%s)&quot;</span>,
+                              RRDisplayString(m, &amp;(*rp)-&gt;resrec), dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+                }
+                <span class="enscript-keyword">else</span>
+                {
+                    dv-&gt;flags |= NSEC_PROVES_NOTYPE_EXISTS;
+                    LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: NSEC %s proves NOTYPE error for %##s (%s)&quot;</span>,
+                              RRDisplayString(m, &amp;(*rp)-&gt;resrec), dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+                }
+                nsec_wild = &amp;cr-&gt;resrec;
+            }
+            <span class="enscript-keyword">if</span> (!NSECNameExists(m, &amp;cr-&gt;resrec, &amp;dv-&gt;q.qname, dv-&gt;q.qtype))
+            {
+                LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: NSEC %s proves that  name %##s (%s) does not exist&quot;</span>,
+                          RRDisplayString(m, &amp;(*rp)-&gt;resrec), dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+                <span class="enscript-comment">// If we have a wildcard, then we should check to see if the closest
+</span>                <span class="enscript-comment">// encloser is the same as the wildcard.
+</span>                ce = NSECClosestEncloser(&amp;cr-&gt;resrec, &amp;dv-&gt;q.qname);
+                dv-&gt;flags |= NSEC_PROVES_NONAME_EXISTS;
+                nsec_noname = &amp;cr-&gt;resrec;
+            }
+        }
+        rp=&amp;(*rp)-&gt;next;
+    }
+    <span class="enscript-keyword">if</span> (!nsec_noname &amp;&amp; !nsec_wild)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: No valid NSECs for %##s (%s)&quot;</span>, dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+    <span class="enscript-comment">// If the type exists, then we have to verify just that NSEC
+</span>    <span class="enscript-keyword">if</span> (!(dv-&gt;flags &amp; NSEC_PROVES_NOTYPE_EXISTS))
+    {
+        <span class="enscript-comment">// If we have a wildcard, then we should have a &quot;ce&quot; which matches the wildcard
+</span>        <span class="enscript-comment">// If we don't have a wildcard, then we should have proven that the name does not
+</span>        <span class="enscript-comment">// exist which means we would have set the &quot;ce&quot;.
+</span>        <span class="enscript-keyword">if</span> (wildcard &amp;&amp; !ce)
+        {
+            LogMsg(<span class="enscript-string">&quot;NoDataProof: Cannot prove that the name %##s (%s) does not exist&quot;</span>, dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+        }
+        <span class="enscript-keyword">if</span> (wildcard &amp;&amp; !SameDomainName(wildcard, ce))
+        {
+            LogMsg(<span class="enscript-string">&quot;NoDataProof: wildcard %##s does not match closest encloser %##s&quot;</span>, wildcard-&gt;c, ce-&gt;c);
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+        }
+        <span class="enscript-comment">// If a single NSEC can prove both, then we just have validate that one NSEC.
+</span>        <span class="enscript-keyword">if</span> (nsec_wild == nsec_noname)
+        {
+            nsec_noname = mDNSNULL;
+            dv-&gt;flags &amp;= ~NSEC_PROVES_NONAME_EXISTS;
+        }
+    }
+
+    <span class="enscript-keyword">if</span> ((dv-&gt;flags &amp; (WILDCARD_PROVES_NONAME_EXISTS|NSEC_PROVES_NONAME_EXISTS)) ==
+        (WILDCARD_PROVES_NONAME_EXISTS|NSEC_PROVES_NONAME_EXISTS))
+    {
+        mStatus status;
+        RRVerifier *r = AllocateRRVerifier(nsec_noname, &amp;status);
+        <span class="enscript-keyword">if</span> (!r) <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+        <span class="enscript-comment">// First verify wildcard NSEC and then when we are done, we
+</span>        <span class="enscript-comment">// will verify the noname nsec
+</span>        dv-&gt;pendingNSEC = r;
+        LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: Verifying wild and noname %s&quot;</span>, nsec_wild ? RRDisplayString(m, nsec_wild) : <span class="enscript-string">&quot;NULL&quot;</span>);
+        VerifyNSEC(m, nsec_wild, mDNSNULL, dv, ncr, NoDataNSECCallback);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((dv-&gt;flags &amp; WILDCARD_PROVES_NONAME_EXISTS) ||
+             (dv-&gt;flags &amp; NSEC_PROVES_NOTYPE_EXISTS))
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: Verifying wild %s&quot;</span>, nsec_wild ? RRDisplayString(m, nsec_wild) : <span class="enscript-string">&quot;NULL&quot;</span>);
+        VerifyNSEC(m, nsec_wild, mDNSNULL, dv, ncr, mDNSNULL);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (dv-&gt;flags &amp; NSEC_PROVES_NONAME_EXISTS)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: Verifying noname %s&quot;</span>, nsec_noname ? RRDisplayString(m, nsec_noname) : <span class="enscript-string">&quot;NULL&quot;</span>);
+        VerifyNSEC(m, nsec_noname, mDNSNULL, dv, ncr, mDNSNULL);
+    }
+    <span class="enscript-keyword">return</span>;
+<span class="enscript-reference">error</span>:
+    LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: Error return&quot;</span>);
+    dv-&gt;DVCallback(m, dv, DNSSEC_Bogus);
+}
+
+mDNSlocal mDNSBool <span class="enscript-function-name">NSECNoWildcard</span>(mDNS *<span class="enscript-type">const</span> m, ResourceRecord *rr, domainname *qname, mDNSu16 qtype)
+{
+    <span class="enscript-type">const</span> domainname *ce;
+    domainname wild;
+
+    <span class="enscript-comment">// If the query name is c.x.w.example and if the name does not exist, we should get
+</span>    <span class="enscript-comment">// get a nsec back that looks something like this:
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">//      w.example NSEC a.w.example
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// First, we need to get the closest encloser which in this case is w.example. Wild
+</span>    <span class="enscript-comment">// card synthesis works by finding the closest encloser first and then look for
+</span>    <span class="enscript-comment">// a &quot;*&quot; label (assuming * label does not appear in the question). If it does not
+</span>    <span class="enscript-comment">// exists, it would return the NSEC at that name. And the wildcard name at the
+</span>    <span class="enscript-comment">// closest encloser &quot;*.w.example&quot; would be covered by such an NSEC. (Appending &quot;*&quot;
+</span>    <span class="enscript-comment">// makes it bigger than w.example and &quot;* is smaller than &quot;a&quot; for the above NSEC)
+</span>    <span class="enscript-comment">//
+</span>    ce = NSECClosestEncloser(rr, qname);
+    <span class="enscript-keyword">if</span> (!ce) { LogMsg(<span class="enscript-string">&quot;NSECNoWildcard: No closest encloser for rr %s, qname %##s (%s)&quot;</span>, qname-&gt;c, DNSTypeName(qtype)); <span class="enscript-keyword">return</span> mDNSfalse; }
+
+    wild.c[0] = 1;
+    wild.c[1] = <span class="enscript-string">'*'</span>;
+    wild.c[2] = 0;
+    <span class="enscript-keyword">if</span> (!AppendDomainName(&amp;wild, ce))
+    {
+        LogMsg(<span class="enscript-string">&quot;NSECNoWildcard: ERROR!! Can't append domainname closest encloser name %##s, qname %##s (%s)&quot;</span>, ce-&gt;c, qname-&gt;c, DNSTypeName(qtype));
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-keyword">if</span> (NSECNameExists(m, rr, &amp;wild, qtype) != 0)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NSECNoWildcard: Wildcard name %##s exists or not valid qname %##s (%s)&quot;</span>, wild.c, qname-&gt;c, DNSTypeName(qtype));
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    LogDNSSEC(<span class="enscript-string">&quot;NSECNoWildcard: Wildcard name %##s does not exist for record %s, qname %##s (%s)&quot;</span>, wild.c,
+              RRDisplayString(m, rr), qname-&gt;c, DNSTypeName(qtype));
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+<span class="enscript-comment">// We get a NXDOMAIN error with no records in answer section. This proves
+</span><span class="enscript-comment">// that qname does not exist.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">NameErrorProof</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, CacheRecord *ncr)
+{
+    CacheRecord **rp;
+    ResourceRecord *nsec_wild = mDNSNULL;
+    ResourceRecord *nsec_noname = mDNSNULL;
+    mStatus status;
+
+    <span class="enscript-comment">// NXDOMAIN Error. We need to prove that the qname does not exist and there
+</span>    <span class="enscript-comment">// is no wildcard that can be used to answer the question.
+</span>
+    rp = &amp;(ncr-&gt;nsec);
+    <span class="enscript-keyword">while</span> (*rp)
+    {
+        <span class="enscript-keyword">if</span> ((*rp)-&gt;resrec.rrtype == kDNSType_NSEC)
+        {
+            CacheRecord *cr = *rp;
+            <span class="enscript-keyword">if</span> (!NSECNameExists(m, &amp;cr-&gt;resrec, &amp;dv-&gt;q.qname, dv-&gt;q.qtype))
+            {
+                LogDNSSEC(<span class="enscript-string">&quot;NameErrorProof: NSEC %s proves name does not exist for %##s (%s)&quot;</span>,
+                          RRDisplayString(m, &amp;(*rp)-&gt;resrec), dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+                <span class="enscript-comment">// If we have a wildcard, then we should check to see if the closest
+</span>                <span class="enscript-comment">// encloser is the same as the wildcard.
+</span>                dv-&gt;flags |= NSEC_PROVES_NONAME_EXISTS;
+                nsec_noname = &amp;cr-&gt;resrec;
+            }
+            <span class="enscript-keyword">if</span> (NSECNoWildcard(m, &amp;cr-&gt;resrec, &amp;dv-&gt;q.qname, dv-&gt;q.qtype))
+            {
+                dv-&gt;flags |= WILDCARD_PROVES_NONAME_EXISTS;
+                nsec_wild = &amp;cr-&gt;resrec;
+                LogDNSSEC(<span class="enscript-string">&quot;NameErrorProof: NSEC %s proves wildcard cannot answer question for %##s (%s)&quot;</span>,
+                          RRDisplayString(m, &amp;(*rp)-&gt;resrec), dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+            }
+        }
+        rp=&amp;(*rp)-&gt;next;
+    }
+    <span class="enscript-keyword">if</span> (!nsec_noname || !nsec_wild)
+    {
+        LogMsg(<span class="enscript-string">&quot;NameErrorProof: Proof failed for %##s (%s) noname %p, wild %p&quot;</span>, dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype), nsec_noname, nsec_wild);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+    }
+
+    <span class="enscript-comment">// First verify wildcard NSEC and then when we are done, we will verify the noname nsec.
+</span>    <span class="enscript-comment">// Sometimes a single NSEC can prove both that the &quot;qname&quot; does not exist and a wildcard
+</span>    <span class="enscript-comment">// could not have produced qname. These are a few examples where this can happen.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// 1. If the zone is example.com and you look up *.example.com and if there are no wildcards,
+</span>    <span class="enscript-comment">//    you will get a NSEC back &quot;example.com NSEC a.example.com&quot;. This proves that both the
+</span>    <span class="enscript-comment">//    name does not exist and *.example.com also does not exist
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// 2. If the zone is example.com and it has a record like this:
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">//					example.com NSEC d.example.com
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// any name you lookup in between like a.example.com,b.example.com etc. you will get a single
+</span>    <span class="enscript-comment">// NSEC back. In that case we just have to verify only once.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-keyword">if</span> (nsec_wild != nsec_noname)
+    {
+        RRVerifier *r = AllocateRRVerifier(nsec_noname, &amp;status);
+        <span class="enscript-keyword">if</span> (!r) <span class="enscript-keyword">goto</span> <span class="enscript-reference">error</span>;
+        dv-&gt;pendingNSEC = r;
+        LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: Verifying wild %s&quot;</span>, RRDisplayString(m, nsec_wild));
+        VerifyNSEC(m, nsec_wild, mDNSNULL, dv, ncr, NameErrorNSECCallback);
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NoDataProof: Verifying only one %s&quot;</span>, RRDisplayString(m, nsec_wild));
+        VerifyNSEC(m, nsec_wild, mDNSNULL, dv, ncr, mDNSNULL);
+    }
+    <span class="enscript-keyword">return</span>;
+<span class="enscript-reference">error</span>:
+    dv-&gt;DVCallback(m, dv, DNSSEC_Bogus);
+}
+
+mDNSexport CacheRecord *<span class="enscript-function-name">NSECRecordIsDelegation</span>(mDNS *<span class="enscript-type">const</span> m, domainname *name, mDNSu16 qtype)
+{
+    CacheGroup *cg;
+    CacheRecord *cr;
+    mDNSu32 namehash;
+
+    namehash = DomainNameHashValue(name);
+
+    cg = CacheGroupForName(m, namehash, name);
+    <span class="enscript-keyword">if</span> (!cg)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;NSECRecordForName: cg NULL for %##s&quot;</span>, name);
+        <span class="enscript-keyword">return</span> mDNSNULL;
+    }
+    <span class="enscript-keyword">for</span> (cr = cg-&gt;members; cr; cr = cr-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (cr-&gt;resrec.RecordType == kDNSRecordTypePacketNegative &amp;&amp; cr-&gt;resrec.rrtype == qtype)
+        {
+            CacheRecord *ncr;
+            <span class="enscript-keyword">for</span> (ncr = cr-&gt;nsec; ncr; ncr = ncr-&gt;next)
+            {
+                <span class="enscript-keyword">if</span> (ncr-&gt;resrec.rrtype == kDNSType_NSEC &amp;&amp;
+                    SameDomainName(ncr-&gt;resrec.name, name))
+                {
+                    <span class="enscript-comment">// See the Insecure Delegation Proof section in dnssec-bis: DS bit and SOA bit
+</span>                    <span class="enscript-comment">// should be absent
+</span>                    <span class="enscript-keyword">if</span> (RRAssertsExistence(&amp;ncr-&gt;resrec, kDNSType_SOA) ||
+                        RRAssertsExistence(&amp;ncr-&gt;resrec, kDNSType_DS))
+                    {
+                        LogDNSSEC(<span class="enscript-string">&quot;NSECRecordForName: found record %s for %##s (%s), but DS or SOA bit set&quot;</span>, CRDisplayString(m, ncr), name,
+                            DNSTypeName(qtype));
+                        <span class="enscript-keyword">return</span> mDNSNULL;
+                    }
+                    <span class="enscript-comment">// Section 2.3 of RFC 4035 states that:
+</span>                    <span class="enscript-comment">//
+</span>                    <span class="enscript-comment">// Each owner name in the zone that has authoritative data or a delegation point NS RRset MUST
+</span>                    <span class="enscript-comment">// have an NSEC resource record. 
+</span>                    <span class="enscript-comment">//
+</span>                    <span class="enscript-comment">// So, if we have an NSEC record matching the question name with the NS bit set,
+</span>                    <span class="enscript-comment">// then this is a delegation.
+</span>                    <span class="enscript-comment">//
+</span>                    <span class="enscript-keyword">if</span> (RRAssertsExistence(&amp;ncr-&gt;resrec, kDNSType_NS))
+                    {
+                        LogDNSSEC(<span class="enscript-string">&quot;NSECRecordForName: found record %s for %##s (%s)&quot;</span>, CRDisplayString(m, ncr), name, DNSTypeName(qtype));
+                        <span class="enscript-keyword">return</span> ncr;
+                    }
+                    <span class="enscript-keyword">else</span>
+                    {
+                        LogDNSSEC(<span class="enscript-string">&quot;NSECRecordForName: found record %s for %##s (%s), but NS bit is not set&quot;</span>, CRDisplayString(m, ncr), name,
+                            DNSTypeName(qtype));
+                        <span class="enscript-keyword">return</span> mDNSNULL;
+                    }
+                }
+            }
+        }
+    }
+    <span class="enscript-keyword">return</span> mDNSNULL;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">StartInsecureProof</span>(mDNS * <span class="enscript-type">const</span> m, DNSSECVerifier *dv)
+{
+    domainname trigger;
+    DNSSECVerifier *prevdv = mDNSNULL;
+
+    <span class="enscript-comment">// Remember the name that triggered the insecure proof
+</span>    AssignDomainName(&amp;trigger, &amp;dv-&gt;q.qname);
+    <span class="enscript-keyword">while</span> (dv-&gt;parent)
+    {
+        prevdv = dv;
+        dv = dv-&gt;parent;
+    }
+    <span class="enscript-keyword">if</span> (prevdv)
+    {
+        prevdv-&gt;parent = mDNSNULL;
+        FreeDNSSECVerifier(m, prevdv);
+    }
+    <span class="enscript-comment">// For Optional DNSSEC, we are opportunistically verifying dnssec. We don't care
+</span>    <span class="enscript-comment">// if something results in bogus as we still want to deliver results to the
+</span>    <span class="enscript-comment">// application e.g., CNAME processing results in bogus because the path is broken,
+</span>    <span class="enscript-comment">// but we still want to follow CNAMEs so that we can deliver the final results to
+</span>    <span class="enscript-comment">// the application.
+</span>    <span class="enscript-keyword">if</span> (dv-&gt;ValidationRequired == DNSSEC_VALIDATION_SECURE_OPTIONAL)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;StartInsecureProof: Aborting insecure proof for %##s (%s)&quot;</span>, dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+        dv-&gt;DVCallback(m, dv, DNSSEC_Bogus);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    LogDNSSEC(<span class="enscript-string">&quot;StartInsecureProof for %##s (%s)&quot;</span>, dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+    <span class="enscript-comment">// Don't start the insecure proof again after we finish the one that we start here by
+</span>    <span class="enscript-comment">// setting InsecureProofDone.
+</span>    dv-&gt;InsecureProofDone = 1;
+    ProveInsecure(m, dv, mDNSNULL, &amp;trigger);
+    <span class="enscript-keyword">return</span>;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">ValidateWithNSECS</span>(mDNS *<span class="enscript-type">const</span> m, DNSSECVerifier *dv, CacheRecord *cr)
+{
+    LogDNSSEC(<span class="enscript-string">&quot;ValidateWithNSECS: called for %s&quot;</span>, CRDisplayString(m, cr));
+
+    <span class="enscript-comment">// If we are encountering a break in the chain of trust i.e., NSEC/NSEC3s for
+</span>    <span class="enscript-comment">// DS query, then do the insecure proof. This is important because if we
+</span>    <span class="enscript-comment">// validate these NSECs normally and prove that they are &quot;secure&quot;, we will
+</span>    <span class="enscript-comment">// end up delivering the secure result to the original question where as
+</span>    <span class="enscript-comment">// these NSEC/NSEC3s actually prove that DS does not exist and hence insecure.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// This break in the chain can happen after we have partially validated the
+</span>    <span class="enscript-comment">// path (dv-&gt;ac is non-NULL) or the first time (dv-&gt;ac is NULL) after we
+</span>    <span class="enscript-comment">// fetched the DNSKEY (dv-&gt;key is non-NULL). We don't want to do this
+</span>    <span class="enscript-comment">// if we have just started the non-existence proof (dv-&gt;key is NULL) as
+</span>    <span class="enscript-comment">// it does not indicate a break in the chain of trust.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// If we are already doing a insecurity proof, don't start another one. In
+</span>    <span class="enscript-comment">// the case of NSECs, it is possible that insecurity proof starts and it
+</span>    <span class="enscript-comment">// gets NSECs and as part of validating that we receive more NSECS in which
+</span>    <span class="enscript-comment">// case we don't want to start another insecurity proof.
+</span>    <span class="enscript-keyword">if</span> (dv-&gt;ValidationRequired != DNSSEC_VALIDATION_INSECURE &amp;&amp;
+        (!dv-&gt;parent || dv-&gt;parent-&gt;ValidationRequired != DNSSEC_VALIDATION_INSECURE))
+    {
+         <span class="enscript-keyword">if</span> ((dv-&gt;ac &amp;&amp; dv-&gt;q.qtype == kDNSType_DS) ||
+             (!dv-&gt;ac &amp;&amp; dv-&gt;key &amp;&amp; dv-&gt;q.qtype == kDNSType_DS))
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;ValidateWithNSECS: Starting insecure proof: name %##s ac %p, key %p, parent %p&quot;</span>, dv-&gt;q.qname.c,
+                dv-&gt;ac, dv-&gt;key, dv-&gt;parent);
+            StartInsecureProof(m, dv);
+            <span class="enscript-keyword">return</span>;
+        }
+    }
+    <span class="enscript-comment">// &quot;parent&quot; is set when we are validating a NSEC and we should not be here in
+</span>    <span class="enscript-comment">// the normal case when parent is set. For example, we are looking up the A
+</span>    <span class="enscript-comment">// record for www.example.com and following can happen.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// a) Record does not exist and we get a NSEC
+</span>    <span class="enscript-comment">// b) While validating (a), we get an NSEC for the first DS record that we look up
+</span>    <span class="enscript-comment">// c) Record exists but we get NSECs for the first DS record
+</span>    <span class="enscript-comment">// d) We are able to partially validate (a) or (b), but we get NSECs somewhere in
+</span>    <span class="enscript-comment">//    the chain
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// For (a), parent is not set as we are not validating the NSEC yet. Hence we would
+</span>    <span class="enscript-comment">// start the validation now.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// For (b), the parent is set, but should be caught by the above &quot;if&quot; block because we 
+</span>    <span class="enscript-comment">// should have gotten the DNSKEY at least. In the case of nested insecurity proof,
+</span>    <span class="enscript-comment">// we would end up here and fail with bogus.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// For (c), the parent is not set and should be caught by the above &quot;if&quot; block because we 
+</span>    <span class="enscript-comment">// should have gotten the DNSKEY at least.
+</span>    <span class="enscript-comment">//
+</span>    <span class="enscript-comment">// For (d), the above &quot;if&quot; block would catch it as &quot;dv-&gt;ac&quot; is non-NULL.
+</span>    <span class="enscript-comment">// 
+</span>    <span class="enscript-comment">// Hence, we should not come here in the normal case. Possible pathological cases are:
+</span>    <span class="enscript-comment">// Insecure proof getting NSECs while validating NSECs, getting NSECs for DNSKEY for (c)
+</span>    <span class="enscript-comment">// above etc.
+</span>    <span class="enscript-keyword">if</span> (dv-&gt;parent)
+    {
+        LogDNSSEC(<span class="enscript-string">&quot;ValidateWithNSECS: dv parent set for %##s (%s)&quot;</span>, dv-&gt;q.qname.c, DNSTypeName(dv-&gt;q.qtype));
+        dv-&gt;DVCallback(m, dv, DNSSEC_Bogus);
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-keyword">if</span> (cr-&gt;resrec.RecordType == kDNSRecordTypePacketNegative)
+    {
+        mDNSu8 rcode;
+        CacheRecord *neg = cr-&gt;nsec;
+        mDNSBool nsecs_seen = mDNSfalse;
+
+        <span class="enscript-keyword">while</span> (neg)
+        {
+            <span class="enscript-comment">// The list can only have NSEC or NSEC3s. This was checked when we added the
+</span>            <span class="enscript-comment">// NSECs to the cache record.
+</span>            <span class="enscript-keyword">if</span> (neg-&gt;resrec.rrtype == kDNSType_NSEC)
+                nsecs_seen = mDNStrue;
+            LogDNSSEC(<span class="enscript-string">&quot;ValidateWithNSECS: NSECCached Record %s&quot;</span>, CRDisplayString(m, neg));
+            neg = neg-&gt;next;
+        }
+
+        rcode = (mDNSu8)(cr-&gt;responseFlags.b[1] &amp; kDNSFlag1_RC_Mask);
+        <span class="enscript-keyword">if</span> (rcode == kDNSFlag1_RC_NoErr)
+        {
+            <span class="enscript-keyword">if</span> (nsecs_seen)
+                NoDataProof(m, dv, cr);
+            <span class="enscript-keyword">else</span>
+                NSEC3NoDataProof(m, dv, cr);
+        }
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (rcode == kDNSFlag1_RC_NXDomain)
+        {
+            <span class="enscript-keyword">if</span> (nsecs_seen)
+                NameErrorProof(m, dv, cr);
+            <span class="enscript-keyword">else</span>
+                NSEC3NameErrorProof(m, dv, cr);
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogDNSSEC(<span class="enscript-string">&quot;ValidateWithNSECS: Rcode %d invalid&quot;</span>, rcode);
+            dv-&gt;DVCallback(m, dv, DNSSEC_Bogus);
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogMsg(<span class="enscript-string">&quot;ValidateWithNSECS: Not a valid cache record %s for NSEC proofs&quot;</span>, CRDisplayString(m, cr));
+        dv-&gt;DVCallback(m, dv, DNSSEC_Bogus);
+        <span class="enscript-keyword">return</span>;
+    }
+}
+
+#<span class="enscript-reference">else</span> // !<span class="enscript-variable-name">DNSSEC_DISABLED</span>
+
+mDNSexport mDNSBool <span class="enscript-function-name">AddNSECSForCacheRecord</span>(mDNS *<span class="enscript-type">const</span> m, CacheRecord *crlist, CacheRecord *negcr, mDNSu8 rcode)
+{
+    (<span class="enscript-type">void</span>)m;
+    (<span class="enscript-type">void</span>)crlist;
+    (<span class="enscript-type">void</span>)negcr;
+    (<span class="enscript-type">void</span>)rcode;
+
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+#<span class="enscript-reference">endif</span> // !<span class="enscript-variable-name">DNSSEC_DISABLED</span>
+</pre>
+<hr />
+</body></html>

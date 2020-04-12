@@ -1,0 +1,1514 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>BLE.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">BLE.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="BLE.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2015-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">ENABLE_BLE_TRIGGERED_BONJOUR</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;BLE.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;D2D.h&quot;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;dlfcn.h&gt;</span>
+
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Browse</span> <span class="enscript-variable-name">and</span> <span class="enscript-variable-name">Registration</span> <span class="enscript-variable-name">Request</span> <span class="enscript-variable-name">Handling</span>
+
+<span class="enscript-comment">// When set, enables BLE triggered discovery APIs.
+</span>mDNSBool EnableBLEBasedDiscovery = mDNSfalse;
+
+<span class="enscript-comment">// When set, the default mode is to promote all client requests made with 
+</span><span class="enscript-comment">// kDNSServiceInterfaceIndexAny to BLE Triggered Discovery.
+</span><span class="enscript-comment">// Requests to promote will be filtered by either a service type whitelist or
+</span><span class="enscript-comment">// blacklist as noted below.
+</span>mDNSBool DefaultToBLETriggered = mDNSfalse;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">USE_WHITELIST</span> 1
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">USE_WHITELIST</span>
+
+<span class="enscript-comment">// Current list of service types that will have BLE triggers applied by default
+</span><span class="enscript-comment">// when DefaultToBLETriggered is set to true.
+</span>
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> * defaultServiceWhitelist[] = {
+    <span class="enscript-string">&quot;\x04_ssh&quot;</span>,
+    <span class="enscript-string">&quot;\x04_smb&quot;</span>,
+    <span class="enscript-string">&quot;\x04_rfb&quot;</span>,
+    <span class="enscript-string">&quot;\x04_ipp&quot;</span>,
+    <span class="enscript-string">&quot;\x05_ipps&quot;</span>,
+    <span class="enscript-string">&quot;\x08_printer&quot;</span>,
+    0
+};
+
+<span class="enscript-comment">// Return true if DefaultToBLETriggered is set and the operation should be
+</span><span class="enscript-comment">// promoted to use BLE triggered discovery by default.
+</span>bool <span class="enscript-function-name">shouldUseBLE</span>(mDNSInterfaceID interfaceID, DNS_TypeValues rrtype, domainname *serviceType, domainname *domain)
+{
+    <span class="enscript-type">const</span> mDNSu8 ** ptr;
+
+    <span class="enscript-keyword">if</span> (!DefaultToBLETriggered || (interfaceID != mDNSInterface_Any) || !IsLocalDomain(domain))
+        <span class="enscript-keyword">return</span> mDNSfalse;
+
+    <span class="enscript-comment">// Address records don't have a service type to match on, but we'll trigger them
+</span>    <span class="enscript-comment">// here to support the case were the DNSServiceQueryRecord() was done using mDNSInterface_Any instead
+</span>    <span class="enscript-comment">// of the interface that the corresponding SRV record was returned over.
+</span>    <span class="enscript-keyword">if</span> ((rrtype == kDNSType_A) || (rrtype == kDNSType_AAAA))
+            <span class="enscript-keyword">return</span> mDNStrue;
+
+    ptr = (<span class="enscript-type">const</span> mDNSu8 **) defaultServiceWhitelist;
+    <span class="enscript-keyword">while</span> (*ptr)
+    {
+        <span class="enscript-keyword">if</span> (SameDomainLabel(*ptr, serviceType-&gt;c))
+            <span class="enscript-keyword">return</span> mDNStrue;
+        ptr++;
+    }
+
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+#<span class="enscript-reference">else</span> // <span class="enscript-variable-name">USE_WHITELIST</span>
+
+<span class="enscript-comment">// Current list of service types that will NOT have BLE triggers applied by default
+</span><span class="enscript-comment">// when DefaultToBLETriggered is set to true.
+</span>
+<span class="enscript-comment">// _airplay and _airdrop discovery already employ BLE based triggering using Apple service specific
+</span><span class="enscript-comment">// BLE beacons.  The rest of the entries here are default browses run in a standard OSX install
+</span><span class="enscript-comment">// that we don't want to have cluttering up the Bloom filter when using the service blacklist approach.
+</span>
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> * defaultServiceBlacklist[] = {
+    <span class="enscript-string">&quot;\x08_airplay&quot;</span>,
+    <span class="enscript-string">&quot;\x08_airdrop&quot;</span>,
+    <span class="enscript-string">&quot;\x05_raop&quot;</span>,
+    <span class="enscript-string">&quot;\x08_airport&quot;</span>,
+    <span class="enscript-string">&quot;\x0d_apple-mobdev&quot;</span>,
+    <span class="enscript-string">&quot;\x06_uscan&quot;</span>,
+    <span class="enscript-string">&quot;\x07_uscans&quot;</span>,
+    <span class="enscript-string">&quot;\x08_scanner&quot;</span>,
+    <span class="enscript-string">&quot;\x0e_apple-mobdev2&quot;</span>,
+    <span class="enscript-string">&quot;\x04_ipp&quot;</span>,
+    <span class="enscript-string">&quot;\x05_ipps&quot;</span>,
+    <span class="enscript-string">&quot;\x07_ippusb&quot;</span>,
+    <span class="enscript-string">&quot;\x08_printer&quot;</span>,
+    <span class="enscript-string">&quot;\x0f_pdl-datastream&quot;</span>,
+    <span class="enscript-string">&quot;\x04_ptp&quot;</span>,
+    0
+};
+
+<span class="enscript-comment">// Return true if DefaultToBLETriggered is set and the operation should be
+</span><span class="enscript-comment">// promoted to use BLE triggered discovery by default.
+</span>bool <span class="enscript-function-name">shouldUseBLE</span>(mDNSInterfaceID interfaceID,  DNS_TypeValues rrtype, domainname *serviceType, domainname *domain)
+{
+    (<span class="enscript-type">void</span>) rrtype;
+    <span class="enscript-type">const</span> mDNSu8 ** ptr;
+
+    <span class="enscript-keyword">if</span> (!DefaultToBLETriggered || (interfaceID != mDNSInterface_Any) || !IsLocalDomain(domain))
+        <span class="enscript-keyword">return</span> mDNSfalse;
+
+    ptr = (<span class="enscript-type">const</span> mDNSu8 **) defaultServiceBlacklist;
+    <span class="enscript-keyword">while</span> (*ptr)
+    {
+        <span class="enscript-keyword">if</span> (SameDomainLabel(*ptr, serviceType-&gt;c))
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        ptr++;
+    }
+
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">USE_WHITELIST</span>
+
+<span class="enscript-comment">// Structure for linked list of BLE responses received that match
+</span><span class="enscript-comment">// a given client request.
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> matchingResponses 
+{
+    <span class="enscript-type">struct</span> matchingResponses * next;
+    <span class="enscript-type">void</span> * response;
+} matchingResponses_t;
+
+<span class="enscript-comment">// Max size of input key generated by DNSNameCompressionBuildLHS() is MAX_DOMAIN_NAME + 3
+</span><span class="enscript-comment">// where the three additional bytes are:
+</span><span class="enscript-comment">// two bytes for DNS_TypeValues and one byte for &quot;compression_packet_v1&quot;, the D2D compression version number.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_KEY_SIZE</span>    MAX_DOMAIN_NAME + 3
+
+<span class="enscript-comment">// Initially used for both the browse and registration lists.
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> requestList
+{
+    <span class="enscript-type">struct</span> requestList  * next;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span>        refCount;
+    domainname          name;
+    mDNSu16             type;
+    DNSServiceFlags     flags;
+    mDNSInterfaceID     InterfaceID;
+    serviceHash_t       browseHash;
+    serviceHash_t       registeredHash;
+    matchingResponses_t * ourResponses;
+    bool                triggeredOnAWDL;
+
+    <span class="enscript-comment">// The following fields are only used for browse requests currently
+</span>    mDNSu8              key[MAX_KEY_SIZE];
+    size_t              keySize;
+
+    <span class="enscript-comment">// The following fields are only used for registration requests currently
+</span>    <span class="enscript-type">const</span> ResourceRecord    * resourceRecord;
+} requestList_t;
+
+<span class="enscript-comment">// Lists for all DNSServiceBrowse() and DNSServiceRegister() requests using 
+</span><span class="enscript-comment">// BLE beacon based triggering.
+</span><span class="enscript-type">static</span> requestList_t* BLEBrowseListHead = NULL;
+<span class="enscript-type">static</span> requestList_t* BLERegistrationListHead = NULL;
+
+<span class="enscript-comment">// The kDNSServiceFlagsAutoTrigger should only be set for a request that would normally apply to AWDL.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-function-name">isAutoTriggerRequest</span>(INTERFACE_INDEX, FLAGS) (    (FLAGS &amp; kDNSServiceFlagsAutoTrigger) \
+                                                       &amp;&amp; (   (AWDLInterfaceID &amp;&amp; (INTERFACE_INDEX == AWDLInterfaceID)) \
+                                                           || ((INTERFACE_INDEX == kDNSServiceInterfaceIndexAny) &amp;&amp; (FLAGS &amp; kDNSServiceFlagsIncludeAWDL))))
+
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Manage</span> <span class="enscript-variable-name">list</span> <span class="enscript-variable-name">of</span> <span class="enscript-variable-name">responses</span> <span class="enscript-variable-name">that</span> <span class="enscript-variable-name">match</span> <span class="enscript-variable-name">this</span> <span class="enscript-variable-name">request</span>.
+
+<span class="enscript-comment">// Return true if any response matches one of our current registrations.
+</span>mDNSlocal bool <span class="enscript-function-name">responseMatchesRegistrations</span>(<span class="enscript-type">void</span>)
+{
+    requestList_t   *ptr;
+
+    <span class="enscript-keyword">for</span> (ptr = BLERegistrationListHead; ptr; ptr = ptr-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (ptr-&gt;ourResponses)
+            <span class="enscript-keyword">return</span> true;
+    }
+    <span class="enscript-keyword">return</span> false;
+}
+
+<span class="enscript-comment">// Return true if the response is already in the list of responses for this client request.
+</span>mDNSlocal bool <span class="enscript-function-name">inResponseListForRequest</span>(requestList_t *request, <span class="enscript-type">void</span> * response)
+{
+    matchingResponses_t * rp;
+
+    <span class="enscript-keyword">for</span> (rp = request-&gt;ourResponses; rp; rp = rp-&gt;next)
+        <span class="enscript-keyword">if</span> (rp-&gt;response == response)
+            <span class="enscript-keyword">break</span>;
+    
+    <span class="enscript-keyword">return</span> (rp != 0);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">addToResponseListForRequest</span>(requestList_t *request, <span class="enscript-type">void</span> * response)
+{
+    matchingResponses_t *matchingResponse = calloc(1, <span class="enscript-keyword">sizeof</span>(matchingResponses_t));
+
+    <span class="enscript-keyword">if</span> (matchingResponse == NULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;addToResponseListForRequest: calloc() failed!&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+    matchingResponse-&gt;response = response;
+    matchingResponse-&gt;next = request-&gt;ourResponses;
+    request-&gt;ourResponses = matchingResponse;
+}
+
+<span class="enscript-comment">// If response is currently in the list of responses, remove it and return true.
+</span><span class="enscript-comment">// Othewise, return false.
+</span>mDNSlocal bool <span class="enscript-function-name">removeFromResponseListForRequest</span>(requestList_t *request, <span class="enscript-type">void</span> * response)
+{
+    matchingResponses_t ** nextp;
+    bool responseRemoved = false;
+
+    <span class="enscript-keyword">for</span> (nextp = &amp; request-&gt;ourResponses; *nextp; nextp = &amp; (*nextp)-&gt;next)
+        <span class="enscript-keyword">if</span> ((*nextp)-&gt;response == response)
+            <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">if</span> (*nextp)
+    {
+        LogInfo(<span class="enscript-string">&quot;removeFromResponseListForRequest: response no longer matches for  %##s %s &quot;</span>, request-&gt;name.c, DNSTypeName(request-&gt;type));
+
+        responseRemoved = true;
+        matchingResponses_t *tmp = *nextp;
+        *nextp = (*nextp)-&gt;next;
+        free(tmp);
+    }
+    <span class="enscript-keyword">return</span> responseRemoved;
+}
+
+<span class="enscript-comment">// Free all current entries on the response list for this request.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">freeResponseListEntriesForRequest</span>(requestList_t *request)
+{
+    matchingResponses_t * ptr;
+
+    ptr = request-&gt;ourResponses; 
+    <span class="enscript-keyword">while</span> (ptr)
+    {
+        matchingResponses_t * tmp;
+
+        tmp = ptr;
+        ptr = ptr-&gt;next;
+        free(tmp);
+    }
+    request-&gt;ourResponses = 0;
+}
+
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Manage</span> <span class="enscript-variable-name">request</span> <span class="enscript-variable-name">lists</span>
+
+<span class="enscript-comment">// Return the address of the pointer to the entry, which can either be the address of &quot;listHead&quot;
+</span><span class="enscript-comment">// or the address of the prior entry on the lists &quot;next&quot; pointer.
+</span>mDNSlocal requestList_t ** <span class="enscript-function-name">findInRequestList</span>(requestList_t ** listHead, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> name, mDNSu16 type)
+{
+    requestList_t **ptr = listHead;
+
+    <span class="enscript-keyword">for</span> ( ; *ptr; ptr = &amp;(*ptr)-&gt;next)
+        <span class="enscript-keyword">if</span> ((*ptr)-&gt;type == type &amp;&amp; SameDomainName(&amp;(*ptr)-&gt;name, name))
+            <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">return</span> ptr;
+}
+
+mDNSlocal requestList_t * <span class="enscript-function-name">addToRequestList</span>(requestList_t ** listHead, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> name, mDNSu16 type, DNSServiceFlags flags)
+{
+    requestList_t **ptr = findInRequestList(listHead, name, type);
+
+    <span class="enscript-keyword">if</span> (!*ptr)
+    {
+        *ptr = (requestList_t *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(**ptr));
+        (*ptr)-&gt;type = type;
+        (*ptr)-&gt;flags = flags;
+        AssignDomainName(&amp;(*ptr)-&gt;name, name);
+    }
+    (*ptr)-&gt;refCount += 1;
+
+    LogInfo(<span class="enscript-string">&quot;addToRequestList: %##s %s refcount now %u&quot;</span>, (*ptr)-&gt;name.c, DNSTypeName((*ptr)-&gt;type), (*ptr)-&gt;refCount);
+
+    <span class="enscript-keyword">return</span> *ptr;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">removeFromRequestList</span>(requestList_t ** listHead, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> name, mDNSu16 type)
+{
+    requestList_t **ptr = findInRequestList(listHead, name, type);
+
+    <span class="enscript-keyword">if</span> (!*ptr) { LogMsg(<span class="enscript-string">&quot;removeFromRequestList: Didn't find %##s %s in list&quot;</span>, name-&gt;c, DNSTypeName(type)); <span class="enscript-keyword">return</span>; }
+
+    (*ptr)-&gt;refCount -= 1;
+
+    LogInfo(<span class="enscript-string">&quot;removeFromRequestList: %##s %s refcount now %u&quot;</span>, (*ptr)-&gt;name.c, DNSTypeName((*ptr)-&gt;type), (*ptr)-&gt;refCount);
+
+    <span class="enscript-keyword">if</span> (!(*ptr)-&gt;refCount)
+    {
+        requestList_t *tmp = *ptr;
+        *ptr = (*ptr)-&gt;next;
+        freeResponseListEntriesForRequest(tmp);
+        mDNSPlatformMemFree(tmp);
+    }
+}
+
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Hashing</span> <span class="enscript-variable-name">and</span> <span class="enscript-variable-name">beacon</span> <span class="enscript-variable-name">state</span> 
+
+<span class="enscript-comment">// These SipHash routines were copied from CoreUtils-500.9.
+</span><span class="enscript-comment">// We use these when running an mDNSRespnder root on a system that does not
+</span><span class="enscript-comment">// have the SipHash() routine available and exported in CoreUtils.
+</span><span class="enscript-comment">// TODO:  This local copy should be removed once we are no longer running mDNSResponder roots
+</span><span class="enscript-comment">// on systems that do no include CoreUtils-500.9 or newer.
+</span>
+<span class="enscript-comment">// Start of code copied from: CoreUtils-500.9
+</span>
+<span class="enscript-comment">/*! @group      BitRotates
+    @abstract   Rotates X COUNT bits to the left or right.
+*/</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ROTL</span>( X, N, SIZE )          ( ( (X) &lt;&lt; (N) ) | ( (X) &gt;&gt; ( (SIZE) - N ) ) )
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ROTR</span>( X, N, SIZE )          ( ( (X) &gt;&gt; (N) ) | ( (X) &lt;&lt; ( (SIZE) - N ) ) )
+
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ROTL64</span>( X, N )              ROTL( (X), (N), 64 )
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">ROTR64</span>( X, N )              ROTR( (X), (N), 64 )
+
+    #define ReadLittle64( PTR ) \
+        ( (uint64_t)( \
+              ( (uint64_t)( (uint8_t *)(PTR) )[ 0 ] )           | \
+            ( ( (uint64_t)( (uint8_t *)(PTR) )[ 1 ] ) &lt;&lt;  8 )   | \
+            ( ( (uint64_t)( (uint8_t *)(PTR) )[ 2 ] ) &lt;&lt; 16 )   | \
+            ( ( (uint64_t)( (uint8_t *)(PTR) )[ 3 ] ) &lt;&lt; 24 )   | \
+            ( ( (uint64_t)( (uint8_t *)(PTR) )[ 4 ] ) &lt;&lt; 32 )   | \
+            ( ( (uint64_t)( (uint8_t *)(PTR) )[ 5 ] ) &lt;&lt; 40 )   | \
+            ( ( (uint64_t)( (uint8_t *)(PTR) )[ 6 ] ) &lt;&lt; 48 )   | \
+            ( ( (uint64_t)( (uint8_t *)(PTR) )[ 7 ] ) &lt;&lt; 56 ) ) )
+
+<span class="enscript-comment">// Based on &lt;<a href="https://131002.net/siphash/">https://131002.net/siphash/</a>&gt;.
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">SipRound</span>() \
+	do \
+	{ \
+		v0 += v1; v1 = ROTL64( v1, 13 ); v1 ^= v0; v0 = ROTL64( v0, 32 ); \
+		v2 += v3; v3 = ROTL64( v3, 16 ); v3 ^= v2; \
+		v0 += v3; v3 = ROTL64( v3, 21 ); v3 ^= v0; \
+		v2 += v1; v1 = ROTL64( v1, 17 ); v1 ^= v2; v2 = ROTL64( v2, 32 ); \
+		\
+	}	while( 0 )
+
+mDNSlocal uint64_t	local_SipHash( <span class="enscript-type">const</span> uint8_t inKey[ 16 ], <span class="enscript-type">const</span> <span class="enscript-type">void</span> *inSrc, size_t inLen )
+{
+	<span class="enscript-type">const</span> uint8_t *				src  = (<span class="enscript-type">const</span> uint8_t *) inSrc;
+	size_t <span class="enscript-type">const</span>				left = inLen % 8;
+	<span class="enscript-type">const</span> uint8_t * <span class="enscript-type">const</span>		end  = src + ( inLen - left );
+	uint64_t					k0, k1, v0, v1, v2, v3, tmp;
+	
+	k0 = ReadLittle64( &amp;inKey[ 0 ] );
+	k1 = ReadLittle64( &amp;inKey[ 8 ] );
+	v0 = k0 ^ UINT64_C( 0x736f6d6570736575 ); <span class="enscript-comment">// 'somepseu'
+</span>	v1 = k1 ^ UINT64_C( 0x646f72616e646f6d ); <span class="enscript-comment">// 'dorandom'
+</span>	v2 = k0 ^ UINT64_C( 0x6c7967656e657261 ); <span class="enscript-comment">// 'lygenera'
+</span>	v3 = k1 ^ UINT64_C( 0x7465646279746573 ); <span class="enscript-comment">// 'tedbytes'
+</span>	
+	<span class="enscript-keyword">for</span>( ; src != end; src += 8 )
+	{
+		tmp = ReadLittle64( src );
+		v3 ^= tmp;
+		SipRound();
+		SipRound();
+		v0 ^= tmp;
+	}
+	
+	tmp = ( (uint64_t)( inLen &amp; 0xFF ) ) &lt;&lt; 56;
+	<span class="enscript-keyword">switch</span>( left )
+	{
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">7</span>: tmp |= ( ( (uint64_t) src[ 6 ] ) &lt;&lt; 48 );
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">6</span>: tmp |= ( ( (uint64_t) src[ 5 ] ) &lt;&lt; 40 );
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">5</span>: tmp |= ( ( (uint64_t) src[ 4 ] ) &lt;&lt; 32 );
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">4</span>: tmp |= ( ( (uint64_t) src[ 3 ] ) &lt;&lt; 24 );
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">3</span>: tmp |= ( ( (uint64_t) src[ 2 ] ) &lt;&lt; 16 );
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">2</span>: tmp |= ( ( (uint64_t) src[ 1 ] ) &lt;&lt;  8 );
+		<span class="enscript-keyword">case</span> <span class="enscript-reference">1</span>: tmp |=   ( (uint64_t) src[ 0 ] );
+		<span class="enscript-reference">default</span>: <span class="enscript-keyword">break</span>;
+	}
+	v3 ^= tmp;
+	SipRound();
+	SipRound();
+	v0 ^= tmp;
+	v2 ^= 0xFF;
+	SipRound();
+	SipRound();
+	SipRound();
+	SipRound();
+	<span class="enscript-keyword">return</span>( v0 ^ v1 ^ v2 ^ v3 );
+}
+
+<span class="enscript-comment">// See &lt;<a href="https://spc.apple.com/AppleBLEInfo.html#_wifi_tds">https://spc.apple.com/AppleBLEInfo.html#_wifi_tds</a>&gt; for details.
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kTDSSipHashKey</span>          ( (const uint8_t *) <span class="enscript-string">&quot;\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01&quot;</span> )
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kTDSSipHashCount</span>        5
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kSizeCString</span>        ( (size_t) -1 )
+
+<span class="enscript-comment">// End of code copied from: CoreUtils-500.9
+</span>
+<span class="enscript-comment">// Must link symbol from CoreUtils at runtime to avoid cyclic dependency cycles in the build process.
+</span><span class="enscript-type">static</span> <span class="enscript-function-name">uint64_t</span> (*SipHash_p)( <span class="enscript-type">const</span> uint8_t inKey[ 16 ], <span class="enscript-type">const</span> <span class="enscript-type">void</span> *inSrc, size_t inLen ) = NULL;
+
+mDNSlocal uint64_t <span class="enscript-function-name">local_TDSBloomFilterMake</span>( uint32_t inBloomCount, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *inStr, size_t inLen )
+{
+    uint64_t        bloomFilter = 0, hash;
+    uint8_t         i;
+
+    <span class="enscript-keyword">if</span>( inLen == kSizeCString ) inLen = strlen( (<span class="enscript-type">const</span> <span class="enscript-type">char</span> *) inStr );
+    <span class="enscript-keyword">if</span> (SipHash_p)
+        hash = SipHash_p( kTDSSipHashKey, inStr, inLen );
+    <span class="enscript-keyword">else</span>
+        hash = local_SipHash( kTDSSipHashKey, inStr, inLen );
+
+    <span class="enscript-keyword">for</span>( i = 0; i &lt; kTDSSipHashCount; ++i )
+    {
+        bloomFilter |= ( UINT64_C( 1 ) &lt;&lt; ( hash % inBloomCount ) );
+        hash /= inBloomCount;
+    }
+    <span class="enscript-keyword">return</span>( bloomFilter );
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">loadCoreUtils</span>()
+{
+    <span class="enscript-type">static</span> mDNSBool runOnce = mDNSfalse;
+    <span class="enscript-type">static</span> <span class="enscript-type">void</span> *CoreUtils_p = mDNSNULL;
+    <span class="enscript-type">static</span> <span class="enscript-type">const</span> <span class="enscript-type">char</span> path[] = <span class="enscript-string">&quot;/System/Library/PrivateFrameworks/CoreUtils.framework/CoreUtils&quot;</span>;
+
+    <span class="enscript-keyword">if</span> (!runOnce)
+    {
+        runOnce = mDNStrue;
+        <span class="enscript-keyword">if</span> (!CoreUtils_p)
+        {
+            CoreUtils_p = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
+            <span class="enscript-keyword">if</span> (!CoreUtils_p)
+            {
+                LogInfo(<span class="enscript-string">&quot;loadCoreUtils: dlopen() failed.&quot;</span>);
+                <span class="enscript-keyword">return</span>;
+            }
+        }
+
+        <span class="enscript-keyword">if</span> (!SipHash_p)
+        {
+            SipHash_p = dlsym(CoreUtils_p, <span class="enscript-string">&quot;SipHash&quot;</span>);
+            <span class="enscript-keyword">if</span> (!SipHash_p)
+            {
+                LogInfo(<span class="enscript-string">&quot;loadCoreUtils: load of SipHash symbol failed.&quot;</span>);
+                <span class="enscript-keyword">return</span>;
+            }
+        }
+        LogInfo(<span class="enscript-string">&quot;loadCoreUtils: found SipHash symbol.&quot;</span>);
+    }
+}
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">HASH_SIZE</span>    64
+
+mDNSlocal serviceHash_t <span class="enscript-function-name">BLELabelHash</span>(<span class="enscript-type">unsigned</span> <span class="enscript-type">char</span> *str, <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> length)
+{
+    loadCoreUtils();
+
+    <span class="enscript-keyword">return</span> local_TDSBloomFilterMake(HASH_SIZE, (<span class="enscript-type">const</span> <span class="enscript-type">void</span> *) str, (size_t) length);
+}
+
+
+<span class="enscript-comment">// Maximum number of characters in string to hash should be:
+</span><span class="enscript-comment">//  2 for initial &quot;s:&quot; or &quot;p:&quot;
+</span><span class="enscript-comment">// 16 for &quot;_&quot; followed by up to 15 characters of service type
+</span><span class="enscript-comment">//  1 for separating &quot;.&quot;
+</span><span class="enscript-comment">//  4 for &quot;_udp&quot; or &quot;_tcp&quot;
+</span><span class="enscript-comment">//  1 for the terminating NULL byte
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_HASH_STRING</span>   (2 + 16 + 1 + 4 + 1)
+
+<span class="enscript-comment">// Maximum service name length, including the initial &quot;_&quot;
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_SERVICE_NAME</span> 16
+
+<span class="enscript-comment">// Convert the service name and transport protocol to a NULL terminated C string.
+</span><span class="enscript-comment">// stringBuf must point to least (MAX_HASH_STRING - 2) bytes of available space.
+</span>mDNSlocal bool <span class="enscript-function-name">serviceNameStringFromDomain</span>(<span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> domain, mDNSu8 * stringBuf)
+{
+    mDNSu8       * dst = stringBuf;
+    <span class="enscript-type">const</span> mDNSu8 * src = domain-&gt;c;
+    mDNSu8         len = *src++;
+
+    <span class="enscript-keyword">if</span> (len == 0 || len &gt; MAX_SERVICE_NAME)
+    {
+        LogInfo(<span class="enscript-string">&quot;serviceNameStringFromDomain: Invalid name lenght: %d&quot;</span>, len);
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">if</span> (*src != <span class="enscript-string">'_'</span>)
+    {
+        LogInfo(<span class="enscript-string">&quot;serviceNameStringFromDomain: service name does not begin with a _&quot;</span>);
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-comment">// Copy the service type
+</span>    <span class="enscript-keyword">while</span> (len--)
+        *dst++ = *src++;
+
+    *dst++ = <span class="enscript-string">'.'</span>;
+
+    <span class="enscript-keyword">if</span> (!ValidTransportProtocol(src))
+    {
+        LogInfo(<span class="enscript-string">&quot;serviceNameStringFromDomain: Transport protocol name must be _udp or _tcp&quot;</span>);
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-comment">// copy the transport protocol
+</span>    len = *src++;
+    <span class="enscript-keyword">while</span> (len--)
+        *dst++ = *src++;
+
+    *dst = 0;
+    <span class="enscript-keyword">return</span> true;
+}
+
+mDNSlocal bool <span class="enscript-function-name">setBLEServiceHash</span>(<span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> domain, requestList_t * ptr)
+{
+    <span class="enscript-comment">// Initialize the string with the &quot;s:&quot; for the browser/seeker hash calculation.
+</span>    mDNSu8 stringBuf[MAX_HASH_STRING] = { <span class="enscript-string">'s'</span>, <span class="enscript-string">':'</span>, <span class="enscript-string">'\0'</span> };
+
+    <span class="enscript-comment">// Append the service name and protocol strings to the initial &quot;s:&quot; string.
+</span>    <span class="enscript-keyword">if</span> (!serviceNameStringFromDomain(domain, &amp;stringBuf[2]))
+    {
+        LogInfo(<span class="enscript-string">&quot;setBLEServiceHash: serviceNameStringFromDomain() failed!&quot;</span>);
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    ptr-&gt;browseHash =  BLELabelHash(stringBuf, strlen((<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)stringBuf));
+    LogInfo(<span class="enscript-string">&quot;setBLEServiceHash: seeker string %s, hashed to 0x%lx&quot;</span>, stringBuf, ptr-&gt;browseHash);
+
+    <span class="enscript-comment">// Update string to start with &quot;p:&quot; for registration/provider hash calculation.
+</span>    stringBuf[0] = <span class="enscript-string">'p'</span>;
+
+    ptr-&gt;registeredHash =  BLELabelHash(stringBuf, strlen((<span class="enscript-type">const</span> <span class="enscript-type">char</span> *)stringBuf));
+    LogInfo(<span class="enscript-string">&quot;setBLEServiceHash: provider string %s, hashed to 0x%lx&quot;</span>, stringBuf, ptr-&gt;registeredHash);
+    <span class="enscript-keyword">if</span> (ptr-&gt;browseHash &amp;&amp; ptr-&gt;registeredHash)
+        <span class="enscript-keyword">return</span> true;
+    <span class="enscript-keyword">else</span>
+        <span class="enscript-keyword">return</span> false;
+}
+
+<span class="enscript-comment">// Indicates we are sending the final beacon with zeroed Bloom filter to let
+</span><span class="enscript-comment">// peers know we are no longer actively seeking or providing any services.
+</span>bool finalBeacon = false;
+
+<span class="enscript-comment">// The last time we walked our response list looking for stale entries.
+</span>mDNSs32 lastScanForStaleResponses;
+
+<span class="enscript-comment">// Forward declaration.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">removeStaleResponses</span>(mDNSs32 currentTime);
+
+<span class="enscript-comment">// Interval at which we scan the response lists to remove any stale entries.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">StaleResponseScanInterval</span> 30
+
+<span class="enscript-comment">// Called from mDNS_Execute() when NextBLEServiceTime is reached.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">serviceBLE</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-comment">// Note, we can access mDNSStorage.timenow since we are called from mDNS_Execute, 
+</span>    <span class="enscript-comment">// which initializes that value by calling mDNS_Lock().
+</span>    mDNSs32 currentTime = mDNSStorage.timenow;
+
+    <span class="enscript-comment">// Initialize if zero.
+</span>    <span class="enscript-keyword">if</span> (!lastScanForStaleResponses)
+        lastScanForStaleResponses = NonZeroTime(currentTime - (StaleResponseScanInterval * mDNSPlatformOneSecond));
+
+    <span class="enscript-keyword">if</span> (finalBeacon)
+    {
+        <span class="enscript-comment">// We don't expect to do the finalBeacon processing if there are active browse requests,
+</span>        <span class="enscript-keyword">if</span> (BLEBrowseListHead)
+            LogInfo(<span class="enscript-string">&quot;serviceBLE: finalBeacon set and called with active browse BLE requests ??&quot;</span>);
+
+        <span class="enscript-comment">// or active registrations but we are not in suppress beacons state.
+</span>        <span class="enscript-keyword">if</span> (BLERegistrationListHead &amp;&amp; !suppressBeacons)
+            LogInfo(<span class="enscript-string">&quot;serviceBLE: finalBeacon set and called with active registrations requests, but not in suppress beacons state ??&quot;</span>);
+
+        finalBeacon = false;
+        stopBLEBeacon();
+    }
+
+    <span class="enscript-keyword">if</span> (!BLEBrowseListHead &amp;&amp; !BLERegistrationListHead)
+    {
+        LogInfo(<span class="enscript-string">&quot;serviceBLE: no active client requests, disabling service timer&quot;</span>);
+        mDNSStorage.NextBLEServiceTime = 0;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> ((currentTime - lastScanForStaleResponses) &gt;= (StaleResponseScanInterval * mDNSPlatformOneSecond))
+    {
+        removeStaleResponses(currentTime);
+        lastScanForStaleResponses = currentTime;
+        mDNSStorage.NextBLEServiceTime = NonZeroTime(currentTime + (StaleResponseScanInterval * mDNSPlatformOneSecond));
+    }
+}
+
+<span class="enscript-comment">// Initialize the periodic service timer if we have active requests.
+</span><span class="enscript-comment">// The timer is disabled in the next call to serviceBLE() when no requests are active.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">updateServiceTimer</span>()
+{
+    <span class="enscript-keyword">if</span> (!mDNSStorage.NextBLEServiceTime &amp;&amp; (BLEBrowseListHead || BLERegistrationListHead))
+        mDNSStorage.NextBLEServiceTime = NonZeroTime(mDNSStorage.timenow + (StaleResponseScanInterval * mDNSPlatformOneSecond));
+}
+
+<span class="enscript-comment">// Set true when suppressing beacon transmissions for our registrations until we see
+</span><span class="enscript-comment">// a peer beacon indicating a browse for one of our services.
+</span>bool suppressBeacons = false;
+
+<span class="enscript-comment">// Go through all the existing browses and registrations to create the
+</span><span class="enscript-comment">// current Bloom filter value for the BLE beacon.
+</span><span class="enscript-comment">// Update the current scan and beaconing state appropriately.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">updateBeaconAndScanState</span>()
+{
+    requestList_t   *ptr;
+    serviceHash_t   beaconBloomFilter = 0;
+
+    updateServiceTimer();
+
+    <span class="enscript-keyword">for</span> (ptr = BLEBrowseListHead; ptr; ptr = ptr-&gt;next)
+    {
+        beaconBloomFilter |= ptr-&gt;browseHash;
+    }
+
+    <span class="enscript-keyword">for</span> (ptr = BLERegistrationListHead; ptr; ptr = ptr-&gt;next)
+    {
+        beaconBloomFilter |= ptr-&gt;registeredHash;
+    }
+
+    <span class="enscript-comment">// If only advertising registered services and not browsing, we don't start the beacon transmission 
+</span>    <span class="enscript-comment">// until we receive a beacon from a peer matching one of our registrations.
+</span>    <span class="enscript-keyword">if</span> (BLERegistrationListHead &amp;&amp; !BLEBrowseListHead &amp;&amp; !responseMatchesRegistrations())
+    {
+        <span class="enscript-comment">// If beacons are already suppressed, then no further action to take.
+</span>        <span class="enscript-keyword">if</span> (suppressBeacons)
+            LogInfo(<span class="enscript-string">&quot;updateBeaconAndScanState: continuing to suppressing beacons&quot;</span>);
+        <span class="enscript-keyword">else</span>
+        {
+            LogInfo(<span class="enscript-string">&quot;updateBeaconAndScanState: suppressing beacons, no peers currently seeking our services&quot;</span>);
+            suppressBeacons = true;
+
+            <span class="enscript-comment">// If currently beaconing, send a beacon for two seconds with a zeroed Bloom filter indicating we are 
+</span>            <span class="enscript-comment">// no longer browsing  for any services so that any matching auto triggered peer registrations have a 
+</span>            <span class="enscript-comment">// chance to see our state change.
+</span>            <span class="enscript-keyword">if</span> (currentlyBeaconing())
+                updateBLEBeacon(0);
+            startBLEScan();
+        }
+    }
+    <span class="enscript-comment">// If beacons had been suppressed and we no longer have services to advertise, no
+</span>    <span class="enscript-comment">// need to send a beacon with a zeroed Bloom filter for two seconds, just stop
+</span>    <span class="enscript-comment">// the scan.
+</span>    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (suppressBeacons == true &amp;&amp; beaconBloomFilter == 0)
+    {
+        suppressBeacons = false;
+        stopBLEScan();
+    }
+    <span class="enscript-comment">// Update the beacon with the current Bloom filter values.
+</span>    <span class="enscript-keyword">else</span>
+    {
+        suppressBeacons = false;
+        updateBLEBeacon(beaconBloomFilter);
+        <span class="enscript-comment">// Scan unless the Bloom filter is zero, indicating we are not currently
+</span>        <span class="enscript-comment">// seeking or providing any services.
+</span>        <span class="enscript-keyword">if</span> (beaconBloomFilter)
+            startBLEScan();
+        <span class="enscript-keyword">else</span>
+            stopBLEScan();
+    }
+}
+
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Peer</span> <span class="enscript-variable-name">response</span> <span class="enscript-variable-name">handling</span>
+
+<span class="enscript-comment">// Structure used to track the beacons received from various peers.
+</span><span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> responseList
+{
+    <span class="enscript-type">struct</span> responseList * next;
+    serviceHash_t       peerBloomFilter;
+    mDNSs32             recievedTime;
+    mDNSEthAddr         peerMac;
+} responseList_t;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">RESPONSE_LIST_NUMBER</span> 8
+<span class="enscript-type">static</span> responseList_t* BLEResponseListHeads[RESPONSE_LIST_NUMBER];
+
+<span class="enscript-comment">// Return the address of the pointer to the entry, which can either be the address of the
+</span><span class="enscript-comment">// corresponding BLEResponseListHeads[] entry, or the address of the prior responseList_t entry
+</span><span class="enscript-comment">// on the lists &quot;next&quot; pointer.
+</span>mDNSlocal responseList_t ** <span class="enscript-function-name">findInResponseList</span>(mDNSEthAddr * ptrToMAC)
+{
+    <span class="enscript-comment">// Use the least significant byte of the MAC address as our hash index to find the list.
+</span>    responseList_t **ptr = &amp; BLEResponseListHeads[ptrToMAC-&gt;b[5] % RESPONSE_LIST_NUMBER];
+
+    <span class="enscript-keyword">for</span> ( ; *ptr; ptr = &amp;(*ptr)-&gt;next)
+    {
+        <span class="enscript-keyword">if</span> (memcmp(&amp;(*ptr)-&gt;peerMac, ptrToMAC, <span class="enscript-keyword">sizeof</span>(mDNSEthAddr)) == 0)
+            <span class="enscript-keyword">break</span>;
+    }
+
+    <span class="enscript-keyword">return</span> ptr;
+}
+
+
+mDNSlocal responseList_t * <span class="enscript-function-name">addToResponseList</span>(serviceHash_t peerBloomFilter, mDNSEthAddr * ptrToMAC)
+{
+    responseList_t **ptr = findInResponseList(ptrToMAC);
+
+    <span class="enscript-keyword">if</span> (!*ptr)
+    {
+        *ptr = (responseList_t *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(**ptr));
+        (*ptr)-&gt;peerBloomFilter = peerBloomFilter;
+        memcpy(&amp; (*ptr)-&gt;peerMac, ptrToMAC, <span class="enscript-keyword">sizeof</span>(mDNSEthAddr));
+    }
+
+    <span class="enscript-keyword">return</span> *ptr;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">removeFromResponseList</span>(mDNSEthAddr * ptrToMAC)
+{
+    responseList_t **ptr = findInResponseList(ptrToMAC);
+
+    <span class="enscript-keyword">if</span> (!*ptr)
+    {
+        LogMsg(<span class="enscript-string">&quot;removeFromResponseList: did not find entry for MAC = 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x&quot;</span>,
+                ptrToMAC-&gt;b[0], ptrToMAC-&gt;b[1], ptrToMAC-&gt;b[2], ptrToMAC-&gt;b[3], ptrToMAC-&gt;b[4], ptrToMAC-&gt;b[5]);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    LogInfo(<span class="enscript-string">&quot;removeFromResponseList: removing entry for MAC = 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x&quot;</span>,
+                ptrToMAC-&gt;b[0], ptrToMAC-&gt;b[1], ptrToMAC-&gt;b[2], ptrToMAC-&gt;b[3], ptrToMAC-&gt;b[4], ptrToMAC-&gt;b[5]);
+
+    responseList_t *tmp = *ptr;
+    *ptr = (*ptr)-&gt;next;
+    mDNSPlatformMemFree(tmp);
+}
+
+<span class="enscript-comment">// Free all current entries on the BLE response lists, removing all pointers
+</span><span class="enscript-comment">// to freed structures from the lists.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">clearResponseLists</span>()
+{
+    responseList_t **ptr;
+
+    <span class="enscript-keyword">for</span> (<span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> i = 0; i &lt; RESPONSE_LIST_NUMBER; i++)
+    {
+        ptr = &amp; BLEResponseListHeads[i];
+        <span class="enscript-keyword">while</span> (*ptr)
+        {
+            responseList_t * tmp;
+    
+            tmp = *ptr;
+            *ptr = (*ptr)-&gt;next;
+            mDNSPlatformMemFree(tmp);
+        }
+    }
+}
+
+<span class="enscript-comment">// Check to see if we have cached a response that matches a service for which we just started a browse or registration.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">checkCachedResponses</span>(requestList_t *browse, requestList_t *registration)
+{
+    responseList_t *ptr;
+
+    <span class="enscript-keyword">for</span> (<span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> i = 0; i &lt; RESPONSE_LIST_NUMBER; i++)
+    {
+        <span class="enscript-keyword">for</span> (ptr = BLEResponseListHeads[i]; ptr; ptr = ptr-&gt;next)
+        {
+            <span class="enscript-comment">// For browses, we are looking for responses that have a matching registration
+</span>            <span class="enscript-comment">// and for registrations we are looking for responses that have a matching browse.
+</span>            <span class="enscript-keyword">if</span> (    (browse &amp;&amp; (browse-&gt;registeredHash &amp; ptr-&gt;peerBloomFilter) == browse-&gt;registeredHash)
+                ||  (registration &amp;&amp; (registration-&gt;browseHash &amp; ptr-&gt;peerBloomFilter) == registration-&gt;browseHash))
+            {
+                <span class="enscript-comment">// Clear the Bloom filter for the response.
+</span>                <span class="enscript-comment">// The next beacon from this peer will update the filter then autoTrigger
+</span>                <span class="enscript-comment">// any newly started client requests as appropriate.
+</span>                ptr-&gt;peerBloomFilter = 0;
+            }
+        }
+    }
+}
+
+<span class="enscript-comment">// Define a fixed name to use for the instance name denoting that one or more instances
+</span><span class="enscript-comment">// of a service are being advertised by peers in their BLE beacons.
+</span><span class="enscript-comment">// Name format is: length byte + bytes of name string + two byte pointer to the PTR record name.
+</span><span class="enscript-comment">// See compression_lhs definition in the D2D plugin code for background on 0xc027 DNS name compression pointer value.
+</span><span class="enscript-type">static</span> Byte  *BLEinstanceValue = (Byte *) <span class="enscript-string">&quot;\x11ThresholdInstance\xc0\x27&quot;</span>;
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">BLEValueSize</span>  strlen((const char *)BLEinstanceValue)
+
+<span class="enscript-comment">// Find each local browse that matches the registered service hash in the BLE response.
+</span><span class="enscript-comment">// Called on the CFRunLoop thread while handling a callback from CoreBluetooth.
+</span><span class="enscript-comment">// Caller should hold  KQueueLock().
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">findMatchingBrowse</span>(responseList_t *response)
+{
+    requestList_t *ptr;
+
+    ptr = BLEBrowseListHead;
+    <span class="enscript-keyword">for</span> ( ; ptr; ptr = ptr-&gt;next)
+    {
+        <span class="enscript-comment">// See if we potentially match a corresponding registration in the beacon.
+</span>        <span class="enscript-comment">// thus, compare using the &quot;registeredHash&quot; of our browse..
+</span>        <span class="enscript-keyword">if</span> ((ptr-&gt;registeredHash &amp; response-&gt;peerBloomFilter) == ptr-&gt;registeredHash) 
+        {
+
+            LogInfo(<span class="enscript-string">&quot;findMatchingBrowse: Registration in response matched browse for: %##s&quot;</span>, ptr-&gt;name.c);
+
+            <span class="enscript-keyword">if</span> (inResponseListForRequest(ptr, response))
+            {
+                LogInfo(<span class="enscript-string">&quot;findMatchingBrowse: Already on response list for browse: %##s&quot;</span>, ptr-&gt;name.c);
+
+                <span class="enscript-keyword">continue</span>;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogInfo(<span class="enscript-string">&quot;findMatchingBrowse: Adding to response list for browse: %##s&quot;</span>, ptr-&gt;name.c);
+
+                <span class="enscript-keyword">if</span> (ptr-&gt;ourResponses == 0)
+                {
+                    <span class="enscript-keyword">if</span> (isAutoTriggerRequest(ptr-&gt;InterfaceID, ptr-&gt;flags))
+                    {
+	                    LogInfo(<span class="enscript-string">&quot;findMatchingBrowse: First BLE response, triggering browse for %##s on AWDL&quot;</span>, ptr-&gt;name.c);
+	                    <span class="enscript-comment">// register with the AWDL D2D plugin, 
+</span>	                    internal_start_browsing_for_service(ptr-&gt;InterfaceID, &amp; ptr-&gt;name, ptr-&gt;type, ptr-&gt;flags);
+                        ptr-&gt;triggeredOnAWDL = true;
+                    }
+
+	                <span class="enscript-comment">// Browse on mDNSInterface_BLE is used to determine if there are one or more instances of the
+</span>	                <span class="enscript-comment">// service type discoveryed over BLE.  If this is the first instance, add the psuedo instance defined by BLEinstanceValue.
+</span>	                <span class="enscript-keyword">if</span> (ptr-&gt;InterfaceID == mDNSInterface_BLE)
+	                {
+	                    xD2DAddToCache(kD2DSuccess, 0, D2DBLETransport, ptr-&gt;key, ptr-&gt;keySize, BLEinstanceValue, BLEValueSize);
+	                }
+                }
+                addToResponseListForRequest(ptr, response);
+            }
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-comment">// If a previous response from this peer had matched the browse, remove that response from the
+</span>            <span class="enscript-comment">// list now.  If this is the last matching response, remove the corresponding key from the AWDL D2D plugin
+</span>            <span class="enscript-keyword">if</span> (removeFromResponseListForRequest(ptr, response) &amp;&amp; (ptr-&gt;ourResponses == 0))
+            {
+                <span class="enscript-keyword">if</span> (ptr-&gt;InterfaceID == mDNSInterface_BLE)
+                {
+                    xD2DRemoveFromCache(kD2DSuccess, 0, D2DBLETransport, ptr-&gt;key, ptr-&gt;keySize, BLEinstanceValue, BLEValueSize);
+                }
+
+                <span class="enscript-keyword">if</span> (isAutoTriggerRequest(ptr-&gt;InterfaceID, ptr-&gt;flags))
+                {
+                    LogInfo(<span class="enscript-string">&quot;findMatchingBrowse: Last BLE response, disabling browse for %##s on AWDL&quot;</span>, ptr-&gt;name.c);
+                    internal_stop_browsing_for_service(ptr-&gt;InterfaceID, &amp; ptr-&gt;name, ptr-&gt;type, ptr-&gt;flags);
+                    ptr-&gt;triggeredOnAWDL = false;
+                }
+            }
+        }
+    }
+}
+
+<span class="enscript-comment">// Find each local registration that matches the service browse hash BLE response Bloom filter.
+</span><span class="enscript-comment">// Called on the CFRunLoop thread while handling a callback from CoreBluetooth.
+</span><span class="enscript-comment">// Caller should hold  KQueueLock().
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">findMatchingRegistration</span>(responseList_t *response)
+{
+    requestList_t   *ptr;
+    bool            matchingPeer;
+
+    ptr = BLERegistrationListHead;
+    <span class="enscript-keyword">for</span> ( ; ptr; ptr = ptr-&gt;next)
+    {
+        <span class="enscript-comment">// See if we potentially match a corresponding browse in the beacon,
+</span>        <span class="enscript-comment">// thus, compare using the &quot;browseHash&quot; of our registration.
+</span>        <span class="enscript-keyword">if</span> ((ptr-&gt;browseHash &amp; response-&gt;peerBloomFilter) == ptr-&gt;browseHash)
+        {
+            LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: Incoming browse matched registration for: %##s&quot;</span>, ptr-&gt;name.c);
+
+            <span class="enscript-keyword">if</span> (inResponseListForRequest(ptr, response))
+            {
+                LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: Already on response list for registration: %##s&quot;</span>, ptr-&gt;name.c);
+
+                <span class="enscript-keyword">continue</span>;
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: Adding to response list for registration: %##s&quot;</span>, ptr-&gt;name.c);
+
+                <span class="enscript-comment">// Also pass the registration to the AWDL D2D plugin if this is the first matching peer browse for
+</span>                <span class="enscript-comment">// an auto triggered local registration.
+</span>                <span class="enscript-keyword">if</span> ((ptr-&gt;ourResponses == 0) &amp;&amp; isAutoTriggerRequest(ptr-&gt;InterfaceID, ptr-&gt;flags))
+                {
+                    LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: First BLE response, triggering registration for %##s on AWDL&quot;</span>, ptr-&gt;name.c);
+                    <span class="enscript-keyword">if</span> (ptr-&gt;resourceRecord == 0)
+                    {
+                        LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: resourceRecord pointer is NULL ??&quot;</span>);
+                        <span class="enscript-keyword">continue</span>;
+                    }
+
+                    internal_start_advertising_service(ptr-&gt;resourceRecord, (ptr-&gt;flags | kDNSServiceFlagsIncludeAWDL));
+                    <span class="enscript-comment">// indicate the registration has been applied to the AWDL interface
+</span>                    ptr-&gt;triggeredOnAWDL = true;
+                }
+
+                addToResponseListForRequest(ptr, response);
+            }
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-comment">// If a previous response from this peer had matched the browse, remove that response from the
+</span>            <span class="enscript-comment">// list now.  If this is the last matching response for a local auto triggered registration, 
+</span>            <span class="enscript-comment">// remove the advertised key/value pairs from the AWDL D2D plugin.
+</span>            <span class="enscript-keyword">if</span> (removeFromResponseListForRequest(ptr, response) &amp;&amp; (ptr-&gt;ourResponses == 0) &amp;&amp; isAutoTriggerRequest(ptr-&gt;InterfaceID, ptr-&gt;flags))
+            {
+                LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: Last BLE response, disabling registration for %##s on AWDL&quot;</span>, ptr-&gt;name.c);
+
+                <span class="enscript-comment">// Restore the saved ARType and call into the AWDL D2D plugin to stop the corresponding record advertisements over AWDL.
+</span>                internal_stop_advertising_service(ptr-&gt;resourceRecord, (ptr-&gt;flags | kDNSServiceFlagsIncludeAWDL));
+                ptr-&gt;triggeredOnAWDL = false;
+            }
+        }
+    }
+
+    <span class="enscript-comment">// If beacons for our registrations had been suppressed, see if we now have a match and need to restart them.
+</span>    matchingPeer = responseMatchesRegistrations();
+    <span class="enscript-keyword">if</span> (suppressBeacons &amp;&amp; matchingPeer)
+    {
+        LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: peer searching for our service, starting beacon transmission&quot;</span>);
+        updateBeaconAndScanState();
+
+        <span class="enscript-keyword">if</span> (suppressBeacons == true)
+            LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: NOTE: suppressBeacons is true after updateBeaconAndScanState() call ??&quot;</span>);
+    }
+    <span class="enscript-comment">// If we have only registrations, but no matching peers, we can suppress beacons until we get a matching peer beacon.
+</span>    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!suppressBeacons &amp;&amp; !matchingPeer &amp;&amp; BLERegistrationListHead &amp;&amp; !BLEBrowseListHead)
+    {
+        LogInfo(<span class="enscript-string">&quot;findMatchingRegistration: no peer beacons match our registrations, suppressing beacon transmission&quot;</span>);
+        suppressBeacons = true;
+        stopBLEBeacon();
+    }
+}
+
+
+<span class="enscript-comment">// Time limit before a beacon is aged out of our received list.
+</span>#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_RESPONSE_AGE</span> 10
+
+<span class="enscript-comment">// If we have responses from peers that are more than MAX_RESPONSE_AGE seconds
+</span><span class="enscript-comment">// old, remove them since a peer with active requests should be beaconing multiple
+</span><span class="enscript-comment">// times per second if still within BLE range.
+</span>mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">removeStaleResponses</span>(mDNSs32 currentTime)
+{
+    responseList_t **ptr;
+
+    <span class="enscript-keyword">for</span> (<span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> i = 0; i &lt; RESPONSE_LIST_NUMBER; i++)
+    {
+        ptr = &amp; BLEResponseListHeads[i];
+        <span class="enscript-keyword">while</span> (*ptr)
+        {
+            <span class="enscript-keyword">if</span> ((currentTime - (*ptr)-&gt;recievedTime) &gt; (MAX_RESPONSE_AGE * mDNSPlatformOneSecond))
+            {
+                responseList_t * tmp;
+
+                <span class="enscript-comment">// Clear the Bloom filter so that it will be removed from any matching response list
+</span>                <span class="enscript-comment">// by the following calls.
+</span>                (*ptr)-&gt;peerBloomFilter = 0;
+
+                LogInfo(<span class="enscript-string">&quot;removeStaleResponses: clearing stale response from peer MAC = 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x&quot;</span>,
+                    (*ptr)-&gt;peerMac.b[0], (*ptr)-&gt;peerMac.b[1], (*ptr)-&gt;peerMac.b[2], (*ptr)-&gt;peerMac.b[3], (*ptr)-&gt;peerMac.b[4], (*ptr)-&gt;peerMac.b[5]);
+
+                findMatchingBrowse(*ptr);
+                findMatchingRegistration(*ptr);
+    
+                <span class="enscript-comment">// Unlink and free the response structure
+</span>                tmp = *ptr;
+                *ptr = (*ptr)-&gt;next;
+                mDNSPlatformMemFree(tmp);
+            }
+            <span class="enscript-comment">// Move to the next response on this linked list.
+</span>            <span class="enscript-keyword">else</span>
+                ptr = &amp; (*ptr)-&gt;next;
+        }
+    }
+}
+
+<span class="enscript-comment">// Called on CFRunLoop thread during CoreBluetooth beacon response processing.
+</span><span class="enscript-comment">// Thus, must call KQueueLock() prior to calling any core mDNSResponder routines to register records, etc.
+</span><span class="enscript-type">void</span> <span class="enscript-function-name">responseReceived</span>(serviceHash_t peerBloomFilter, mDNSEthAddr * ptrToMAC)
+{
+    responseList_t * ptr;
+
+    KQueueLock();
+    mDNS_Lock(&amp; mDNSStorage);   <span class="enscript-comment">// Must lock to initialize mDNSStorage.timenow
+</span>    
+    ptr = *(findInResponseList(ptrToMAC));
+    <span class="enscript-keyword">if</span> (ptr == 0)
+    {
+        <span class="enscript-comment">// Only add to list if peer is actively browsing or advertising.
+</span>        <span class="enscript-keyword">if</span> (peerBloomFilter)
+        {
+            LogInfo(<span class="enscript-string">&quot;responseReceived: First beacon of this type, adding to list&quot;</span>);
+            LogInfo(<span class="enscript-string">&quot;responseReceived: peerBloomFilter = 0x%lx&quot;</span>, peerBloomFilter);
+            LogInfo(<span class="enscript-string">&quot;responseReceived: peer MAC = 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x&quot;</span>,
+                    ptrToMAC-&gt;b[0], ptrToMAC-&gt;b[1], ptrToMAC-&gt;b[2], ptrToMAC-&gt;b[3], ptrToMAC-&gt;b[4], ptrToMAC-&gt;b[5]);
+
+            ptr = addToResponseList(peerBloomFilter, ptrToMAC);       
+            <span class="enscript-comment">// Update the received time.
+</span>            ptr-&gt;recievedTime =  mDNSStorage.timenow;
+            <span class="enscript-comment">// See if we are browsing for any of the peers advertised services.
+</span>            findMatchingBrowse(ptr);
+            <span class="enscript-comment">// See if we have a registration that matches the peer's browse.
+</span>            findMatchingRegistration(ptr);
+        }
+    }
+    <span class="enscript-keyword">else</span>    <span class="enscript-comment">// Have an entry from this MAC in the list.
+</span>    {
+        <span class="enscript-comment">// Update the received time.
+</span>        ptr-&gt;recievedTime =  mDNSStorage.timenow;
+
+        <span class="enscript-keyword">if</span> (ptr-&gt;peerBloomFilter == peerBloomFilter)
+        {
+            <span class="enscript-comment">// A duplicate of a current entry.
+</span>#<span class="enscript-reference">if</span> <span class="enscript-variable-name">VERBOSE_BLE_DEBUG</span>
+            LogInfo(<span class="enscript-string">&quot;responseReceived: Duplicate of previous beacon, ignoring&quot;</span>);
+            LogInfo(<span class="enscript-string">&quot;responseReceived: sender MAC = 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x&quot;</span>,
+                    ptrToMAC-&gt;b[0], ptrToMAC-&gt;b[1], ptrToMAC-&gt;b[2], ptrToMAC-&gt;b[3], ptrToMAC-&gt;b[4], ptrToMAC-&gt;b[5]);
+#<span class="enscript-reference">endif</span> // <span class="enscript-variable-name">VERBOSE_BLE_DEBUG</span>
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogInfo(<span class="enscript-string">&quot;responseReceived: Update of previous beacon&quot;</span>);
+            LogInfo(<span class="enscript-string">&quot;responseReceived: peerBloomFilter = 0x%lx&quot;</span>, peerBloomFilter);
+            LogInfo(<span class="enscript-string">&quot;responseReceived: sender MAC = 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x&quot;</span>,
+                    ptrToMAC-&gt;b[0], ptrToMAC-&gt;b[1], ptrToMAC-&gt;b[2], ptrToMAC-&gt;b[3], ptrToMAC-&gt;b[4], ptrToMAC-&gt;b[5]);
+
+            ptr-&gt;peerBloomFilter = peerBloomFilter;
+            findMatchingBrowse(ptr);
+            findMatchingRegistration(ptr);
+        }
+
+        <span class="enscript-comment">// If peer is no longer browsing or advertising, remove from list.
+</span>        <span class="enscript-keyword">if</span> (peerBloomFilter == 0)
+        {
+            LogInfo(<span class="enscript-string">&quot;responseReceived: Removing peer entry from the list&quot;</span>);
+
+            removeFromResponseList(ptrToMAC);
+        }
+    }
+
+    mDNS_Unlock(&amp; mDNSStorage);   <span class="enscript-comment">// Calling mDNS_Unlock is what gives m-&gt;NextScheduledEvent its new value
+</span>    KQueueUnlock(<span class="enscript-string">&quot;BLE responseReceived&quot;</span>);
+}
+
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Client</span> <span class="enscript-variable-name">request</span> <span class="enscript-variable-name">handling</span>
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">start_BLE_browse</span>(mDNSInterfaceID InterfaceID, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> domain, DNS_TypeValues type, DNSServiceFlags flags, mDNSu8 *key, size_t keySize)
+{
+    requestList_t * ptr; 
+    <span class="enscript-type">const</span> domainname *serviceType = domain;
+
+    <span class="enscript-keyword">if</span> (!EnableBLEBasedDiscovery)
+    {
+        LogMsg(<span class="enscript-string">&quot;start_BLE_browse: EnableBLEBasedDiscovery disabled&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (keySize &gt; MAX_KEY_SIZE)
+    {
+        LogMsg(<span class="enscript-string">&quot;start_BLE_browse: keySize = %d, maximum allowable is %d&quot;</span>, keySize, MAX_KEY_SIZE);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// Verify that the request to be auto triggered applies to AWDL, or is using the pseudo interface for
+</span>    <span class="enscript-comment">// BLE threshold browsing.
+</span>    <span class="enscript-keyword">if</span> (!isAutoTriggerRequest(InterfaceID, flags) &amp;&amp; (InterfaceID != mDNSInterface_BLE))
+    {
+        LogMsg(<span class="enscript-string">&quot;start_BLE_browse: invalid request: InterfaceID = %d, flags = 0x%x&quot;</span>, InterfaceID, flags);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// Address records don't have a service type to hash and match on, so pass them directly to the D2D plugin.
+</span>    <span class="enscript-keyword">if</span> ((type == kDNSType_A) || (type == kDNSType_AAAA))
+    {
+        LogInfo(<span class="enscript-string">&quot;start_BLE_browse: Passing directly to D2D layer: %##s %s&quot;</span>, domain-&gt;c, DNSTypeName(type));
+        internal_start_browsing_for_service(InterfaceID, domain, type, flags);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// Skip the instance to get to the service type for non PTR records
+</span>    <span class="enscript-keyword">if</span> (type != kDNSType_PTR)
+        serviceType = SkipLeadingLabels(domain, 1);
+
+    LogInfo(<span class="enscript-string">&quot;start_BLE_browse: Starting BLE service type browse for: %##s %s&quot;</span>, domain-&gt;c, DNSTypeName(type));
+
+    ptr = addToRequestList(&amp;BLEBrowseListHead, domain, type, flags);
+
+    <span class="enscript-comment">// If equivalent BLE browse is already running, just return.
+</span>    <span class="enscript-keyword">if</span> (ptr-&gt;refCount &gt; 1)
+    {
+        LogInfo(<span class="enscript-string">&quot;start_BLE_browse: Dup of existing BLE browse.&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (!setBLEServiceHash(serviceType, ptr))
+    {
+        LogInfo(<span class="enscript-string">&quot;setBLEServiceHash failed!&quot;</span>);
+        removeFromRequestList(&amp;BLEBrowseListHead, domain, type);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// Save these for use in D2D plugin callback logic.
+</span>    memcpy(ptr-&gt;key, key, keySize);
+    ptr-&gt;keySize = keySize;
+    ptr-&gt;InterfaceID = InterfaceID;
+
+    mDNS_Lock(&amp; mDNSStorage);   <span class="enscript-comment">// Must lock to initialize mDNSStorage.timenow.
+</span>    updateBeaconAndScanState();
+    mDNS_Unlock(&amp; mDNSStorage); <span class="enscript-comment">// Updates mDNSStorage.NextScheduledEvent.
+</span>    checkCachedResponses(ptr, NULL);
+}
+
+<span class="enscript-comment">// Stop the browse.
+</span><span class="enscript-comment">// Return true if this is the last reference to the browse, false otherwise.
+</span>bool <span class="enscript-function-name">stop_BLE_browse</span>(mDNSInterfaceID InterfaceID, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> domain, DNS_TypeValues type, DNSServiceFlags flags)
+{
+    (<span class="enscript-type">void</span>)  flags;   <span class="enscript-comment">// not used initially
+</span>    requestList_t * ptr;
+    bool    lastReference = false;
+
+    <span class="enscript-keyword">if</span> (!EnableBLEBasedDiscovery)
+    {
+        LogMsg(<span class="enscript-string">&quot;stop_BLE_browse: EnableBLEBasedDiscovery disabled&quot;</span>);
+        <span class="enscript-keyword">return</span> lastReference;
+    }
+
+    <span class="enscript-comment">// Address records don't have a service type to hash and match on, so pass them directly to the D2D plugin.
+</span>    <span class="enscript-keyword">if</span> ((type == kDNSType_A) || (type == kDNSType_AAAA))
+    {
+        LogInfo(<span class="enscript-string">&quot;stop_BLE_browse: Passing directly to D2D layer: %##s %s&quot;</span>, domain-&gt;c, DNSTypeName(type));
+        internal_stop_browsing_for_service(InterfaceID, domain, type, flags);
+        <span class="enscript-keyword">return</span> lastReference;
+    }
+
+    LogInfo(<span class="enscript-string">&quot;stop_BLE_browse: Stopping BLE service type browse for: %##s %s&quot;</span>, domain-&gt;c, DNSTypeName(type));
+
+    ptr = *(findInRequestList(&amp;BLEBrowseListHead, domain, type));
+    <span class="enscript-keyword">if</span> (ptr == 0)
+    {
+        LogInfo(<span class="enscript-string">&quot;stop_BLE_browse: No matching browse found.&quot;</span>);
+        <span class="enscript-keyword">return</span> lastReference;
+    }
+    
+    <span class="enscript-comment">// If this is the last reference for this browse, and it was autoTriggered on AWDL,
+</span>    <span class="enscript-comment">// remove the request from the AWDL pluggin.
+</span>    <span class="enscript-keyword">if</span> (ptr-&gt;refCount == 1)
+    {
+        lastReference = true;
+
+        <span class="enscript-keyword">if</span> (isAutoTriggerRequest(ptr-&gt;InterfaceID, ptr-&gt;flags) &amp;&amp; ptr-&gt;triggeredOnAWDL)
+        {
+            internal_stop_browsing_for_service(ptr-&gt;InterfaceID, &amp; ptr-&gt;name, ptr-&gt;type, ptr-&gt;flags);
+            ptr-&gt;triggeredOnAWDL = false;
+        }
+    }
+
+    removeFromRequestList(&amp;BLEBrowseListHead, domain, type);
+
+    mDNS_Lock(&amp; mDNSStorage);   <span class="enscript-comment">// Must lock to initialize mDNSStorage.timenow.
+</span>    <span class="enscript-keyword">if</span> (lastReference)
+        updateBeaconAndScanState();
+    mDNS_Unlock(&amp; mDNSStorage); <span class="enscript-comment">// Updates mDNSStorage.NextScheduledEvent.
+</span>
+    <span class="enscript-comment">// If there are no active browse or registration requests, BLE scanning will be disabled.
+</span>    <span class="enscript-comment">// Clear the list of responses received to remove any stale response state.
+</span>    <span class="enscript-keyword">if</span> (BLEBrowseListHead == NULL &amp;&amp; BLERegistrationListHead == 0)
+        clearResponseLists();
+
+    <span class="enscript-keyword">return</span> lastReference;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">start_BLE_advertise</span>(<span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> resourceRecord, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> domain, DNS_TypeValues type, DNSServiceFlags flags)
+{
+    requestList_t * ptr; 
+    <span class="enscript-type">const</span> domainname * serviceType = domain;
+
+    <span class="enscript-keyword">if</span> (!EnableBLEBasedDiscovery)
+    {
+        LogMsg(<span class="enscript-string">&quot;start_BLE_advertise: EnableBLEBasedDiscovery disabled&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (resourceRecord == NULL)
+    {
+        LogInfo(<span class="enscript-string">&quot;start_BLE_advertise: NULL resourceRecord for: %##s %s, returning&quot;</span>, domain-&gt;c, DNSTypeName(type));
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// Verify that the request to be auto triggered applies to AWDL, or is using the pseudo interface for
+</span>    <span class="enscript-comment">// BLE threshold browsing.
+</span>    <span class="enscript-keyword">if</span> (!isAutoTriggerRequest(resourceRecord-&gt;InterfaceID, flags) &amp;&amp; (resourceRecord-&gt;InterfaceID != mDNSInterface_BLE))
+    {
+        LogMsg(<span class="enscript-string">&quot;start_BLE_advertise: invalid request: InterfaceID = %d, flags = 0x%x&quot;</span>, resourceRecord-&gt;InterfaceID, flags);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    LogInfo(<span class="enscript-string">&quot;start_BLE_advertise: Starting BLE service type advertisement for: %##s %s&quot;</span>, domain-&gt;c, DNSTypeName(type));
+
+    <span class="enscript-comment">// Skip the instance to get to the service type for non PTR records
+</span>    <span class="enscript-keyword">if</span> (type != kDNSType_PTR)
+        serviceType = SkipLeadingLabels(domain, 1);
+
+    ptr = addToRequestList(&amp;BLERegistrationListHead, domain, type, flags);
+
+    <span class="enscript-comment">// If equivalent BLE registration is already running, just return.
+</span>    <span class="enscript-keyword">if</span> (ptr-&gt;refCount &gt; 1)
+    {
+        LogInfo(<span class="enscript-string">&quot;start_BLE_advertise: Dup of existing BLE advertisement.&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (!setBLEServiceHash(serviceType, ptr))
+    {
+        LogInfo(<span class="enscript-string">&quot;setBLEServiceHash failed!&quot;</span>);
+        removeFromRequestList(&amp;BLERegistrationListHead, domain, type);
+        <span class="enscript-keyword">return</span>;
+    }
+    ptr-&gt;resourceRecord = resourceRecord;
+    ptr-&gt;InterfaceID = resourceRecord-&gt;InterfaceID;
+
+    mDNS_Lock(&amp; mDNSStorage);   <span class="enscript-comment">// Must lock to initialize mDNSStorage.timenow.
+</span>    updateBeaconAndScanState();
+    mDNS_Unlock(&amp; mDNSStorage); <span class="enscript-comment">// Updates mDNSStorage.NextScheduledEvent.
+</span>    checkCachedResponses(NULL, ptr);
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">stop_BLE_advertise</span>(<span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> domain, DNS_TypeValues type, DNSServiceFlags flags)
+{
+    (<span class="enscript-type">void</span>)  flags;   <span class="enscript-comment">// not used initially
+</span>    requestList_t       * ptr;
+    bool                lastReference = false;
+
+    LogInfo(<span class="enscript-string">&quot;stop_BLE_advertise: Stopping BLE service type advertisement for: %##s %s&quot;</span>, domain-&gt;c, DNSTypeName(type));
+
+    <span class="enscript-comment">// Get the request pointer from the indirect pointer returned.
+</span>    ptr =  *(findInRequestList(&amp;BLERegistrationListHead, domain, type));
+
+    <span class="enscript-keyword">if</span> (ptr == 0)
+    {
+        LogInfo(<span class="enscript-string">&quot;stop_BLE_advertise: No matching advertisement found.&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+    
+    <span class="enscript-comment">// If this is the last reference for this registration, and it was autoTriggered on AWDL,
+</span>    <span class="enscript-comment">// remove the request from the AWDL pluggin.
+</span>    <span class="enscript-keyword">if</span> (ptr-&gt;refCount == 1)
+    {
+        lastReference = true;
+
+        <span class="enscript-keyword">if</span> (isAutoTriggerRequest(ptr-&gt;InterfaceID, ptr-&gt;flags) &amp;&amp; ptr-&gt;triggeredOnAWDL)
+        {
+            <span class="enscript-comment">// And remove the corresponding advertisements from the AWDL D2D plugin if we had previously
+</span>            <span class="enscript-comment">// passed this advertisement request to the plugin.
+</span>            internal_stop_advertising_service(ptr-&gt;resourceRecord, (ptr-&gt;flags | kDNSServiceFlagsIncludeAWDL));
+            ptr-&gt;triggeredOnAWDL = false;
+        }
+    }
+    removeFromRequestList(&amp;BLERegistrationListHead, domain, type);
+
+    mDNS_Lock(&amp; mDNSStorage);   <span class="enscript-comment">// Must lock to initialize mDNSStorage.timenow.
+</span>    <span class="enscript-comment">// If this is the last reference for this registration, update advertising and browsing bits set in the beacon.
+</span>    <span class="enscript-keyword">if</span> (lastReference)
+        updateBeaconAndScanState();
+    mDNS_Unlock(&amp; mDNSStorage); <span class="enscript-comment">// Updates mDNSStorage.NextScheduledEvent.
+</span>
+    <span class="enscript-comment">// If there are no active browse or registration requests, BLE scanning will be disabled.
+</span>    <span class="enscript-comment">// Clear the list of responses received to remove any stale response state.
+</span>    <span class="enscript-keyword">if</span> (BLEBrowseListHead == NULL &amp;&amp; BLERegistrationListHead == 0)
+        clearResponseLists();
+}
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">UNIT_TEST</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">mark</span> - <span class="enscript-variable-name">Unit</span> <span class="enscript-variable-name">test</span> <span class="enscript-variable-name">support</span> <span class="enscript-variable-name">routines</span>
+
+<span class="enscript-comment">// These unit test support routines are called from unittests/ framework
+</span><span class="enscript-comment">// and are not compiled for the mDNSResponder runtime code paths.
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MAX_ENTRIES</span> 42
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">FAILED</span>      exit(1)
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">BLE_requestListTests</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-type">const</span> domainname *domainArray[] = { (<span class="enscript-type">const</span> domainname*)<span class="enscript-string">&quot;\x6&quot;</span> <span class="enscript-string">&quot;_test0&quot;</span> <span class="enscript-string">&quot;\x4&quot;</span> <span class="enscript-string">&quot;_tcp&quot;</span> <span class="enscript-string">&quot;\x5&quot;</span> <span class="enscript-string">&quot;local&quot;</span>,
+                                        (<span class="enscript-type">const</span> domainname*)<span class="enscript-string">&quot;\x6&quot;</span> <span class="enscript-string">&quot;_test1&quot;</span> <span class="enscript-string">&quot;\x4&quot;</span> <span class="enscript-string">&quot;_tcp&quot;</span> <span class="enscript-string">&quot;\x5&quot;</span> <span class="enscript-string">&quot;local&quot;</span>,
+                                        (<span class="enscript-type">const</span> domainname*)<span class="enscript-string">&quot;\x6&quot;</span> <span class="enscript-string">&quot;_test2&quot;</span> <span class="enscript-string">&quot;\x4&quot;</span> <span class="enscript-string">&quot;_tcp&quot;</span> <span class="enscript-string">&quot;\x5&quot;</span> <span class="enscript-string">&quot;local&quot;</span>,
+                                        (<span class="enscript-type">const</span> domainname*)<span class="enscript-string">&quot;\x6&quot;</span> <span class="enscript-string">&quot;_test3&quot;</span> <span class="enscript-string">&quot;\x4&quot;</span> <span class="enscript-string">&quot;_tcp&quot;</span> <span class="enscript-string">&quot;\x5&quot;</span> <span class="enscript-string">&quot;local&quot;</span>,
+                                        (<span class="enscript-type">const</span> domainname*)<span class="enscript-string">&quot;\x6&quot;</span> <span class="enscript-string">&quot;_test4&quot;</span> <span class="enscript-string">&quot;\x4&quot;</span> <span class="enscript-string">&quot;_tcp&quot;</span> <span class="enscript-string">&quot;\x5&quot;</span> <span class="enscript-string">&quot;local&quot;</span>,
+                                      };
+
+    mDNSu16         type = kDNSServiceType_PTR;
+    DNSServiceFlags flags = 0;
+    requestList_t   * ptr;
+    <span class="enscript-type">void</span>            * response = 0;
+    <span class="enscript-type">int</span>             i;
+    <span class="enscript-type">int</span>             numOfdomains = <span class="enscript-keyword">sizeof</span>(domainArray)/<span class="enscript-keyword">sizeof</span>(domainArray[0]);
+
+    printf(<span class="enscript-string">&quot;BLE_requestListTests() entry:\n&quot;</span>);
+
+    <span class="enscript-comment">// Basic request list unit tests.
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; numOfdomains; i++)
+    {
+        ptr = addToRequestList(&amp;BLEBrowseListHead, domainArray[i], type, flags);
+
+        <span class="enscript-keyword">if</span> (ptr == NULL)
+        {
+            printf(<span class="enscript-string">&quot;addToRequestList() FAILED:\n&quot;</span>);
+            FAILED;
+        }
+    }
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; numOfdomains; i++)
+    {
+        <span class="enscript-comment">// should now find the entry
+</span>        <span class="enscript-keyword">if</span> (*(findInRequestList(&amp;BLEBrowseListHead, domainArray[i], type)) == 0)
+        {
+            printf(<span class="enscript-string">&quot;findInRequestList() did not find valid entry FAILED:\n&quot;</span>);
+            FAILED;
+        }
+        <span class="enscript-comment">// but not find an entry with the same domain, but different type
+</span>        <span class="enscript-keyword">if</span> (*(findInRequestList(&amp;BLEBrowseListHead, domainArray[i], kDNSServiceType_NULL)) != 0)
+        {
+            printf(<span class="enscript-string">&quot;findInRequestList() invalid entry matched FAILED:\n&quot;</span>);
+            FAILED;
+        }
+    }
+    <span class="enscript-comment">// remove all the entries
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; numOfdomains; i++)
+    {
+        removeFromRequestList(&amp;BLEBrowseListHead, domainArray[i], type);
+    }
+    <span class="enscript-comment">// and sanity check the list is now empty
+</span>    <span class="enscript-keyword">if</span> (BLEBrowseListHead)
+    {
+            printf(<span class="enscript-string">&quot;BLEBrowseListHead not empty after all entries removed.\n&quot;</span>);
+            FAILED;
+    }
+
+    <span class="enscript-comment">// Identical request reference count management tests.
+</span>    <span class="enscript-comment">// Add identical requests to the list and verify the corresponding refCount is managed correctly
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; MAX_ENTRIES; i++)
+    {
+        ptr = addToRequestList(&amp;BLEBrowseListHead, domainArray[0], type, flags);
+
+        <span class="enscript-keyword">if</span> (ptr == NULL)
+        {
+            printf(<span class="enscript-string">&quot;addToRequestList() of duplicate request FAILED:\n&quot;</span>);
+            FAILED;
+        }
+    }
+
+    <span class="enscript-keyword">if</span> (ptr-&gt;refCount != MAX_ENTRIES)
+    {
+        printf(<span class="enscript-string">&quot;refCount = %d, should be %d\n&quot;</span>, ptr-&gt;refCount, MAX_ENTRIES);
+        FAILED;
+    }
+
+    <span class="enscript-comment">// Remove all but one entry
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; (MAX_ENTRIES - 1); i++)
+    {
+        removeFromRequestList(&amp;BLEBrowseListHead, domainArray[0], type);
+    }
+    <span class="enscript-keyword">if</span> (ptr-&gt;refCount != 1)
+    {
+        printf(<span class="enscript-string">&quot;refCount = %d, should be %d\n&quot;</span>, ptr-&gt;refCount, 1);
+        FAILED;
+    }
+
+    <span class="enscript-comment">// Basic response list unit tests.
+</span>    <span class="enscript-comment">// Note that responses per request are not checked for duplicates at this level, so
+</span>    <span class="enscript-comment">// we can unit test with the same (NULL) response pointer to add multiple responses.
+</span>
+    <span class="enscript-comment">// add MAX_ENTRIES responses
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; MAX_ENTRIES; i++)
+        addToResponseListForRequest(ptr, response);
+
+    <span class="enscript-comment">// remove the responses, counting that MAX_ENTRIES were removed
+</span>    i = 0;
+    <span class="enscript-keyword">while</span> (inResponseListForRequest(ptr, response) &amp;&amp; removeFromResponseListForRequest(ptr, response))
+    {
+        i++;
+    }
+    <span class="enscript-keyword">if</span> (i != MAX_ENTRIES)
+    {
+        printf(<span class="enscript-string">&quot;removed %d responses, should have been %d\n&quot;</span>, i, MAX_ENTRIES);
+        FAILED;
+    }
+
+    <span class="enscript-comment">// response list should be empty at this point
+</span>    <span class="enscript-keyword">if</span> (ptr-&gt;ourResponses)
+    {
+        printf(<span class="enscript-string">&quot;response list should be empty\n&quot;</span>);
+        FAILED;
+    }
+
+    <span class="enscript-comment">// add MAX_ENTRIES responses
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; MAX_ENTRIES; i++)
+        addToResponseListForRequest(ptr, response);
+
+    <span class="enscript-comment">// free them all
+</span>    freeResponseListEntriesForRequest(ptr);
+
+    <span class="enscript-keyword">if</span> (ptr-&gt;ourResponses)
+    {
+        printf(<span class="enscript-string">&quot;freeResponseListEntriesForRequest() should have removed all responses\n&quot;</span>);
+        FAILED;
+    }
+}
+
+mDNSlocal mDNSEthAddr etherAddress[] = {
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x03 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x04 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x05 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x06 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x07 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x08 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x09 } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0b } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0d } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0e } },
+    { { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f } },
+};
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">BLE_responseListTests</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-type">int</span>             numOfEtherAddresses = <span class="enscript-keyword">sizeof</span>(etherAddress)/<span class="enscript-keyword">sizeof</span>(etherAddress[0]);
+    <span class="enscript-type">int</span>             i;
+
+    printf(<span class="enscript-string">&quot;BLE_responseListTests() entry:\n&quot;</span>);
+
+    <span class="enscript-comment">// Just use the index as to generate the peerBloomFilter value to vary it per entry.
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; numOfEtherAddresses; i++)
+        (<span class="enscript-type">void</span>)addToResponseList(1 &lt;&lt; i, &amp;etherAddress[i]);
+
+    <span class="enscript-comment">// Verify all entries are found.
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; numOfEtherAddresses; i++)
+    {
+        <span class="enscript-keyword">if</span> (*(findInResponseList(&amp;etherAddress[i])) == 0)
+        {
+            printf(<span class="enscript-string">&quot;findInResponseList() did not find entry in list\n&quot;</span>);
+            FAILED;
+        }
+    }
+
+    <span class="enscript-comment">// Remove all entries.
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; numOfEtherAddresses; i++)
+        removeFromResponseList(&amp;etherAddress[i]);
+        
+    <span class="enscript-comment">// Sanity check that all response lists are empty
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; RESPONSE_LIST_NUMBER; i++)
+    {
+        <span class="enscript-keyword">if</span> (BLEResponseListHeads[i])
+        {
+            printf(<span class="enscript-string">&quot;BLEResponseListHeads[%d] not empty after removeFromResponseList() calls \n&quot;</span>, i);
+            FAILED;
+        }
+    }
+
+    <span class="enscript-comment">// Add them back again.
+</span>    <span class="enscript-keyword">for</span> (i = 0; i &lt; numOfEtherAddresses; i++)
+        (<span class="enscript-type">void</span>)addToResponseList(1 &lt;&lt; i, &amp;etherAddress[i]);
+
+    <span class="enscript-comment">// And verify that clearResponseLists() clears all entries.
+</span>    clearResponseLists();
+    <span class="enscript-keyword">for</span> (i = 0; i &lt; RESPONSE_LIST_NUMBER; i++)
+    {
+        <span class="enscript-keyword">if</span> (BLEResponseListHeads[i])
+        {
+            printf(<span class="enscript-string">&quot;BLEResponseListHeads[%d] not empty after clearResponseLists() call\n&quot;</span>, i);
+            FAILED;
+        }
+    }
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">BLE_unitTest</span>(<span class="enscript-type">void</span>)
+{
+    BLE_requestListTests();
+    BLE_responseListTests();
+    printf(<span class="enscript-string">&quot;All BLE.c unit tests PASSED.\n&quot;</span>);
+}
+
+#<span class="enscript-reference">endif</span>  //  <span class="enscript-variable-name">UNIT_TEST</span>
+
+#<span class="enscript-reference">endif</span>  // <span class="enscript-variable-name">ENABLE_BLE_TRIGGERED_BONJOUR</span>
+</pre>
+<hr />
+</body></html>

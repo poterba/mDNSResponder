@@ -1,0 +1,292 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>unittest_common.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">unittest_common.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="unittest_common.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;unittest_common.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSMacOSX.h&quot;</span>
+
+<span class="enscript-type">static</span> mDNS_PlatformSupport PlatformStorage;
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">RR_CACHE_SIZE</span> ((32*1024) / sizeof(CacheRecord))
+<span class="enscript-type">static</span> CacheEntity gRrcachestorage[RR_CACHE_SIZE];
+
+<span class="enscript-comment">// Primary interface info that is used when simulating the receive of the response packet
+</span>mDNSInterfaceID primary_interfaceID;
+mDNSAddr primary_v4;
+mDNSAddr primary_v6;
+mDNSAddr primary_router;
+
+<span class="enscript-comment">// This function sets up the minimum environement to run a unit test. It
+</span><span class="enscript-comment">// initializes logging, interfaces, and timenow.
+</span>mDNSexport mStatus <span class="enscript-function-name">init_mdns_environment</span>(mDNSBool enableLogging)
+{
+	mDNS *m = &amp;mDNSStorage;
+
+	init_logging_ut();
+	mDNS_LoggingEnabled = enableLogging;
+	mDNS_PacketLoggingEnabled = enableLogging;
+
+	mStatus result = mDNS_InitStorage_ut(m, &amp;PlatformStorage, gRrcachestorage, RR_CACHE_SIZE, mDNSfalse, mDNSNULL, mDNSNULL);
+	<span class="enscript-keyword">if</span> (result != mStatus_NoError)
+		<span class="enscript-keyword">return</span> result;
+
+	primary_v4 = primary_v6 = primary_router = zeroAddr;
+	SetInterfaces_ut(&amp;primary_interfaceID, &amp;primary_v4, &amp;primary_v6, &amp;primary_router);
+
+	m-&gt;timenow = mDNS_TimeNow_NoLock(m);
+	<span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+<span class="enscript-comment">// This function sets up the minimum environement to run a unit test. It
+</span><span class="enscript-comment">// initializes logging and timenow.  This is the call to use if your
+</span><span class="enscript-comment">// unit test does not use interfaces.
+</span>mDNSexport mStatus <span class="enscript-function-name">init_mdns_storage</span>()
+{
+	mDNS *m = &amp;mDNSStorage;
+
+	init_logging_ut();
+	mDNS_LoggingEnabled = 1;
+	mDNS_PacketLoggingEnabled = 1;
+
+	mStatus result = mDNS_InitStorage_ut(m, &amp;PlatformStorage, gRrcachestorage, RR_CACHE_SIZE, mDNSfalse, mDNSNULL, mDNSNULL);
+	<span class="enscript-keyword">if</span> (result != mStatus_NoError)
+		<span class="enscript-keyword">return</span> result;
+
+	<span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">init_client_request</span>(request_state* req, <span class="enscript-type">char</span> *msgbuf, size_t msgSize, uint32_t op)
+{
+	<span class="enscript-comment">// Simulate read_msg behavior since unit test does not open a socket
+</span>	memset(req, 0, <span class="enscript-keyword">sizeof</span>(request_state));
+
+	req-&gt;ts = t_complete;
+	req-&gt;msgbuf = mDNSNULL;
+	req-&gt;msgptr = msgbuf;
+	req-&gt;msgend = msgbuf + msgSize;
+
+	<span class="enscript-comment">// The rest of the request values are set in order to simulate a request
+</span>	req-&gt;sd             = client_req_sd;
+	req-&gt;uid            = client_req_uid;
+	req-&gt;hdr_bytes      = client_req_hdr_bytes;
+	req-&gt;hdr.version    = client_req_hdr_version;
+	req-&gt;hdr.op         = op; <span class="enscript-comment">// query_request
+</span>	req-&gt;hdr.datalen    = msgSize;
+	req-&gt;data_bytes     = msgSize;
+	req-&gt;process_id     = client_req_process_id;
+	memcpy(req-&gt;pid_name, client_req_pid_name, strlen(client_req_pid_name));
+}
+
+<span class="enscript-comment">// This function calls the mDNSResponder handle_client_request() API.  It initializes
+</span><span class="enscript-comment">// the request and query data structures.
+</span>mDNSexport mStatus <span class="enscript-function-name">start_client_request</span>(request_state* req, <span class="enscript-type">char</span> *msgbuf, size_t msgsz, uint32_t op, UDPSocket* socket)
+{
+	<span class="enscript-comment">// Process the unit test's client request
+</span>	init_client_request(req, msgbuf, msgsz, op);
+
+	mStatus result = handle_client_request_ut((<span class="enscript-type">void</span>*)req);
+	DNSQuestion* q = &amp;req-&gt;u.queryrecord.op.q;
+	q-&gt;LocalSocket = socket;
+	<span class="enscript-keyword">return</span> result;
+}
+
+<span class="enscript-comment">// This function calls the mDNSResponder mDNSCoreReceive() API.
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">receive_response</span>(<span class="enscript-type">const</span> request_state* req, DNSMessage *msg, size_t msgSize)
+{
+	mDNS *m = &amp;mDNSStorage;
+	mDNSAddr srcaddr;
+	mDNSIPPort srcport, dstport;
+	<span class="enscript-type">const</span> mDNSu8 * end;
+	DNSQuestion *q = (DNSQuestion *)&amp;req-&gt;u.queryrecord.op.q;
+	UInt8* data = (UInt8*)msg;
+
+	<span class="enscript-comment">// Used same values for DNS server as specified during init of unit test
+</span>	srcaddr.type				= mDNSAddrType_IPv4;
+	srcaddr.ip.v4.NotAnInteger	= dns_server_ipv4.NotAnInteger;
+	srcport.NotAnInteger		= client_resp_src_port;
+
+	<span class="enscript-comment">// Used random value for dstport
+</span>	dstport.NotAnInteger = swap16((mDNSu16)client_resp_dst_port);
+
+	<span class="enscript-comment">// Set DNS message (that was copied from a WireShark packet)
+</span>	end = (<span class="enscript-type">const</span> mDNSu8 *)msg + msgSize;
+
+	<span class="enscript-comment">// Set socket info that mDNSCoreReceive uses to verify socket context
+</span>	q-&gt;LocalSocket-&gt;ss.port.NotAnInteger = swap16((mDNSu16)client_resp_dst_port);
+	q-&gt;TargetQID.b[0] = data[0];
+	q-&gt;TargetQID.b[1] = data[1];
+
+	<span class="enscript-comment">// Execute mDNSCoreReceive which copies two DNS records into the cache
+</span>	mDNSCoreReceive(m, msg, end, &amp;srcaddr, srcport, &amp;primary_v4, dstport, primary_interfaceID);
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">receive_suspicious_response_ut</span>(<span class="enscript-type">const</span> request_state* req, DNSMessage *msg, size_t msgSize, mDNSOpaque16 suspiciousqid, mDNSBool goodLastQID)
+{
+    mDNS *m = &amp;mDNSStorage;
+    mDNSAddr srcaddr;
+    mDNSIPPort srcport, dstport;
+    <span class="enscript-type">const</span> mDNSu8 * end;
+    DNSQuestion *q = (DNSQuestion *)&amp;req-&gt;u.queryrecord.op.q;
+    UInt8* data = (UInt8*)msg;
+
+    <span class="enscript-comment">// Used same values for DNS server as specified during init of unit test
+</span>    srcaddr.type                = mDNSAddrType_IPv4;
+    srcaddr.ip.v4.NotAnInteger    = dns_server_ipv4.NotAnInteger;
+    srcport.NotAnInteger        = client_resp_src_port;
+
+    <span class="enscript-comment">// Used random value for dstport
+</span>    dstport.NotAnInteger = swap16((mDNSu16)client_resp_dst_port);
+
+    <span class="enscript-comment">// Set DNS message (that was copied from a WireShark packet)
+</span>    end = (<span class="enscript-type">const</span> mDNSu8 *)msg + msgSize;
+
+    <span class="enscript-comment">// Set socket info that mDNSCoreReceive uses to verify socket context
+</span>    q-&gt;LocalSocket-&gt;ss.port.NotAnInteger = swap16((mDNSu16)client_resp_dst_port);
+    <span class="enscript-keyword">if</span> (suspiciousqid.NotAnInteger)
+    {
+        q-&gt;TargetQID.NotAnInteger = swap16(suspiciousqid.NotAnInteger);
+        <span class="enscript-keyword">if</span> (goodLastQID)
+        {
+            q-&gt;LastTargetQID.b[0] = data[0];
+            q-&gt;LastTargetQID.b[1] = data[1];
+        }
+        <span class="enscript-keyword">else</span> q-&gt;LastTargetQID.NotAnInteger = 0;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        q-&gt;TargetQID.b[0] = data[0];
+        q-&gt;TargetQID.b[1] = data[1];
+    }
+
+    <span class="enscript-comment">// Execute mDNSCoreReceive which copies two DNS records into the cache
+</span>    mDNSCoreReceive(m, msg, end, &amp;srcaddr, srcport, &amp;primary_v4, dstport, primary_interfaceID);
+}
+
+mDNSexport  size_t <span class="enscript-function-name">get_reply_len</span>(<span class="enscript-type">char</span>* name, uint16_t rdlen)
+{
+	size_t len = <span class="enscript-keyword">sizeof</span>(DNSServiceFlags);
+	len += <span class="enscript-keyword">sizeof</span>(mDNSu32);     <span class="enscript-comment">// interface index
+</span>	len += <span class="enscript-keyword">sizeof</span>(DNSServiceErrorType);
+	len += strlen(name) + 1;
+	len += 3 * <span class="enscript-keyword">sizeof</span>(mDNSu16); <span class="enscript-comment">// type, class, rdlen
+</span>	len += rdlen;
+	len += <span class="enscript-keyword">sizeof</span>(mDNSu32);     <span class="enscript-comment">// TTL
+</span>	<span class="enscript-keyword">return</span> len;
+}
+
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">free_req</span>(request_state* req)
+{
+	<span class="enscript-comment">// Cleanup request's memory usage
+</span>	<span class="enscript-keyword">while</span> (req-&gt;replies)
+	{
+		reply_state *reply = req-&gt;replies;
+		req-&gt;replies = req-&gt;replies-&gt;next;
+		mDNSPlatformMemFree(reply);
+	}
+	req-&gt;replies = NULL;
+	mDNSPlatformMemFree(req);
+}
+
+<span class="enscript-comment">// Unit test support functions follow
+</span>#<span class="enscript-reference">define</span> <span class="enscript-function-name">SA_LEN</span>(addr) (((addr)-&gt;sa_family == AF_INET6) ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in))
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">get_ip</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> name, <span class="enscript-type">struct</span> sockaddr_storage *result)
+{
+	<span class="enscript-type">struct</span> addrinfo* aiList;
+	<span class="enscript-type">int</span> err = getaddrinfo(name, NULL, NULL, &amp;aiList);
+	<span class="enscript-keyword">if</span> (err) fprintf(stderr, <span class="enscript-string">&quot;getaddrinfo error %d for %s&quot;</span>, err, name);
+	<span class="enscript-keyword">else</span> memcpy(result, aiList-&gt;ai_addr, SA_LEN(aiList-&gt;ai_addr));
+	<span class="enscript-keyword">if</span> (aiList) freeaddrinfo(aiList);
+}
+
+<span class="enscript-comment">// The AddDNSServer_ut function adds a dns server to mDNSResponder's list.
+</span>mDNSexport mStatus <span class="enscript-function-name">AddDNSServerScoped_ut</span>(mDNSInterfaceID interfaceID, ScopeType scoped)
+{
+    mDNS *m = &amp;mDNSStorage;
+    m-&gt;timenow = 0;
+    mDNS_Lock(m);
+    domainname  d;
+    mDNSAddr    addr;
+    mDNSIPPort  port;
+    mDNSs32     serviceID      = 0;
+    mDNSu32     timeout        = dns_server_timeout;
+    mDNSBool    cellIntf       = 0;
+    mDNSBool    isExpensive    = 0;
+    mDNSBool    isConstrained  = 0;
+    mDNSBool    isCLAT46       = mDNSfalse;
+    mDNSu32     resGroupID     = dns_server_resGroupID;
+    mDNSBool    reqA           = mDNStrue;
+    mDNSBool    reqAAAA        = mDNStrue;
+    mDNSBool    reqDO          = mDNSfalse;
+    d.c[0]                     = 0;
+    addr.type                  = mDNSAddrType_IPv4;
+    addr.ip.v4.NotAnInteger    = dns_server_ipv4.NotAnInteger;
+    port.NotAnInteger          = client_resp_src_port;
+    mDNS_AddDNSServer(m, &amp;d, interfaceID, serviceID, &amp;addr, port, scoped, timeout,
+                      cellIntf, isExpensive, isConstrained, isCLAT46, resGroupID,
+                      reqA, reqAAAA, reqDO);
+    mDNS_Unlock(m);
+    <span class="enscript-keyword">return</span> mStatus_NoError;
+}
+
+mDNSexport mStatus <span class="enscript-function-name">AddDNSServer_ut</span>(<span class="enscript-type">void</span>)
+{
+    <span class="enscript-keyword">return</span> AddDNSServerScoped_ut(primary_interfaceID, kScopeNone);
+}
+
+mDNSexport mStatus  <span class="enscript-function-name">force_uDNS_SetupDNSConfig_ut</span>(mDNS *<span class="enscript-type">const</span> m)
+{
+    m-&gt;p-&gt;LastConfigGeneration = 0;
+    <span class="enscript-keyword">return</span> uDNS_SetupDNSConfig(m);
+}
+
+mDNSexport mStatus <span class="enscript-function-name">verify_cache_addr_order_for_domain_ut</span>(mDNS *<span class="enscript-type">const</span> m, mDNSu8* octet, mDNSu32 count, <span class="enscript-type">const</span> domainname *<span class="enscript-type">const</span> name)
+{
+    mStatus result = mStatus_NoError;
+    <span class="enscript-type">const</span> CacheGroup *cg = CacheGroupForName(m, DomainNameHashValue(name), name);
+    <span class="enscript-keyword">if</span> (cg)
+    {
+        mDNSu32 i;
+        CacheRecord **rp = (CacheRecord **)&amp;cg-&gt;members;
+        <span class="enscript-keyword">for</span> (i = 0 ; *rp &amp;&amp; i &lt; count ; i++ )
+        {
+            <span class="enscript-keyword">if</span> ((*rp)-&gt;resrec.rdata-&gt;u.ipv4.b[3] != octet[i])
+            {
+                LogInfo (<span class="enscript-string">&quot;Octet %d compare failed %d != %d&quot;</span>, i, (*rp)-&gt;resrec.rdata-&gt;u.ipv4.b[3], octet[i]);
+                <span class="enscript-keyword">break</span>;
+            }
+            rp = &amp;(*rp)-&gt;next;
+        }
+        <span class="enscript-keyword">if</span> (i != count) result = mStatus_Invalid;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogInfo (<span class="enscript-string">&quot;Cache group not found&quot;</span>);
+        result = mStatus_Invalid;
+    }
+
+    <span class="enscript-keyword">return</span> result;
+}
+</pre>
+<hr />
+</body></html>

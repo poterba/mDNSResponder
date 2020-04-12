@@ -1,0 +1,1273 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnssd-proxy.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnssd-proxy.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnssd-proxy.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* dnssd-proxy.c
+ *
+ * Copyright (c) 2018-2019 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * This is a Discovery Proxy module for the SRP gateway.
+ *
+ * The motivation here is that it makes sense to co-locate the SRP relay and the Discovery Proxy because
+ * these functions are likely to co-exist on the same node, listening on the same port.  For homenet-style
+ * name resolution, we need a DNS proxy that implements DNSSD Discovery Proxy for local queries, but
+ * forwards other queries to an ISP resolver.  The SRP gateway is already expecting to do this.
+ * This module implements the functions required to allow the SRP gateway to also do Discovery Relay.
+ * 
+ * The Discovery Proxy relies on Apple's DNS-SD library and the mDNSResponder DNSSD server, which is included
+ * in Apple's open source mDNSResponder package, available here:
+ *
+ *            <a href="https://opensource.apple.com/tarballs/mDNSResponder/">https://opensource.apple.com/tarballs/mDNSResponder/</a>
+ */</span>
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">__APPLE_USE_RFC_3542</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/errno.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/event.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;fcntl.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/time.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;ctype.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;srp.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns-msg.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;srp-crypto.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dso.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;ioloop.h&quot;</span>
+
+<span class="enscript-comment">// Enumerate the list of interfaces, map them to interface indexes, give each one a name
+</span><span class="enscript-comment">// Have a tree of subdomains for matching
+</span>
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> dnssd_query {
+    io_t io;
+    DNSServiceRef ref;
+    <span class="enscript-type">char</span> *name;						<span class="enscript-comment">// The name we are looking up.
+</span>    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *enclosing_domain;	<span class="enscript-comment">// The domain the name is in, or NULL if not ours; if null, name is an FQDN.
+</span>    dns_name_pointer_t enclosing_domain_pointer;
+    message_t *question;
+    comm_t *connection;
+    dso_activity_t *activity;
+    <span class="enscript-type">int</span> serviceFlags;				<span class="enscript-comment">// Service flags to use with this query.
+</span>    bool is_dns_push;
+    bool is_edns0;
+    uint16_t type, qclass;			<span class="enscript-comment">// Original query type and class.
+</span>    dns_towire_state_t towire;
+    uint8_t *p_dso_length;			<span class="enscript-comment">// Where to store the DSO length just before we write out a push notification.
+</span>    dns_wire_t response;			<span class="enscript-comment">// This has to be at the end because we don't zero the RRdata buffer.
+</span>} dnssd_query_t;
+
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> push_subscription_activity_type[] = <span class="enscript-string">&quot;push subscription&quot;</span>;
+
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> local_suffix[] = <span class="enscript-string">&quot;.local.&quot;</span>;
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">PROXIED_DOMAIN</span> <span class="enscript-string">&quot;proxy.home.arpa.&quot;</span>
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> proxied_domain[] = PROXIED_DOMAIN;
+<span class="enscript-type">const</span> <span class="enscript-type">char</span> proxied_domain_ld[] = <span class="enscript-string">&quot;.&quot;</span> PROXIED_DOMAIN;
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MY_NAME</span> <span class="enscript-string">&quot;proxy.example.com.&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">MY_IPV4_ADDR</span> <span class="enscript-string">&quot;192.0.2.1&quot;</span>
+<span class="enscript-comment">// #define MY_IPV6_ADDR &quot;2001:db8::1&quot; // for example
+</span>
+#<span class="enscript-reference">define</span> <span class="enscript-function-name">TOWIRE_CHECK</span>(note, towire, func) { func; if ((towire)-&gt;error != 0 &amp;&amp; failnote == NULL) failnote = (note); }
+
+int64_t <span class="enscript-function-name">dso_transport_idle</span>(<span class="enscript-type">void</span> *context, int64_t next_event)
+{
+    <span class="enscript-keyword">return</span> next_event;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dnssd_query_cancel</span>(io_t *io)
+{
+    dnssd_query_t *query = (dnssd_query_t *)io;
+    <span class="enscript-keyword">if</span> (query-&gt;io.sock != -1) {
+        DNSServiceRefDeallocate(query-&gt;ref);
+        query-&gt;io.sock = -1;
+    }
+    query-&gt;connection = NULL;
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_push_finalize</span>(dso_activity_t *activity)
+{
+    dnssd_query_t *query = (dnssd_query_t *)activity-&gt;context;
+    INFO(<span class="enscript-string">&quot;dnssd_push_finalize: %s&quot;</span>, activity-&gt;name);
+    dnssd_query_cancel(&amp;query-&gt;io);
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_query_finalize</span>(io_t *io)
+{
+    dnssd_query_t *query = (dnssd_query_t *)io;
+    INFO(<span class="enscript-string">&quot;dnssd_query_finalize on %s%s&quot;</span>, query-&gt;name, query-&gt;enclosing_domain ? <span class="enscript-string">&quot;.local&quot;</span> : <span class="enscript-string">&quot;&quot;</span>);
+    <span class="enscript-keyword">if</span> (query-&gt;question) {
+        message_free(query-&gt;question);
+    }
+    free(query-&gt;name);
+    free(query);
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_query_callback</span>(io_t *io)
+{
+    dnssd_query_t *query = (dnssd_query_t *)io;
+    <span class="enscript-type">int</span> status = DNSServiceProcessResult(query-&gt;ref);
+    <span class="enscript-keyword">if</span> (status != kDNSServiceErr_NoError) {
+        ERROR(<span class="enscript-string">&quot;DNSServiceProcessResult on %s%s returned %d&quot;</span>, query-&gt;name, query-&gt;enclosing_domain ? <span class="enscript-string">&quot;.local&quot;</span> : <span class="enscript-string">&quot;&quot;</span>, status);
+        <span class="enscript-keyword">if</span> (query-&gt;activity != NULL &amp;&amp; query-&gt;connection != NULL) {
+            dso_drop_activity(query-&gt;connection-&gt;dso, query-&gt;activity);
+        } <span class="enscript-keyword">else</span> {
+            dnssd_query_cancel(&amp;query-&gt;io);
+        }
+    }
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span>
+<span class="enscript-function-name">add_dnssd_query</span>(dnssd_query_t *query)
+{
+    io_t *io = &amp;query-&gt;io;
+    io-&gt;sock = DNSServiceRefSockFD(query-&gt;ref);
+    io-&gt;cancel = dnssd_query_cancel;
+    io-&gt;cancel_on_close = &amp;query-&gt;connection-&gt;io;
+    add_reader(io, dnssd_query_callback, dnssd_query_finalize);
+}
+
+<span class="enscript-comment">// Parse a NUL-terminated text string into a sequence of labels.
+</span>dns_name_t *
+<span class="enscript-function-name">dns_pres_name_parse</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *pname)
+{
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *dot = strchr(pname, <span class="enscript-string">'.'</span>);
+    dns_label_t *ret;
+    <span class="enscript-type">int</span> len;
+    <span class="enscript-keyword">if</span> (dot == NULL) {
+        dot = pname + strlen(pname);
+    }
+    len = (dot - pname) + 1 + (<span class="enscript-keyword">sizeof</span> *ret) - DNS_MAX_LABEL_SIZE;
+    ret = calloc(len, 1);
+    <span class="enscript-keyword">if</span> (ret == NULL) {
+        <span class="enscript-keyword">return</span> NULL;
+    }
+    ret-&gt;len = dot - pname;
+    <span class="enscript-keyword">if</span> (ret-&gt;len &gt; 0) {
+        memcpy(ret-&gt;data, pname, ret-&gt;len);
+    }
+    ret-&gt;data[ret-&gt;len] = 0;
+    <span class="enscript-keyword">if</span> (dot[0] == <span class="enscript-string">'.'</span>) {
+        ret-&gt;next = dns_pres_name_parse(dot + 1);
+    }
+    <span class="enscript-keyword">return</span> ret;
+}
+
+bool
+<span class="enscript-function-name">dns_subdomain_of</span>(dns_name_t *name, dns_name_t *domain, <span class="enscript-type">char</span> *buf, size_t buflen)
+{
+    <span class="enscript-type">int</span> dnum = 0, nnum = 0;
+    dns_name_t *np, *dp;
+    <span class="enscript-type">char</span> *bufp = buf;
+    size_t bytesleft = buflen;
+
+    <span class="enscript-keyword">for</span> (dp = domain; dp; dp = dp-&gt;next) {
+        dnum++;
+    }
+    <span class="enscript-keyword">for</span> (np = name; np; np = np-&gt;next) {
+        nnum++;
+    }
+    <span class="enscript-keyword">if</span> (nnum &lt; dnum) {
+        <span class="enscript-keyword">return</span> false;
+    }
+    <span class="enscript-keyword">for</span> (np = name; np; np = np-&gt;next) {
+        <span class="enscript-keyword">if</span> (nnum-- == dnum) {
+            <span class="enscript-keyword">break</span>;
+        }
+    }
+    <span class="enscript-keyword">if</span> (dns_names_equal(np, domain)) {
+        <span class="enscript-keyword">for</span> (dp = name; dp != np; dp = dp-&gt;next) {
+            <span class="enscript-keyword">if</span> (dp-&gt;len + 1 &gt; bytesleft) {
+                <span class="enscript-comment">// It's okay to return false here because a name that overflows the buffer isn't valid.
+</span>                ERROR(<span class="enscript-string">&quot;dns_subdomain_of: out of buffer space!&quot;</span>);
+                <span class="enscript-keyword">return</span> false;
+            }
+            memcpy(bufp, dp-&gt;data, dp-&gt;len);
+            bufp += dp-&gt;len;
+            bytesleft = bytesleft - dp-&gt;len;
+            <span class="enscript-keyword">if</span> (dp-&gt;next != np) {
+                *bufp++ = <span class="enscript-string">'.'</span>;
+                bytesleft -= dp-&gt;len;
+            }
+        }
+        *bufp = 0;
+        <span class="enscript-keyword">return</span> true;
+    }
+    <span class="enscript-keyword">return</span> false;
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dp_simple_response</span>(comm_t *comm, <span class="enscript-type">int</span> rcode)
+{
+    <span class="enscript-keyword">if</span> (comm-&gt;send_response) {
+        <span class="enscript-type">struct</span> iovec iov;
+        dns_wire_t response;
+        memset(&amp;response, 0, DNS_HEADER_SIZE);
+
+        <span class="enscript-comment">// We take the ID and the opcode from the incoming message, because if the
+</span>        <span class="enscript-comment">// header has been mangled, we (a) wouldn't have gotten here and (b) don't
+</span>        <span class="enscript-comment">// have any better choice anyway.
+</span>        response.id = comm-&gt;message-&gt;wire.id;
+        dns_qr_set(&amp;response, dns_qr_response);
+        dns_opcode_set(&amp;response, dns_opcode_get(&amp;comm-&gt;message-&gt;wire));
+        dns_rcode_set(&amp;response, rcode);
+        iov.iov_base = &amp;response;
+        iov.iov_len = DNS_HEADER_SIZE; <span class="enscript-comment">// No RRs
+</span>        comm-&gt;send_response(comm, comm-&gt;message, &amp;iov, 1);
+    }
+}
+
+bool
+<span class="enscript-function-name">dp_served</span>(dns_name_t *name, <span class="enscript-type">char</span> *buf, size_t bufsize)
+{
+    <span class="enscript-type">static</span> dns_name_t *home_dot_arpa = NULL;
+    <span class="enscript-keyword">if</span> (home_dot_arpa == NULL) {
+        home_dot_arpa = dns_pres_name_parse(proxied_domain);
+        <span class="enscript-keyword">if</span> (home_dot_arpa == NULL) {
+            ERROR(<span class="enscript-string">&quot;Unable to parse %s!&quot;</span>, proxied_domain);
+            <span class="enscript-keyword">return</span> false;
+        }
+    }
+
+     <span class="enscript-comment">// For now we treat any query to home.arpa as local.
+</span>    <span class="enscript-keyword">return</span> dns_subdomain_of(name, home_dot_arpa, buf, bufsize);
+}
+
+<span class="enscript-comment">// Utility function to find &quot;local&quot; on the end of a string of labels.
+</span>bool
+<span class="enscript-function-name">truncate_local</span>(dns_name_t *name)
+{
+    dns_label_t *lp, *prev, *prevprev;
+    
+    prevprev = prev = NULL;
+    <span class="enscript-comment">// Find the root label.
+</span>    <span class="enscript-keyword">for</span> (lp = name; lp &amp;&amp; lp-&gt;len; lp = lp-&gt;next) {
+        prevprev = prev;
+        prev = lp;
+    }
+    <span class="enscript-keyword">if</span> (lp &amp;&amp; prev &amp;&amp; prevprev) {
+        <span class="enscript-keyword">if</span> (prev-&gt;len == 5 &amp;&amp; !strncasecmp(prev-&gt;data, <span class="enscript-string">&quot;local&quot;</span>, 5)) {
+            dns_name_free(prev);
+            prevprev-&gt;next = NULL;
+            <span class="enscript-keyword">return</span> true;
+        }
+    }
+    dns_name_free(name);
+    <span class="enscript-keyword">return</span> false;
+}    
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dp_query_add_data_to_response</span>(dnssd_query_t *query, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *fullname,
+                              uint16_t rrtype, uint16_t rrclass, uint16_t rdlen, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *rdata, uint32_t ttl)
+{
+    dns_towire_state_t *towire = &amp;query-&gt;towire;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *failnote = NULL;
+
+    <span class="enscript-comment">// Rewrite the domain if it's .local.
+</span>    <span class="enscript-keyword">if</span> (query-&gt;enclosing_domain != NULL) {
+        TOWIRE_CHECK(<span class="enscript-string">&quot;query name&quot;</span>, towire, dns_name_to_wire(NULL, towire, query-&gt;name));
+        <span class="enscript-keyword">if</span> (query-&gt;enclosing_domain_pointer.message_start != NULL) {
+            <span class="enscript-comment">// This happens if we are sending a DNS response, because we can always point back to the question.
+</span>            TOWIRE_CHECK(<span class="enscript-string">&quot;enclosing_domain_pointer&quot;</span>, towire,
+                         dns_pointer_to_wire(NULL, towire, &amp;query-&gt;enclosing_domain_pointer));
+            INFO(<span class="enscript-string">&quot; dns answer:  type %02d class %02d %s.%s (p)&quot;</span>, rrtype, rrclass, query-&gt;name, query-&gt;enclosing_domain);
+        } <span class="enscript-keyword">else</span> {
+            <span class="enscript-comment">// This happens if we are sending a DNS Push notification.
+</span>            TOWIRE_CHECK(<span class="enscript-string">&quot;enclosing_domain&quot;</span>, towire, dns_full_name_to_wire(NULL, towire, query-&gt;enclosing_domain));
+            INFO(<span class="enscript-string">&quot;push answer:  type %02d class %02d %s.%s&quot;</span>, rrtype, rrclass, query-&gt;name, query-&gt;enclosing_domain);
+        }
+    } <span class="enscript-keyword">else</span> {
+        TOWIRE_CHECK(<span class="enscript-string">&quot;query-&gt;name&quot;</span>, towire, dns_full_name_to_wire(NULL, towire, query-&gt;name));
+        INFO(<span class="enscript-string">&quot;%s answer:  type %02d class %02d %s.%s (p)&quot;</span>,
+             query-&gt;is_dns_push ? <span class="enscript-string">&quot;push&quot;</span> : <span class="enscript-string">&quot; dns&quot;</span>, rrtype, rrclass, query-&gt;name, query-&gt;enclosing_domain);
+    }
+    TOWIRE_CHECK(<span class="enscript-string">&quot;rrtype&quot;</span>, towire, dns_u16_to_wire(towire, rrtype));
+    TOWIRE_CHECK(<span class="enscript-string">&quot;rrclass&quot;</span>, towire, dns_u16_to_wire(towire, rrclass));
+    TOWIRE_CHECK(<span class="enscript-string">&quot;ttl&quot;</span>, towire, dns_ttl_to_wire(towire, ttl));
+
+    <span class="enscript-keyword">if</span> (rdlen &gt; 0) {
+        <span class="enscript-comment">// If necessary, correct domain names inside of rrdata.
+</span>        <span class="enscript-keyword">if</span> (rrclass == dns_qclass_in &amp;&amp; (rrtype == dns_rrtype_srv ||
+                                         rrtype == dns_rrtype_ptr ||
+                                         rrtype == dns_rrtype_cname)) {
+            dns_rr_t answer;
+            dns_name_t *name;
+            <span class="enscript-type">unsigned</span> offp = 0;
+            answer.type = rrtype;
+            answer.qclass = rrclass;
+            <span class="enscript-keyword">if</span> (!dns_rdata_parse_data(&amp;answer, rdata, &amp;offp, rdlen, rdlen, 0)) {
+                ERROR(<span class="enscript-string">&quot;dp_query_add_data_to_response: rdata from mDNSResponder didn't parse!!&quot;</span>);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">raw</span>;
+            }
+            <span class="enscript-keyword">switch</span>(rrtype) {
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_cname</span>:
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_ptr</span>:
+                name = answer.data.ptr.name;
+                <span class="enscript-keyword">if</span> (!truncate_local(name)) {
+                    <span class="enscript-keyword">goto</span> <span class="enscript-reference">raw</span>;
+                }
+                TOWIRE_CHECK(<span class="enscript-string">&quot;rdlength begin&quot;</span>, towire, dns_rdlength_begin(towire));
+                <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_rrtype_srv</span>:
+                name = answer.data.srv.name;
+                <span class="enscript-keyword">if</span> (!truncate_local(name)) {
+                    <span class="enscript-keyword">goto</span> <span class="enscript-reference">raw</span>;
+                }
+                TOWIRE_CHECK(<span class="enscript-string">&quot;rdlength begin&quot;</span>, towire, dns_rdlength_begin(towire));
+                TOWIRE_CHECK(<span class="enscript-string">&quot;answer.data.srv.priority&quot;</span>, towire, dns_u16_to_wire(towire, answer.data.srv.priority));
+                TOWIRE_CHECK(<span class="enscript-string">&quot;answer.data.srv.weight&quot;</span>, towire, dns_u16_to_wire(towire, answer.data.srv.weight));
+                TOWIRE_CHECK(<span class="enscript-string">&quot;answer.data.srv.port&quot;</span>, towire, dns_u16_to_wire(towire, answer.data.srv.port));
+                <span class="enscript-keyword">break</span>;
+            <span class="enscript-reference">default</span>:
+                ERROR(<span class="enscript-string">&quot;dp_query_add_data_to_response: can't get here.&quot;</span>);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">raw</span>;
+                <span class="enscript-keyword">break</span>;
+            }
+            <span class="enscript-comment">// If we get here, the name ended in &quot;local.&quot;
+</span>            <span class="enscript-type">int</span> bytes_written = dns_name_to_wire_canonical(towire-&gt;p, towire-&gt;lim - towire-&gt;p, name);
+            towire-&gt;p += bytes_written;
+            <span class="enscript-keyword">if</span> (query-&gt;enclosing_domain_pointer.message_start != NULL) {
+                TOWIRE_CHECK(<span class="enscript-string">&quot;enclosing_domain_pointer internal&quot;</span>, towire,
+                             dns_pointer_to_wire(NULL, towire, &amp;query-&gt;enclosing_domain_pointer));
+            } <span class="enscript-keyword">else</span> {
+                TOWIRE_CHECK(<span class="enscript-string">&quot;enclosing_domain internal&quot;</span>, towire,
+                             dns_full_name_to_wire(NULL, towire, query-&gt;enclosing_domain));
+            }
+            dns_rdlength_end(towire);
+        } <span class="enscript-keyword">else</span> {
+        <span class="enscript-reference">raw</span>:
+            TOWIRE_CHECK(<span class="enscript-string">&quot;rdlen&quot;</span>, towire, dns_u16_to_wire(towire, rdlen));
+            TOWIRE_CHECK(<span class="enscript-string">&quot;rdata&quot;</span>, towire, dns_rdata_raw_data_to_wire(towire, rdata, rdlen));
+        }
+    } <span class="enscript-keyword">else</span> {
+        TOWIRE_CHECK(<span class="enscript-string">&quot;rdlen&quot;</span>, towire, dns_u16_to_wire(towire, rdlen));
+    }
+    <span class="enscript-keyword">if</span> (failnote) {
+        ERROR(<span class="enscript-string">&quot;dp_query_add_data_to_response: %s&quot;</span>, failnote);
+    }
+}
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> hardwired hardwired_t;
+<span class="enscript-type">struct</span> hardwired {
+    hardwired_t *next;
+    uint16_t type;
+    <span class="enscript-type">char</span> *name;
+    <span class="enscript-type">char</span> *fullname;
+    uint8_t *rdata;
+    uint16_t rdlen;
+} *hardwired_responses;
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_hardwired_add</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *name, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *domain, size_t rdlen, uint8_t *rdata, uint16_t type)
+{
+    hardwired_t *hp;
+    <span class="enscript-type">int</span> namelen = strlen(name);
+    size_t total = (<span class="enscript-keyword">sizeof</span> *hp) + rdlen + namelen * 2 + strlen(proxied_domain_ld) + 2;
+
+    hp = calloc(1, (<span class="enscript-keyword">sizeof</span> *hp) + rdlen + namelen * 2 + strlen(proxied_domain_ld) + 2);
+    hp-&gt;rdata = (uint8_t *)(hp + 1);
+    hp-&gt;rdlen = rdlen;
+    memcpy(hp-&gt;rdata, rdata, rdlen);
+    hp-&gt;name = (<span class="enscript-type">char</span> *)hp-&gt;rdata + rdlen;
+    strcpy(hp-&gt;name, name);
+    hp-&gt;fullname = hp-&gt;name + namelen + 1;
+    strcpy(hp-&gt;fullname, name);
+    strcpy(hp-&gt;fullname + namelen, proxied_domain_ld);
+    <span class="enscript-keyword">if</span> (hp-&gt;fullname + strlen(hp-&gt;fullname) + 1 != (<span class="enscript-type">char</span> *)hp + total) {
+        ERROR(<span class="enscript-string">&quot;%p != %p&quot;</span>, hp-&gt;fullname + strlen(hp-&gt;fullname) + 1, ((<span class="enscript-type">char</span> *)hp) + total);
+    }
+    hp-&gt;type = type;
+    hp-&gt;next = hardwired_responses;
+    hardwired_responses = hp;
+
+    INFO(<span class="enscript-string">&quot;hardwired_add: fullname %s name %s type %d rdlen %d&quot;</span>, hp-&gt;fullname, hp-&gt;name, hp-&gt;type, hp-&gt;rdlen);
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dnssd_hardwired_setup</span>(<span class="enscript-type">void</span>)
+{
+    dns_wire_t wire;
+    dns_towire_state_t towire;
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">RESET</span> \
+    memset(&amp;towire, 0, sizeof towire); \
+    towire.message = &amp;wire; \
+    towire.p = wire.data; \
+    towire.lim = towire.p + sizeof wire.data
+
+    <span class="enscript-comment">// Browsing pointers...
+</span>    RESET;
+    dns_full_name_to_wire(NULL, &amp;towire, proxied_domain);
+    dnssd_hardwired_add(<span class="enscript-string">&quot;b._dns-sd._udp&quot;</span>, proxied_domain_ld, towire.p - wire.data, wire.data, dns_rrtype_ptr);
+    dnssd_hardwired_add(<span class="enscript-string">&quot;lb._dns-sd._udp&quot;</span>, proxied_domain_ld, towire.p - wire.data, wire.data, dns_rrtype_ptr);
+    
+    <span class="enscript-comment">// SRV
+</span>    <span class="enscript-comment">// _dns-push-tls._tcp
+</span>    RESET;
+    dns_u16_to_wire(&amp;towire, 0); <span class="enscript-comment">// priority
+</span>    dns_u16_to_wire(&amp;towire, 0); <span class="enscript-comment">// weight
+</span>    dns_u16_to_wire(&amp;towire, 53); <span class="enscript-comment">// port
+</span>    <span class="enscript-comment">// Define MY_NAME to reference a name for this server in a different zone.
+</span>#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">MY_NAME</span>
+    dns_name_to_wire(NULL, &amp;towire, <span class="enscript-string">&quot;ns&quot;</span>);
+    dns_full_name_to_wire(NULL, &amp;towire, proxied_domain);
+#<span class="enscript-reference">else</span>
+    dns_full_name_to_wire(NULL, &amp;towire, MY_NAME);
+#<span class="enscript-reference">endif</span>
+    dnssd_hardwired_add(<span class="enscript-string">&quot;_dns-push-tls._tcp&quot;</span>, proxied_domain_ld, towire.p - wire.data, wire.data, dns_rrtype_srv);
+    
+    <span class="enscript-comment">// A
+</span>#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">MY_NAME</span>
+    <span class="enscript-comment">// ns
+</span>#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MY_IPV4_ADDR</span>
+    RESET;
+    dns_rdata_a_to_wire(&amp;towire, MY_IPV4_ADDR);
+    dnssd_hardwired_add(<span class="enscript-string">&quot;ns&quot;</span>, proxied_domain_ld, towire.p - wire.data, wire.data, dns_rrtype_a);
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-comment">// AAAA
+</span>#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MY_IPV6_ADDR</span>
+    RESET;
+    dns_rdata_aaaa_to_wire(&amp;towire, MY_IPV6_ADDR);
+    dnssd_hardwired_add(<span class="enscript-string">&quot;ns&quot;</span>, proxied_domain_ld, towire.p - wire.data, wire.data, dns_rrtype_aaaa);
+#<span class="enscript-reference">endif</span>
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-comment">// NS
+</span>    RESET;
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MY_NAME</span>
+    dns_full_name_to_wire(NULL, &amp;towire, MY_NAME);
+#<span class="enscript-reference">else</span>
+    dns_name_to_wire(NULL, &amp;towire, <span class="enscript-string">&quot;ns&quot;</span>);
+    dns_full_name_to_wire(NULL, &amp;towire, proxied_domain);
+#<span class="enscript-reference">endif</span>
+    dnssd_hardwired_add(<span class="enscript-string">&quot;&quot;</span>, proxied_domain, towire.p - wire.data, wire.data, dns_rrtype_ns);
+
+    <span class="enscript-comment">// SOA (piggybacking on what we already did for NS, which starts the same.
+</span>    dns_name_to_wire(NULL, &amp;towire, <span class="enscript-string">&quot;postmaster&quot;</span>);
+    dns_full_name_to_wire(NULL, &amp;towire, proxied_domain);
+    dns_u32_to_wire(&amp;towire, 0);     <span class="enscript-comment">// serial 
+</span>    dns_ttl_to_wire(&amp;towire, 7200);  <span class="enscript-comment">// refresh
+</span>    dns_ttl_to_wire(&amp;towire, 3600);  <span class="enscript-comment">// retry
+</span>    dns_ttl_to_wire(&amp;towire, 86400); <span class="enscript-comment">// expire
+</span>    dns_ttl_to_wire(&amp;towire, 120);    <span class="enscript-comment">// minimum
+</span>    dnssd_hardwired_add(<span class="enscript-string">&quot;&quot;</span>, proxied_domain, towire.p - wire.data, wire.data, dns_rrtype_soa);
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dp_query_send_dns_response</span>(dnssd_query_t *query)
+{
+    <span class="enscript-type">struct</span> iovec iov;
+    dns_towire_state_t *towire = &amp;query-&gt;towire;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *failnote = NULL;
+
+    <span class="enscript-comment">// Send an SOA record if it's a .local query.
+</span>    <span class="enscript-keyword">if</span> (query-&gt;enclosing_domain != NULL) {
+        <span class="enscript-comment">// DNSSD Hybrid, Section 6.1.
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;&amp;query-&gt;enclosing_domain_pointer&quot;</span>, towire,
+                     dns_pointer_to_wire(NULL, towire, &amp;query-&gt;enclosing_domain_pointer));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;dns_rrtype_soa&quot;</span>, towire,
+                     dns_u16_to_wire(towire, dns_rrtype_soa));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;dns_qclass_in&quot;</span>, towire,
+                     dns_u16_to_wire(towire, dns_qclass_in));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;ttl&quot;</span>, towire, dns_ttl_to_wire(towire, 3600));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;rdlength_begin &quot;</span>, towire, dns_rdlength_begin(towire));
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">MY_NAME</span>
+        TOWIRE_CHECK(MY_NAME, towire, dns_full_name_to_wire(NULL, towire, MY_NAME));
+#<span class="enscript-reference">else</span>
+        TOWIRE_CHECK(<span class="enscript-string">&quot;\&quot;ns\&quot;&quot;</span>, towire, dns_name_to_wire(NULL, towire, <span class="enscript-string">&quot;ns&quot;</span>));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;&amp;query-&gt;enclosing_domain_pointer&quot;</span>, towire,
+                     dns_pointer_to_wire(NULL, towire, &amp;query-&gt;enclosing_domain_pointer));
+#<span class="enscript-reference">endif</span>
+        TOWIRE_CHECK(<span class="enscript-string">&quot;\&quot;postmaster\&quot;&quot;</span>, towire,
+                     dns_name_to_wire(NULL, towire, <span class="enscript-string">&quot;postmaster&quot;</span>));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;&amp;query-&gt;enclosing_domain_pointer&quot;</span>, towire,
+                     dns_pointer_to_wire(NULL, towire, &amp;query-&gt;enclosing_domain_pointer));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;serial&quot;</span>, towire,dns_u32_to_wire(towire, 0));     <span class="enscript-comment">// serial 
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;refresh&quot;</span>, towire, dns_ttl_to_wire(towire, 7200));  <span class="enscript-comment">// refresh
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;retry&quot;</span>, towire, dns_ttl_to_wire(towire, 3600));  <span class="enscript-comment">// retry
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;expire&quot;</span>, towire, dns_ttl_to_wire(towire, 86400)); <span class="enscript-comment">// expire
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;minimum&quot;</span>, towire, dns_ttl_to_wire(towire, 120));    <span class="enscript-comment">// minimum
+</span>        dns_rdlength_end(towire);
+        query-&gt;response.nscount = htons(1);
+
+        <span class="enscript-comment">// Response is authoritative and not recursive.
+</span>        query-&gt;response.bitfield = htons((ntohs(query-&gt;response.bitfield) | dns_flags_aa) &amp; ~dns_flags_ra);
+    } <span class="enscript-keyword">else</span> {
+        <span class="enscript-comment">// Response is recursive and not authoritative.
+</span>        query-&gt;response.bitfield = htons((ntohs(query-&gt;response.bitfield) | dns_flags_ra) &amp; ~dns_flags_aa);
+    }
+    <span class="enscript-comment">// Not truncated, not authentic, checking not disabled.
+</span>    query-&gt;response.bitfield = htons(ntohs(query-&gt;response.bitfield) &amp; ~(dns_flags_rd | dns_flags_tc | dns_flags_ad | dns_flags_cd));
+
+    <span class="enscript-comment">// This is a response
+</span>    dns_qr_set(&amp;query-&gt;response, dns_qr_response);
+    <span class="enscript-comment">// No error.
+</span>    dns_rcode_set(&amp;query-&gt;response, dns_rcode_noerror);
+    
+    <span class="enscript-comment">// Send an OPT RR if we got one
+</span>    <span class="enscript-keyword">if</span> (query-&gt;is_edns0) {
+        TOWIRE_CHECK(<span class="enscript-string">&quot;Root label&quot;</span>, towire, dns_u8_to_wire(towire, 0));     <span class="enscript-comment">// Root label
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;dns_rrtype_opt&quot;</span>, towire, dns_u16_to_wire(towire, dns_rrtype_opt));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;UDP Payload size&quot;</span>, towire, dns_u16_to_wire(towire, 4096)); <span class="enscript-comment">// UDP Payload size
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;extended-rcode&quot;</span>, towire, dns_u8_to_wire(towire, 0));     <span class="enscript-comment">// extended-rcode
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;EDNS version 0&quot;</span>, towire, dns_u8_to_wire(towire, 0));     <span class="enscript-comment">// EDNS version 0
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;No extended flags&quot;</span>, towire, dns_u16_to_wire(towire, 0));    <span class="enscript-comment">// No extended flags
+</span>        TOWIRE_CHECK(<span class="enscript-string">&quot;No payload&quot;</span>, towire, dns_u16_to_wire(towire, 0));    <span class="enscript-comment">// No payload
+</span>        query-&gt;response.arcount = htons(1);
+    }
+
+    <span class="enscript-keyword">if</span> (towire-&gt;error) {
+        ERROR(<span class="enscript-string">&quot;dp_query_send_dns_response failed on %s&quot;</span>, failnote);
+    }
+
+    iov.iov_len = (query-&gt;towire.p - (uint8_t *)&amp;query-&gt;response);
+    iov.iov_base = &amp;query-&gt;response;
+    INFO(<span class="enscript-string">&quot;dp_query_send_dns_response: %s (len %zd)&quot;</span>, query-&gt;name, iov.iov_len);
+
+    <span class="enscript-keyword">if</span> (query-&gt;connection != NULL) {
+        query-&gt;connection-&gt;send_response(query-&gt;connection, query-&gt;question, &amp;iov, 1);
+    }
+
+    <span class="enscript-comment">// Free up state
+</span>    dnssd_query_cancel(&amp;query-&gt;io);
+    <span class="enscript-comment">// Query will be freed automatically next time through the io loop.
+</span>}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dp_query_towire_reset</span>(dnssd_query_t *query)
+{
+    query-&gt;towire.p = &amp;query-&gt;response.data[0];  <span class="enscript-comment">// We start storing RR data here.
+</span>    query-&gt;towire.lim = &amp;query-&gt;response.data[DNS_DATA_SIZE]; <span class="enscript-comment">// This is the limit to how much we can store.
+</span>    query-&gt;towire.message = &amp;query-&gt;response;
+    query-&gt;p_dso_length = NULL;
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_push_start</span>(dnssd_query_t *query)
+{
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *failnote = NULL;
+    
+    <span class="enscript-comment">// If we don't have a dso header yet, start one.
+</span>    <span class="enscript-keyword">if</span> (query-&gt;p_dso_length == NULL) {
+        memset(&amp;query-&gt;response, 0, (<span class="enscript-keyword">sizeof</span> query-&gt;response) - DNS_DATA_SIZE);
+        dns_opcode_set(&amp;query-&gt;response, dns_opcode_dso);
+        <span class="enscript-comment">// This is a unidirectional DSO message, which is marked as a query
+</span>        dns_qr_set(&amp;query-&gt;response, dns_qr_query);
+        <span class="enscript-comment">// No error cuz not a response.
+</span>        dns_rcode_set(&amp;query-&gt;response, dns_rcode_noerror);
+
+        TOWIRE_CHECK(<span class="enscript-string">&quot;kDSOType_DNSPushUpdate&quot;</span>, &amp;query-&gt;towire,
+                     dns_u16_to_wire(&amp;query-&gt;towire, kDSOType_DNSPushUpdate));
+        <span class="enscript-keyword">if</span> (query-&gt;towire.p + 2 &gt; query-&gt;towire.lim) {
+            ERROR(<span class="enscript-string">&quot;No room for dso length in DNS Push notification message.&quot;</span>);
+            dp_query_towire_reset(query);
+            <span class="enscript-keyword">return</span>;
+        }
+        query-&gt;p_dso_length = query-&gt;towire.p;
+        query-&gt;towire.p += 2;
+    }
+    <span class="enscript-keyword">if</span> (failnote != NULL) {
+        ERROR(<span class="enscript-string">&quot;dns_push_start: couldn't start update: %s&quot;</span>, failnote);
+    }
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dp_push_response</span>(dnssd_query_t *query)
+{
+    <span class="enscript-type">struct</span> iovec iov;
+
+    <span class="enscript-keyword">if</span> (query-&gt;p_dso_length != NULL) {
+        int16_t dso_length = query-&gt;towire.p - query-&gt;p_dso_length - 2;
+        iov.iov_len = (query-&gt;towire.p - (uint8_t *)&amp;query-&gt;response);
+        iov.iov_base = &amp;query-&gt;response;
+        INFO(<span class="enscript-string">&quot;dp_push_response: %s (len %zd)&quot;</span>, query-&gt;name, iov.iov_len);
+
+        query-&gt;towire.p = query-&gt;p_dso_length;
+        dns_u16_to_wire(&amp;query-&gt;towire, dso_length);
+        <span class="enscript-keyword">if</span> (query-&gt;connection != NULL) {
+            query-&gt;connection-&gt;send_response(query-&gt;connection, query-&gt;question, &amp;iov, 1);
+        }
+        dp_query_towire_reset(query);
+    }
+}
+
+bool
+<span class="enscript-function-name">dnssd_hardwired_response</span>(dnssd_query_t *query, DNSServiceQueryRecordReply callback)
+{
+    hardwired_t *hp;
+    bool got_response = false;
+
+    <span class="enscript-keyword">for</span> (hp = hardwired_responses; hp; hp = hp-&gt;next) {
+        <span class="enscript-keyword">if</span> ((query-&gt;type == hp-&gt;type || query-&gt;type == dns_rrtype_any) &amp;&amp;
+            query-&gt;qclass == dns_qclass_in &amp;&amp; !strcasecmp(hp-&gt;name, query-&gt;name)) {
+            <span class="enscript-keyword">if</span> (query-&gt;is_dns_push) {
+                dns_push_start(query);
+                dp_query_add_data_to_response(query, hp-&gt;fullname, hp-&gt;type, dns_qclass_in, hp-&gt;rdlen, hp-&gt;rdata, 3600);
+            } <span class="enscript-keyword">else</span> {
+                <span class="enscript-comment">// Store the response
+</span>                dp_query_add_data_to_response(query, hp-&gt;fullname, hp-&gt;type, dns_qclass_in, hp-&gt;rdlen, hp-&gt;rdata, 3600);
+                query-&gt;response.ancount = htons(ntohs(query-&gt;response.ancount) + 1);
+            }
+            got_response = true;
+        }
+    }
+    <span class="enscript-keyword">if</span> (got_response) {
+        <span class="enscript-keyword">if</span> (query-&gt;is_dns_push) {
+            dp_push_response(query);
+        } <span class="enscript-keyword">else</span> {
+            <span class="enscript-comment">// Steal the question
+</span>            query-&gt;question = query-&gt;connection-&gt;message;
+            query-&gt;connection-&gt;message = NULL;
+            <span class="enscript-comment">// Send the answer(s).
+</span>            dp_query_send_dns_response(query);
+        }
+        <span class="enscript-keyword">return</span> true;
+    }
+    <span class="enscript-keyword">return</span> false;
+}
+
+<span class="enscript-comment">// This is the callback for dns query results.
+</span><span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_query_callback</span>(DNSServiceRef sdRef, DNSServiceFlags flags, uint32_t interfaceIndex, DNSServiceErrorType errorCode,
+                   <span class="enscript-type">const</span> <span class="enscript-type">char</span> *fullname, uint16_t rrtype, uint16_t rrclass, uint16_t rdlen, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *rdata,
+                   uint32_t ttl, <span class="enscript-type">void</span> *context)
+{
+    dnssd_query_t *query = context;
+    
+    INFO(<span class="enscript-string">&quot;%s %d %d %x %d&quot;</span>, fullname, rrtype, rrclass, rdlen, errorCode);
+
+    <span class="enscript-keyword">if</span> (errorCode == kDNSServiceErr_NoError) {
+        dp_query_add_data_to_response(query, fullname, rrtype, rrclass, rdlen, rdata,
+                                      ttl &gt; 10 ? 10 : ttl); <span class="enscript-comment">// Per dnssd-hybrid 5.5.1, limit ttl to 10 seconds
+</span>        query-&gt;response.ancount = htons(ntohs(query-&gt;response.ancount) + 1);
+        <span class="enscript-comment">// If there isn't more coming, send the response now
+</span>        <span class="enscript-keyword">if</span> (!(flags &amp; kDNSServiceFlagsMoreComing)) {
+            dp_query_send_dns_response(query);
+        }
+    } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (errorCode == kDNSServiceErr_NoSuchRecord) {
+        <span class="enscript-comment">// If we get &quot;no such record,&quot; we can't really do much except return the answer.
+</span>        dp_query_send_dns_response(query);
+    } <span class="enscript-keyword">else</span> {
+        dns_rcode_set(&amp;query-&gt;response, dns_rcode_servfail);
+        dp_query_send_dns_response(query);
+    }
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dp_query_wakeup</span>(io_t *io)
+{
+    dnssd_query_t *query = (dnssd_query_t *)io;
+    <span class="enscript-type">char</span> name[DNS_MAX_NAME_SIZE + 1];
+    <span class="enscript-type">int</span> namelen = strlen(query-&gt;name);
+
+    <span class="enscript-comment">// Should never happen.
+</span>    <span class="enscript-keyword">if</span> ((namelen + query-&gt;enclosing_domain != NULL ? <span class="enscript-keyword">sizeof</span> local_suffix : 0) &gt; <span class="enscript-keyword">sizeof</span> name) {
+        ERROR(<span class="enscript-string">&quot;db_query_wakeup: no space to construct name.&quot;</span>);
+        dnssd_query_cancel(&amp;query-&gt;io);
+    }
+
+    strcpy(name, query-&gt;name);
+    <span class="enscript-keyword">if</span> (query-&gt;enclosing_domain != NULL) {
+        strcpy(name + namelen, local_suffix);
+    }
+    dp_query_send_dns_response(query);
+}
+
+bool
+<span class="enscript-function-name">dp_query_start</span>(comm_t *comm, dnssd_query_t *query, <span class="enscript-type">int</span> *rcode, DNSServiceQueryRecordReply callback)
+{
+    <span class="enscript-type">char</span> name[DNS_MAX_NAME_SIZE + 1];
+    <span class="enscript-type">char</span> *np;
+
+    <span class="enscript-keyword">if</span> (query-&gt;enclosing_domain != NULL) {
+        <span class="enscript-keyword">if</span> (dnssd_hardwired_response(query, callback)) {
+            *rcode = dns_rcode_noerror;
+            <span class="enscript-keyword">return</span> true;
+        }
+
+        <span class="enscript-type">int</span> len = strlen(query-&gt;name);
+        <span class="enscript-keyword">if</span> (len + <span class="enscript-keyword">sizeof</span> local_suffix &gt; <span class="enscript-keyword">sizeof</span> name) {
+            *rcode = dns_rcode_servfail;
+            free(query-&gt;name);
+            free(query);
+            ERROR(<span class="enscript-string">&quot;question name %s is too long for .local.&quot;</span>, name);
+            <span class="enscript-keyword">return</span> false;
+        }
+        memcpy(name, query-&gt;name, len);
+        memcpy(&amp;name[len], local_suffix, <span class="enscript-keyword">sizeof</span> local_suffix);
+        np = name;
+    } <span class="enscript-keyword">else</span> {
+        np = query-&gt;name;
+    }
+        
+    <span class="enscript-comment">// Issue a DNSServiceQueryRecord call
+</span>    <span class="enscript-type">int</span> err = DNSServiceQueryRecord(&amp;query-&gt;ref, query-&gt;serviceFlags,
+                                    kDNSServiceInterfaceIndexAny, np, query-&gt;type,
+                                    query-&gt;qclass, callback, query);
+    <span class="enscript-keyword">if</span> (err != kDNSServiceErr_NoError) {
+        ERROR(<span class="enscript-string">&quot;dp_query_start: DNSServiceQueryRecord failed for '%s': %d&quot;</span>, np, err);
+        *rcode = dns_rcode_servfail;
+        <span class="enscript-keyword">return</span> false;
+    } <span class="enscript-keyword">else</span> {
+        INFO(<span class="enscript-string">&quot;dp_query_start: DNSServiceQueryRecord started for '%s': %d&quot;</span>, np, err);
+    }
+    
+    <span class="enscript-comment">// If this isn't a DNS Push subscription, we need to respond quickly with as much data as we have.  It
+</span>    <span class="enscript-comment">// turns out that dig gives us a second, but also that responses seem to come back in on the order of a
+</span>    <span class="enscript-comment">// millisecond, so we'll wait 100ms.
+</span>    <span class="enscript-keyword">if</span> (!query-&gt;is_dns_push &amp;&amp; query-&gt;enclosing_domain) {
+        query-&gt;io.wakeup_time = ioloop_now + IOLOOP_SECOND / 10;
+        query-&gt;io.wakeup = dp_query_wakeup;
+    }
+
+    add_dnssd_query(query);
+    <span class="enscript-keyword">return</span> true;
+}
+
+dnssd_query_t *
+<span class="enscript-function-name">dp_query_generate</span>(comm_t *comm, dns_rr_t *question, bool dns_push, <span class="enscript-type">int</span> *rcode)
+{
+    <span class="enscript-type">char</span> name[DNS_MAX_NAME_SIZE + 1];
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *enclosing_domain;
+
+    <span class="enscript-comment">// If it's a query for a name served by the local discovery proxy, do an mDNS lookup.
+</span>    <span class="enscript-keyword">if</span> ((dp_served(question-&gt;name, name, <span class="enscript-keyword">sizeof</span> name))) {
+        enclosing_domain = proxied_domain;
+        INFO(<span class="enscript-string">&quot;%s question: type %d class %d %s%s -&gt; %s.local&quot;</span>, dns_push ? <span class="enscript-string">&quot;push&quot;</span> : <span class="enscript-string">&quot; dns&quot;</span>,
+             question-&gt;type, question-&gt;qclass, name, proxied_domain, name);
+    } <span class="enscript-keyword">else</span> {
+        dns_name_print(question-&gt;name, name, <span class="enscript-keyword">sizeof</span> name);
+        enclosing_domain = NULL;
+        INFO(<span class="enscript-string">&quot;%s question: type %d class %d %s&quot;</span>,
+             dns_push ? <span class="enscript-string">&quot;push&quot;</span> : <span class="enscript-string">&quot; dns&quot;</span>, question-&gt;type, question-&gt;qclass, name);
+    }
+
+    dnssd_query_t *query = malloc(<span class="enscript-keyword">sizeof</span> *query);
+    <span class="enscript-keyword">if</span> (query == NULL) {
+        ERROR(<span class="enscript-string">&quot;Unable to allocate memory for query on %s&quot;</span>, name);
+        *rcode = dns_rcode_servfail;
+        <span class="enscript-keyword">return</span> NULL;
+    }
+    <span class="enscript-comment">// Zero out everything except the message data buffer, which is large and doesn't need it.
+</span>    memset(query, 0, (<span class="enscript-keyword">sizeof</span> *query) - (<span class="enscript-keyword">sizeof</span> query-&gt;response) + DNS_HEADER_SIZE);
+
+    <span class="enscript-comment">// Steal the data from the question.   If subdomain is not null, this is a local mDNS query; otherwise
+</span>    <span class="enscript-comment">// we are recursing.
+</span>    INFO(<span class="enscript-string">&quot;name = %s&quot;</span>, name);
+    query-&gt;name = strdup(name);
+    <span class="enscript-keyword">if</span> (!query-&gt;name) {
+        *rcode = dns_rcode_servfail;
+        free(query);
+        ERROR(<span class="enscript-string">&quot;unable to allocate memory for question name on %s&quot;</span>, name);
+        <span class="enscript-keyword">return</span> NULL;
+    }
+    <span class="enscript-comment">// It is safe to assume that enclosing domain will not be freed out from under us.
+</span>    query-&gt;enclosing_domain = enclosing_domain;
+    query-&gt;serviceFlags = 0;
+
+    <span class="enscript-comment">// If this is a local query, add &quot;.local&quot; to the end of the name and require multicast.
+</span>    <span class="enscript-keyword">if</span> (enclosing_domain != NULL) {
+        query-&gt;serviceFlags |= kDNSServiceFlagsForceMulticast;
+    } <span class="enscript-keyword">else</span> {
+        query-&gt;serviceFlags |= kDNSServiceFlagsReturnIntermediates;
+    }
+    <span class="enscript-comment">// Name now contains the name we want mDNSResponder to look up.
+</span>
+    <span class="enscript-comment">// XXX make sure finalize does the right thing.
+</span>    query-&gt;connection = comm;
+
+    <span class="enscript-comment">// Remember whether this is a long-lived query.
+</span>    query-&gt;is_dns_push = dns_push;
+
+    <span class="enscript-comment">// Start writing the response
+</span>    dp_query_towire_reset(query);
+
+    query-&gt;type = question-&gt;type;
+    query-&gt;qclass = question-&gt;qclass;
+
+    <span class="enscript-comment">// Just in case we don't need to do a DNSServiceQueryRecord query to satisfy it.
+</span>    query-&gt;io.sock = -1;
+
+    *rcode = dns_rcode_noerror;
+    <span class="enscript-keyword">return</span> query;
+}
+
+<span class="enscript-comment">// This is the callback for DNS push query results, as opposed to push updates.
+</span><span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_push_query_callback</span>(DNSServiceRef sdRef, DNSServiceFlags flags, uint32_t interfaceIndex, DNSServiceErrorType errorCode,
+                        <span class="enscript-type">const</span> <span class="enscript-type">char</span> *fullname, uint16_t rrtype, uint16_t rrclass, uint16_t rdlen, <span class="enscript-type">const</span> <span class="enscript-type">void</span> *rdata,
+                        uint32_t ttl, <span class="enscript-type">void</span> *context)
+{
+    dnssd_query_t *query = context;
+    
+    <span class="enscript-comment">// From DNSSD-Hybrid, for mDNS queries:
+</span>    <span class="enscript-comment">// If we have cached answers, respond immediately, because we probably have all the answers.
+</span>    <span class="enscript-comment">// If we don't have cached answers, respond as soon as we get an answer (presumably more-coming will be false).
+</span>
+    <span class="enscript-comment">// The spec says to not query if we have cached answers.   We trust the DNSServiceQueryRecord call to handle this.
+</span>
+    <span class="enscript-comment">// If we switch to using a single connection to mDNSResponder, we could have !more-coming trigger a flush of
+</span>    <span class="enscript-comment">// all outstanding queries that aren't waiting on a time trigger.   This is because more-coming isn't
+</span>    <span class="enscript-comment">// query-specific
+</span>
+    INFO(<span class="enscript-string">&quot;PUSH %s %d %d %x %d&quot;</span>, fullname, rrtype, rrclass, rdlen, errorCode);
+
+    <span class="enscript-comment">// query_state_waiting means that we're answering a regular DNS question
+</span>    <span class="enscript-keyword">if</span> (errorCode == kDNSServiceErr_NoError) {
+        dns_push_start(query);
+
+        <span class="enscript-comment">// If kDNSServiceFlagsAdd is set, it's an add, otherwise a delete.
+</span>        <span class="enscript-keyword">if</span> (flags &amp; kDNSServiceFlagsAdd) {
+            dp_query_add_data_to_response(query, fullname, rrtype, rrclass, rdlen, rdata, ttl);
+        } <span class="enscript-keyword">else</span> {
+            <span class="enscript-comment">// I think if this happens it means delete all RRs of this type.
+</span>            <span class="enscript-keyword">if</span> (rdlen == 0) {
+                dp_query_add_data_to_response(query, fullname, rrtype, dns_qclass_any, rdlen, rdata, 0);
+            } <span class="enscript-keyword">else</span> {
+                dp_query_add_data_to_response(query, fullname, rrtype, dns_qclass_none, rdlen, rdata, 0);
+            }
+        }
+        <span class="enscript-comment">// If there isn't more coming, send a DNS Push notification now.
+</span>        <span class="enscript-comment">// XXX If enough comes to fill the response, send the message.
+</span>        <span class="enscript-keyword">if</span> (!(flags &amp; kDNSServiceFlagsMoreComing)) {
+            dp_push_response(query);
+        }
+    } <span class="enscript-keyword">else</span> {
+        ERROR(<span class="enscript-string">&quot;dns_push_query_callback: unexpected error code %d&quot;</span>, errorCode);
+        <span class="enscript-keyword">if</span> (query-&gt;connection != NULL) {
+            dso_drop_activity(query-&gt;connection-&gt;dso, query-&gt;activity);
+        }
+    }
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_push_subscribe</span>(comm_t *comm, dns_wire_t *header, dso_state_t *dso, dns_rr_t *question,
+                   <span class="enscript-type">const</span> <span class="enscript-type">char</span> *activity_name, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *opcode_name)
+{
+    <span class="enscript-type">int</span> rcode;
+    dnssd_query_t *query = dp_query_generate(comm, question, true, &amp;rcode);
+    
+    <span class="enscript-keyword">if</span> (!query) {
+        dp_simple_response(comm, rcode);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    dso_activity_t *activity = dso_add_activity(dso, activity_name, push_subscription_activity_type, query, dns_push_finalize);
+    query-&gt;activity = activity;
+    <span class="enscript-keyword">if</span> (!dp_query_start(comm, query, &amp;rcode, dns_push_query_callback)) {
+        dso_drop_activity(dso, activity);
+        dp_simple_response(comm, rcode);
+        <span class="enscript-keyword">return</span>;
+    }
+    dp_simple_response(comm, dns_rcode_noerror);
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_push_reconfirm</span>(comm_t *comm, dns_wire_t *header, dso_state_t *dso)
+{
+    dns_rr_t question;
+    <span class="enscript-type">char</span> name[DNS_MAX_NAME_SIZE + 1];
+    uint16_t rdlen;
+
+    <span class="enscript-comment">// The TLV offset should always be pointing into the message.
+</span>    <span class="enscript-type">unsigned</span> offp = dso-&gt;primary.payload - &amp;header-&gt;data[0];
+    <span class="enscript-type">int</span> len = offp + dso-&gt;primary.length;
+    
+    <span class="enscript-comment">// Parse the name, rrtype and class.   We say there's no rdata even though there is
+</span>    <span class="enscript-comment">// because there's no ttl and also we want the raw rdata, not parsed rdata.
+</span>    <span class="enscript-keyword">if</span> (!dns_rr_parse(&amp;question, header-&gt;data, len, &amp;offp, false) ||
+        !dns_u16_parse(header-&gt;data, len, &amp;offp, &amp;rdlen)) {
+        dp_simple_response(comm, dns_rcode_formerr);
+        ERROR(<span class="enscript-string">&quot;dns_push_reconfirm: RR parse from %s failed&quot;</span>, dso-&gt;remote_name);
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-keyword">if</span> (rdlen + offp != len) {
+        dp_simple_response(comm, dns_rcode_formerr);
+        ERROR(<span class="enscript-string">&quot;dns_push_reconfirm: RRdata parse from %s failed: length mismatch (%d != %d)&quot;</span>,
+              dso-&gt;remote_name, rdlen + offp, len);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> ((dp_served(question.name, name, <span class="enscript-keyword">sizeof</span> name))) {
+        <span class="enscript-type">int</span> len = strlen(name);
+        <span class="enscript-keyword">if</span> (len + <span class="enscript-keyword">sizeof</span> local_suffix &gt; <span class="enscript-keyword">sizeof</span> name) {
+            dp_simple_response(comm, dns_rcode_formerr);
+            ERROR(<span class="enscript-string">&quot;dns_push_reconfirm: name is too long for .local suffix: %s&quot;</span>, name);
+            <span class="enscript-keyword">return</span>;
+        }
+        memcpy(&amp;name[len], local_suffix, <span class="enscript-keyword">sizeof</span> local_suffix);
+    } <span class="enscript-keyword">else</span> {
+        dns_name_print(question.name, &amp;name[8], <span class="enscript-keyword">sizeof</span> name - 8);
+    }
+    <span class="enscript-comment">// transmogrify name.
+</span>    DNSServiceReconfirmRecord(0, kDNSServiceInterfaceIndexAny, name,
+                              question.type, question.qclass, rdlen, &amp;header-&gt;data[offp]);
+    dp_simple_response(comm, dns_rcode_noerror);
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_push_unsubscribe</span>(comm_t *comm, dns_wire_t *header, dso_state_t *dso, dns_rr_t *question,
+                   dso_activity_t *activity, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *opcode_name)
+{
+    dso_drop_activity(dso, activity);
+    <span class="enscript-comment">// No response, unsubscribe is unidirectional.
+</span>}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dns_push_subscription_change</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *opcode_name, comm_t *comm, dns_wire_t *header, dso_state_t *dso)
+{
+    <span class="enscript-comment">// type-in-hex/class-in-hex/name-to-subscribe
+</span>    <span class="enscript-type">char</span> activity_name[DNS_MAX_NAME_SIZE_ESCAPED + 3 + 4 + 4];
+    dso_activity_t *activity;
+    
+    <span class="enscript-comment">// The TLV offset should always be pointing into the message.
+</span>    <span class="enscript-type">unsigned</span> offp = dso-&gt;primary.payload - &amp;header-&gt;data[0];
+    <span class="enscript-comment">// Get the question
+</span>    dns_rr_t question;
+
+    <span class="enscript-keyword">if</span> (!dns_rr_parse(&amp;question, header-&gt;data, offp + dso-&gt;primary.length, &amp;offp, false)) {
+        <span class="enscript-comment">// Unsubscribes are unidirectional, so no response can be sent
+</span>        <span class="enscript-keyword">if</span> (dso-&gt;primary.opcode != kDSOType_DNSPushUnsubscribe) {
+            dp_simple_response(comm, dns_rcode_formerr);
+        }
+        ERROR(<span class="enscript-string">&quot;RR parse for %s from %s failed&quot;</span>, dso-&gt;remote_name, opcode_name);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// Concoct an activity name.
+</span>    snprintf(activity_name, <span class="enscript-keyword">sizeof</span> activity_name, <span class="enscript-string">&quot;%04x%04x&quot;</span>, question.type, question.qclass);
+    <span class="enscript-keyword">if</span> ((dp_served(question.name, &amp;activity_name[8], (<span class="enscript-keyword">sizeof</span> activity_name) - 8))) {
+        <span class="enscript-type">int</span> len = strlen(activity_name);
+        <span class="enscript-keyword">if</span> (len + <span class="enscript-keyword">sizeof</span> local_suffix + 8 &gt; <span class="enscript-keyword">sizeof</span> (activity_name)) {
+            ERROR(<span class="enscript-string">&quot;activity name overflow for %s&quot;</span>, activity_name);
+            <span class="enscript-keyword">return</span>;
+        }
+        strncpy(&amp;activity_name[len], local_suffix, <span class="enscript-keyword">sizeof</span> local_suffix);
+    } <span class="enscript-keyword">else</span> {
+        dns_name_print(question.name, &amp;activity_name[8], (<span class="enscript-keyword">sizeof</span> activity_name) - 8);
+    }
+    
+    activity = dso_find_activity(dso, activity_name, push_subscription_activity_type, NULL);
+    <span class="enscript-keyword">if</span> (activity == NULL) {
+        <span class="enscript-comment">// Unsubscribe with no activity means no work to do; just return noerror.
+</span>        <span class="enscript-keyword">if</span> (dso-&gt;primary.opcode != kDSOType_DNSPushSubscribe) {
+            ERROR(<span class="enscript-string">&quot;dso_message: %s for %s when no subscription exists.&quot;</span>, opcode_name, activity_name);
+            <span class="enscript-keyword">if</span> (dso-&gt;primary.opcode == kDSOType_DNSPushReconfirm) {
+                dp_simple_response(comm, dns_rcode_noerror);
+            }
+        } <span class="enscript-keyword">else</span> {
+            <span class="enscript-comment">// In this case we have a push subscribe for which no subscription exists, which means we can do it.
+</span>            dns_push_subscribe(comm, header, dso, &amp;question, activity_name, opcode_name);
+        }
+    } <span class="enscript-keyword">else</span> {
+        <span class="enscript-comment">// Subscribe with a matching activity means no work to do; just return noerror.
+</span>        <span class="enscript-keyword">if</span> (dso-&gt;primary.opcode == kDSOType_DNSPushSubscribe) {
+            dp_simple_response(comm, dns_rcode_noerror);
+        }            
+        <span class="enscript-comment">// Otherwise cancel the subscription.
+</span>        <span class="enscript-keyword">else</span> {
+            dns_push_unsubscribe(comm, header, dso, &amp;question, activity, opcode_name);
+        }
+    }
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dso_message</span>(comm_t *comm, dns_wire_t *header, dso_state_t *dso)
+{
+    <span class="enscript-keyword">switch</span>(dso-&gt;primary.opcode) {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOType_DNSPushSubscribe</span>:
+        dns_push_subscription_change(<span class="enscript-string">&quot;DNS Push Subscribe&quot;</span>, comm, header, dso);
+        <span class="enscript-keyword">break</span>;
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOType_DNSPushUnsubscribe</span>:
+        dns_push_subscription_change(<span class="enscript-string">&quot;DNS Push Unsubscribe&quot;</span>, comm, header, dso);
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOType_DNSPushReconfirm</span>:
+        dns_push_reconfirm(comm, header, dso);
+        <span class="enscript-keyword">break</span>;
+        
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOType_DNSPushUpdate</span>:
+        INFO(<span class="enscript-string">&quot;dso_message: bogus push update message %d&quot;</span>, dso-&gt;primary.opcode);
+        dso_drop(dso);
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-reference">default</span>:
+        INFO(<span class="enscript-string">&quot;dso_message: unexpected primary TLV %d&quot;</span>, dso-&gt;primary.opcode);
+        dp_simple_response(comm, dns_rcode_dsotypeni);
+        <span class="enscript-keyword">break</span>;
+    }
+    <span class="enscript-comment">// XXX free the message if we didn't consume it.
+</span>}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">dns_push_callback</span>(<span class="enscript-type">void</span> *context, <span class="enscript-type">void</span> *header_context,
+                              dso_state_t *dso, dso_event_type_t eventType)
+{
+    dns_wire_t *header = header_context;
+	<span class="enscript-keyword">switch</span>(eventType)
+    {
+	<span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOEventType_DNSMessage</span>:
+        <span class="enscript-comment">// We shouldn't get here because we already handled any DNS messages
+</span>		INFO(<span class="enscript-string">&quot;dns_push_callback: DNS Message (opcode=%d) received from %s&quot;</span>, dns_opcode_get(header), dso-&gt;remote_name);
+		<span class="enscript-keyword">break</span>;
+	<span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOEventType_DNSResponse</span>:
+        <span class="enscript-comment">// We shouldn't get here because we already handled any DNS messages
+</span>		INFO(<span class="enscript-string">&quot;dns_push_callback: DNS Response (opcode=%d) received from %s&quot;</span>, dns_opcode_get(header), dso-&gt;remote_name);
+		<span class="enscript-keyword">break</span>;
+	<span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOEventType_DSOMessage</span>:
+		INFO(<span class="enscript-string">&quot;dns_push_callback: DSO Message (Primary TLV=%d) received from %s&quot;</span>,
+               dso-&gt;primary.opcode, dso-&gt;remote_name);
+        dso_message((comm_t *)context, (dns_wire_t *)header, dso);
+		<span class="enscript-keyword">break</span>;
+	<span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOEventType_DSOResponse</span>:
+		INFO(<span class="enscript-string">&quot;dns_push_callback: DSO Response (Primary TLV=%d) received from %s&quot;</span>,
+               dso-&gt;primary.opcode, dso-&gt;remote_name);
+		<span class="enscript-keyword">break</span>;
+
+	<span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOEventType_Finalize</span>:
+		INFO(<span class="enscript-string">&quot;dns_push_callback: Finalize&quot;</span>);
+		<span class="enscript-keyword">break</span>;
+
+	<span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOEventType_Connected</span>:
+		INFO(<span class="enscript-string">&quot;dns_push_callback: Connected to %s&quot;</span>, dso-&gt;remote_name);
+		<span class="enscript-keyword">break</span>;
+
+	<span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOEventType_ConnectFailed</span>:
+		INFO(<span class="enscript-string">&quot;dns_push_callback: Connection to %s failed&quot;</span>, dso-&gt;remote_name);
+		<span class="enscript-keyword">break</span>;
+
+	<span class="enscript-keyword">case</span> <span class="enscript-reference">kDSOEventType_Disconnected</span>:
+		INFO(<span class="enscript-string">&quot;dns_push_callback: Connection to %s disconnected&quot;</span>, dso-&gt;remote_name);
+		<span class="enscript-keyword">break</span>;
+	}
+}
+
+<span class="enscript-type">void</span>
+<span class="enscript-function-name">dp_dns_query</span>(comm_t *comm, dns_rr_t *question)
+{
+    <span class="enscript-type">int</span> rcode;
+    dnssd_query_t *query = dp_query_generate(comm, question, false, &amp;rcode);
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *failnote = NULL;
+    <span class="enscript-keyword">if</span> (!query) {
+        dp_simple_response(comm, rcode);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// For regular DNS queries, copy the ID, etc.
+</span>    query-&gt;response.id = comm-&gt;message-&gt;wire.id;
+    query-&gt;response.bitfield = comm-&gt;message-&gt;wire.bitfield;
+    dns_rcode_set(&amp;query-&gt;response, dns_rcode_noerror);
+
+    <span class="enscript-comment">// For DNS queries, we need to return the question.
+</span>    query-&gt;response.qdcount = htons(1);
+    <span class="enscript-keyword">if</span> (query-&gt;enclosing_domain != NULL) {
+        TOWIRE_CHECK(<span class="enscript-string">&quot;name&quot;</span>, &amp;query-&gt;towire, dns_name_to_wire(NULL, &amp;query-&gt;towire, query-&gt;name));
+        TOWIRE_CHECK(<span class="enscript-string">&quot;enclosing_domain&quot;</span>, &amp;query-&gt;towire,
+                     dns_full_name_to_wire(&amp;query-&gt;enclosing_domain_pointer,
+                                           &amp;query-&gt;towire, query-&gt;enclosing_domain));
+    } <span class="enscript-keyword">else</span> {
+        TOWIRE_CHECK(<span class="enscript-string">&quot;full name&quot;</span>, &amp;query-&gt;towire, dns_full_name_to_wire(NULL, &amp;query-&gt;towire, query-&gt;name));
+    }        
+    TOWIRE_CHECK(<span class="enscript-string">&quot;TYPE&quot;</span>, &amp;query-&gt;towire, dns_u16_to_wire(&amp;query-&gt;towire, question-&gt;type));    <span class="enscript-comment">// TYPE
+</span>    TOWIRE_CHECK(<span class="enscript-string">&quot;CLASS&quot;</span>, &amp;query-&gt;towire, dns_u16_to_wire(&amp;query-&gt;towire, question-&gt;qclass));  <span class="enscript-comment">// CLASS
+</span>    <span class="enscript-keyword">if</span> (failnote != NULL) {
+        ERROR(<span class="enscript-string">&quot;dp_dns_query: failure encoding question: %s&quot;</span>, failnote);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+    }
+    
+    <span class="enscript-comment">// We should check for OPT RR, but for now assume it's there.
+</span>    query-&gt;is_edns0 = true;
+
+    <span class="enscript-keyword">if</span> (!dp_query_start(comm, query, &amp;rcode, dns_query_callback)) {
+    <span class="enscript-reference">fail</span>:
+        dp_simple_response(comm, rcode);
+        free(query-&gt;name);
+        free(query);
+        <span class="enscript-keyword">return</span>;
+    }
+    
+    <span class="enscript-comment">// XXX make sure that finalize frees this.
+</span>    query-&gt;question = comm-&gt;message;
+    comm-&gt;message = NULL;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dso_transport_finalize</span>(comm_t *comm)
+{
+    dso_state_t *dso = comm-&gt;dso;
+    INFO(<span class="enscript-string">&quot;dso_transport_finalize: %s&quot;</span>, dso-&gt;remote_name);
+    <span class="enscript-keyword">if</span> (comm) {
+        ioloop_close(&amp;comm-&gt;io);
+    }
+    free(dso);
+    comm-&gt;dso = NULL;
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dns_evaluate</span>(comm_t *comm)
+{
+    dns_rr_t question;
+    <span class="enscript-type">unsigned</span> offset = 0;
+
+    <span class="enscript-comment">// Drop incoming responses--we're a server, so we only accept queries.
+</span>    <span class="enscript-keyword">if</span> (dns_qr_get(&amp;comm-&gt;message-&gt;wire) == dns_qr_response) {
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-comment">// If this is a DSO message, see if we have a session yet.
+</span>    <span class="enscript-keyword">switch</span>(dns_opcode_get(&amp;comm-&gt;message-&gt;wire)) {
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_opcode_dso</span>:
+        <span class="enscript-keyword">if</span> (!comm-&gt;tcp_stream) {
+            ERROR(<span class="enscript-string">&quot;DSO message received on non-tcp socket %s&quot;</span>, comm-&gt;name);
+            dp_simple_response(comm, dns_rcode_notimp);
+            <span class="enscript-keyword">return</span>;
+        }
+        
+        <span class="enscript-keyword">if</span> (!comm-&gt;dso) {
+            comm-&gt;dso = dso_create(true, 0, comm-&gt;name, dns_push_callback, comm, comm);
+            <span class="enscript-keyword">if</span> (!comm-&gt;dso) {
+                ERROR(<span class="enscript-string">&quot;Unable to create a dso context for %s&quot;</span>, comm-&gt;name);
+                dp_simple_response(comm, dns_rcode_servfail);
+                ioloop_close(&amp;comm-&gt;io);
+                <span class="enscript-keyword">return</span>;
+            }
+            comm-&gt;dso-&gt;transport_finalize = dso_transport_finalize;
+        }
+        dso_message_received(comm-&gt;dso, (uint8_t *)&amp;comm-&gt;message-&gt;wire, comm-&gt;message-&gt;length);
+        <span class="enscript-keyword">break</span>;
+
+    <span class="enscript-keyword">case</span> <span class="enscript-reference">dns_opcode_query</span>:
+        <span class="enscript-comment">// In theory this is permitted but it can't really be implemented because there's no way
+</span>        <span class="enscript-comment">// to say &quot;here's the answer for this, and here's why that failed.
+</span>        <span class="enscript-keyword">if</span> (ntohs(comm-&gt;message-&gt;wire.qdcount) != 1) {
+            dp_simple_response(comm, dns_rcode_formerr);
+            <span class="enscript-keyword">return</span>;
+        }
+        <span class="enscript-keyword">if</span> (!dns_rr_parse(&amp;question, comm-&gt;message-&gt;wire.data, comm-&gt;message-&gt;length, &amp;offset, 0)) {
+            dp_simple_response(comm, dns_rcode_formerr);
+            <span class="enscript-keyword">return</span>;
+        }
+        dp_dns_query(comm, &amp;question);
+        dns_rrdata_free(&amp;question);
+        <span class="enscript-keyword">break</span>;
+
+        <span class="enscript-comment">// No support for other opcodes yet.
+</span>    <span class="enscript-reference">default</span>:
+        dp_simple_response(comm, dns_rcode_notimp);
+        <span class="enscript-keyword">break</span>;
+    }
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">dns_input</span>(comm_t *comm)
+{
+    dns_evaluate(comm);
+    <span class="enscript-keyword">if</span> (comm-&gt;message != NULL) {
+        message_free(comm-&gt;message);
+        comm-&gt;message = NULL;
+    }
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">int</span>
+<span class="enscript-function-name">usage</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *progname)
+{
+    ERROR(<span class="enscript-string">&quot;usage: %s&quot;</span>, progname);
+    ERROR(<span class="enscript-string">&quot;ex: dnssd-proxy&quot;</span>);
+    <span class="enscript-keyword">return</span> 1;
+}
+
+<span class="enscript-comment">// Called whenever we get a connection.
+</span><span class="enscript-type">void</span>
+<span class="enscript-function-name">connected</span>(comm_t *comm)
+{
+    INFO(<span class="enscript-string">&quot;connection from %s&quot;</span>, comm-&gt;name);
+    <span class="enscript-keyword">return</span>;
+}
+
+<span class="enscript-type">int</span>
+<span class="enscript-function-name">main</span>(<span class="enscript-type">int</span> argc, <span class="enscript-type">char</span> **argv)
+{
+    <span class="enscript-type">int</span> i;
+    int16_t port;
+    comm_t *tcp4_listener;
+    comm_t *udp4_listener;
+
+    port = htons(53);
+
+    <span class="enscript-comment">// Read the configuration from the command line.
+</span>    <span class="enscript-keyword">for</span> (i = 1; i &lt; argc; i++) {
+        <span class="enscript-keyword">return</span> usage(argv[0]);
+    }
+
+    <span class="enscript-keyword">if</span> (!ioloop_init()) {
+        <span class="enscript-keyword">return</span> 1;
+    }
+
+    <span class="enscript-comment">// Set up hardwired answers
+</span>    dnssd_hardwired_setup();
+
+    <span class="enscript-comment">// XXX Support IPv6!
+</span>    tcp4_listener = setup_listener_socket(AF_INET, IPPROTO_TCP, port, <span class="enscript-string">&quot;IPv4 DNS Push Listener&quot;</span>, dns_input, connected, 0);
+    <span class="enscript-keyword">if</span> (tcp4_listener == NULL) {
+        ERROR(<span class="enscript-string">&quot;TCPv4 listener: fail.&quot;</span>);
+        <span class="enscript-keyword">return</span> 1;
+    }
+    
+    udp4_listener = setup_listener_socket(AF_INET, IPPROTO_UDP, port, <span class="enscript-string">&quot;IPv4 DNS UDP Listener&quot;</span>, dns_input, 0, 0);
+    <span class="enscript-keyword">if</span> (udp4_listener == NULL) {
+        ERROR(<span class="enscript-string">&quot;UDP4 listener: fail.&quot;</span>);
+        <span class="enscript-keyword">return</span> 1;
+    }
+    
+    <span class="enscript-keyword">do</span> {
+        <span class="enscript-type">int</span> something = 0;
+        something = ioloop_events(0);
+        INFO(<span class="enscript-string">&quot;dispatched %d events.&quot;</span>, something);
+    } <span class="enscript-keyword">while</span> (1);
+}
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

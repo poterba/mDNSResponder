@@ -1,0 +1,201 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>verify-mbedtls.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">verify-mbedtls.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="verify-mbedtls.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* verify_mbedtls.c
+ *
+ * Copyright (c) 2018 Apple Computer, Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * DNS SIG(0) signature verification for DNSSD SRP using mbedtls.
+ *
+ * Provides functions for generating a public key validating context based on SIG(0) KEY RR data, and
+ * validating a signature using a context generated with that public key.  Currently only ECDSASHA256 is
+ * supported.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;srp.h&quot;</span>
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">SRP_CRYPTO_MBEDTLS_INTERNAL</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns-msg.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;srp-crypto.h&quot;</span>
+
+
+<span class="enscript-comment">// Given a DNS message, a signature, and a public key, validate the message
+</span>bool
+<span class="enscript-function-name">srp_sig0_verify</span>(dns_wire_t *message, dns_rr_t *key, dns_rr_t *signature)
+{
+    mbedtls_ecp_point pubkey;
+    mbedtls_ecp_group group;
+    mbedtls_sha256_context sha;
+    <span class="enscript-type">int</span> status;
+    <span class="enscript-type">char</span> errbuf[128];
+    uint8_t hash[ECDSA_SHA256_HASH_SIZE];
+    mbedtls_mpi r, s;
+    uint8_t *rdata;
+    size_t rdlen;
+
+    <span class="enscript-comment">// The key algorithm and the signature algorithm have to match or we can't validate the signature.
+</span>    <span class="enscript-keyword">if</span> (key-&gt;data.key.algorithm != signature-&gt;data.sig.algorithm) {
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    <span class="enscript-comment">// Key must be the right length (DNS ECDSA KEY isn't compressed).
+</span>    <span class="enscript-keyword">if</span> (key-&gt;data.key.len != ECDSA_KEY_SIZE) {
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    <span class="enscript-comment">// Currently only support ecdsa
+</span>    <span class="enscript-keyword">if</span> (signature-&gt;data.sig.algorithm != dnssec_keytype_ecdsa) {
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    <span class="enscript-comment">// Make sure the signature is the right size.
+</span>    <span class="enscript-keyword">if</span> (signature-&gt;data.sig.len != ECDSA_SHA256_SIG_SIZE) {
+        <span class="enscript-keyword">return</span> false;
+    }
+
+    <span class="enscript-comment">// Take the KEY RR and turn it into a public key we can use to check the signature.
+</span>    <span class="enscript-comment">// Initialize the ECP group (SECP256).
+</span>    mbedtls_ecp_point_init(&amp;pubkey);
+    mbedtls_ecp_group_init(&amp;group);
+    mbedtls_ecp_group_load(&amp;group, MBEDTLS_ECP_DP_SECP256R1);
+    mbedtls_mpi_init(&amp;r);
+    mbedtls_mpi_init(&amp;s);
+    mbedtls_sha256_init(&amp;sha);
+    memset(hash, 0, <span class="enscript-keyword">sizeof</span> hash);
+    
+    <span class="enscript-keyword">if</span> ((status = mbedtls_mpi_read_binary(&amp;pubkey.X, key-&gt;data.key.key, ECDSA_KEY_PART_SIZE)) != 0 ||
+        (status = mbedtls_mpi_read_binary(&amp;pubkey.Y, key-&gt;data.key.key + ECDSA_KEY_PART_SIZE, ECDSA_KEY_PART_SIZE)) != 0) {
+        mbedtls_strerror(status, errbuf, <span class="enscript-keyword">sizeof</span> errbuf);
+        ERROR(<span class="enscript-string">&quot;mbedtls_mpi_read_binary: reading key: %s&quot;</span>, errbuf);
+    }
+    mbedtls_mpi_lset(&amp;pubkey.Z, 1);
+
+    <span class="enscript-keyword">if</span> ((status = mbedtls_mpi_read_binary(&amp;r, signature-&gt;data.sig.signature, ECDSA_SHA256_SIG_PART_SIZE)) != 0 ||
+        (status = mbedtls_mpi_read_binary(&amp;s, signature-&gt;data.sig.signature + ECDSA_SHA256_SIG_PART_SIZE,
+                                          ECDSA_SHA256_SIG_PART_SIZE)) != 0) {
+        mbedtls_strerror(status, errbuf, <span class="enscript-keyword">sizeof</span> errbuf);
+        ERROR(<span class="enscript-string">&quot;mbedtls_mpi_read_binary: reading signature: %s&quot;</span>, errbuf);
+    }
+    
+    <span class="enscript-comment">// The hash is across the message _before_ the SIG RR is added, so we have to decrement arcount before
+</span> 	<span class="enscript-comment">// computing it.
+</span>    message-&gt;arcount = htons(ntohs(message-&gt;arcount) - 1);
+
+    <span class="enscript-comment">// And the SIG RRDATA that we hash includes the canonical version of the name, not whatever bits
+</span>    <span class="enscript-comment">// are in the actual wire format message, so we have to just make a copy of it.
+</span>    rdlen = SIG_STATIC_RDLEN + dns_name_wire_length(signature-&gt;data.sig.signer);
+    rdata = malloc(rdlen);
+    <span class="enscript-keyword">if</span> (rdata == NULL) {
+        ERROR(<span class="enscript-string">&quot;no memory for SIG RR canonicalization&quot;</span>);
+        <span class="enscript-keyword">return</span> 0;
+    }
+    memcpy(rdata, &amp;message-&gt;data[signature-&gt;data.sig.start + SIG_HEADERLEN], SIG_STATIC_RDLEN);
+    <span class="enscript-keyword">if</span> (!dns_name_to_wire_canonical(rdata + SIG_STATIC_RDLEN, rdlen - SIG_STATIC_RDLEN,
+                                    signature-&gt;data.sig.signer)) {
+        <span class="enscript-comment">// Should never happen.
+</span>        ERROR(<span class="enscript-string">&quot;dns_name_wire_length and dns_name_to_wire_canonical got different lengths!&quot;</span>);
+        <span class="enscript-keyword">return</span> 0;
+    }
+
+    <span class="enscript-comment">// First compute the hash across the SIG RR, then hash the message up to the SIG RR
+</span>    <span class="enscript-keyword">if</span> ((status = mbedtls_sha256_starts_ret(&amp;sha, 0)) != 0 ||
+        (status = srp_mbedtls_sha256_update_ret(&amp;sha, rdata, rdlen)) != 0 ||
+        (status = srp_mbedtls_sha256_update_ret(&amp;sha, (uint8_t *)message,
+                                                signature-&gt;data.sig.start +
+                                                (<span class="enscript-keyword">sizeof</span> *message) - DNS_DATA_SIZE)) != 0 ||
+        (status = srp_mbedtls_sha256_finish_ret(&amp;sha, hash)) != 0) {
+        <span class="enscript-comment">// Put it back
+</span>        message-&gt;arcount = htons(ntohs(message-&gt;arcount) + 1);
+        mbedtls_strerror(status, errbuf, <span class="enscript-keyword">sizeof</span> errbuf);
+        ERROR(<span class="enscript-string">&quot;mbedtls_sha_256 hash failed: %s&quot;</span>, errbuf);
+        <span class="enscript-keyword">return</span> 0;
+    }
+    message-&gt;arcount = htons(ntohs(message-&gt;arcount) + 1);
+    free(rdata);
+    
+    <span class="enscript-comment">// Now check the signature against the hash
+</span>    status = mbedtls_ecdsa_verify(&amp;group, hash, <span class="enscript-keyword">sizeof</span> hash, &amp;pubkey, &amp;r, &amp;s);
+    <span class="enscript-keyword">if</span> (status != 0) {
+        mbedtls_strerror(status, errbuf, <span class="enscript-keyword">sizeof</span> errbuf);
+        ERROR(<span class="enscript-string">&quot;mbedtls_ecdsa_verify failed: %s&quot;</span>, errbuf);
+        <span class="enscript-keyword">return</span> 0;
+    }
+    <span class="enscript-keyword">return</span> 1;
+}
+
+<span class="enscript-comment">// Function to copy out the public key as binary data
+</span><span class="enscript-type">void</span>
+<span class="enscript-function-name">srp_print_key</span>(srp_key_t *key)
+{
+    mbedtls_ecp_keypair *ecp = mbedtls_pk_ec(key-&gt;key);
+    <span class="enscript-type">char</span> errbuf[64];
+    uint8_t buf[ECDSA_KEY_SIZE];
+    uint8_t b64buf[((ECDSA_KEY_SIZE * 4) / 3) + 6];
+    size_t b64len;
+    <span class="enscript-type">int</span> status;
+
+    <span class="enscript-comment">// Currently ECP only.
+</span>    <span class="enscript-keyword">if</span> ((status = mbedtls_mpi_write_binary(&amp;ecp-&gt;Q.X, buf, ECDSA_KEY_PART_SIZE)) != 0 ||
+        (status = mbedtls_mpi_write_binary(&amp;ecp-&gt;Q.Y, buf + ECDSA_KEY_PART_SIZE, ECDSA_KEY_PART_SIZE)) != 0) {
+        mbedtls_strerror(status, errbuf, <span class="enscript-keyword">sizeof</span> errbuf);
+        ERROR(<span class="enscript-string">&quot;mbedtls_mpi_write_binary: %s&quot;</span>, errbuf);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    status = mbedtls_base64_encode(b64buf, <span class="enscript-keyword">sizeof</span> b64buf, &amp;b64len, buf, ECDSA_KEY_SIZE);
+    <span class="enscript-keyword">if</span> (status != 0) {
+        mbedtls_strerror(status, errbuf, <span class="enscript-keyword">sizeof</span> errbuf);
+        ERROR(<span class="enscript-string">&quot;mbedtls_mpi_write_binary: %s&quot;</span>, errbuf);
+        <span class="enscript-keyword">return</span>;
+    }
+    fputs(<span class="enscript-string">&quot;thread-demo.default.service.arpa. IN KEY 513 3 13 &quot;</span>, stdout);
+    fwrite(b64buf, b64len, 1, stdout);
+    putc(<span class="enscript-string">'\n'</span>, stdout);
+}
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

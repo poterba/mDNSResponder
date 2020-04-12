@@ -1,0 +1,756 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>PlatformCommon.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">PlatformCommon.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="PlatformCommon.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/* -*- Mode: C; tab-width: 4; c-file-style: &quot;bsd&quot;; c-basic-offset: 4; fill-column: 108; indent-tabs-mode: nil; -*-
+ *
+ * Copyright (c) 2004-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * This file defines functions that are common to platforms with Posix APIs.
+ * Current examples are mDNSMacOSX and mDNSPosix.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdio.h&gt;</span>              // Needed for fopen() etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;unistd.h&gt;</span>             // Needed for close()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;stdlib.h&gt;</span>             // Needed for malloc()
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;string.h&gt;</span>             // Needed for strlen() etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;errno.h&gt;</span>              // Needed for errno etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>         // Needed for socket() etc.
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>         // Needed for sockaddr_in
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;syslog.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/fcntl.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/tcp.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;arpa/inet.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;assert.h&gt;</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;os/log.h&gt;</span>
+#<span class="enscript-reference">endif</span> 
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>    // Defines the interface provided to the client layer above
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;DNSCommon.h&quot;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;PlatformCommon.h&quot;</span>
+
+#<span class="enscript-reference">ifdef</span> <span class="enscript-variable-name">NOT_HAVE_SOCKLEN_T</span>
+<span class="enscript-type">typedef</span> <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> socklen_t;
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_MALLOC_DEBUGGING</span>
+<span class="enscript-comment">// We ONLY want this for malloc debugging--on a running production system we want to deal with
+</span><span class="enscript-comment">// malloc failures, not just die.   There is a small performance penalty for enabling these options
+</span><span class="enscript-comment">// as well, so they are all only appropriate for debugging.   The flags mean:
+</span><span class="enscript-comment">//
+</span><span class="enscript-comment">// A = warnings are errors
+</span><span class="enscript-comment">// X = abort on failure
+</span><span class="enscript-comment">// Z = sets J &amp; R
+</span><span class="enscript-comment">// J = allocated memory is initialized to a pattern
+</span><span class="enscript-comment">// R causes realloc to always reallocate even if not needed
+</span>
+<span class="enscript-type">char</span> _malloc_options[] = <span class="enscript-string">&quot;AXZ&quot;</span>;
+
+mDNSlocal mDNSListValidator *listValidators;
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformAddListValidator</span>(mDNSListValidator *lv, mDNSListValidationFunction *lvf,
+                                             <span class="enscript-type">const</span> <span class="enscript-type">char</span> *lvfName, <span class="enscript-type">void</span> *context)
+{
+    mDNSPlatformMemZero(lv, <span class="enscript-keyword">sizeof</span> *lv);
+    lv-&gt;validator = lvf;
+    lv-&gt;validationFunctionName = lvfName;
+    lv-&gt;context = context;
+    lv-&gt;next = listValidators;
+    listValidators = lv;
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">validateLists</span>(<span class="enscript-type">void</span>)
+{
+    mDNSListValidator *vfp;
+    <span class="enscript-comment">// Check Unix Domain Socket client lists (uds_daemon.c)
+</span>    <span class="enscript-keyword">for</span> (vfp = listValidators; vfp; vfp = vfp-&gt;next)
+    {
+        vfp-&gt;validator(vfp-&gt;context);
+    }
+
+    mDNSPlatformValidateLists();
+}
+
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kAllocMagic</span>     0xDEAD1234
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kGuardMagic</span>     0xDEAD1234
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kFreeMagic</span>      0xDEADDEAD
+#<span class="enscript-reference">define</span> <span class="enscript-variable-name">kAllocLargeSize</span> 32768
+
+mDNSexport <span class="enscript-type">void</span> *<span class="enscript-function-name">mallocL</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg, mDNSu32 size)
+{
+    <span class="enscript-comment">// Allocate space for two words of sanity checking data before the requested block and two words after.
+</span>    <span class="enscript-comment">// Adjust the length for alignment.
+</span>    mDNSu32 *mem = malloc(<span class="enscript-keyword">sizeof</span>(mDNSu32) * 4 + size);
+    mDNSu32 guard[2];
+    <span class="enscript-keyword">if</span> (!mem)
+    { LogMsg(<span class="enscript-string">&quot;malloc( %s : %u ) failed&quot;</span>, msg, size); <span class="enscript-keyword">return</span>(NULL); }
+    <span class="enscript-keyword">else</span>
+    {
+        mDNSu32 *after = (mDNSu32 *)((mDNSu8 *)(mem + 2) + size);
+        <span class="enscript-keyword">if</span>      (size &gt; kAllocLargeSize)      LogMsg(<span class="enscript-string">&quot;malloc( %s : %lu ) @ %p suspiciously large&quot;</span>, msg, size, &amp;mem[2]);
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (MDNS_MALLOC_DEBUGGING &gt;= 2)  LogMsg(<span class="enscript-string">&quot;malloc( %s : %lu ) @ %p&quot;</span>,                    msg, size, &amp;mem[2]);
+        mem[  0] = kAllocMagic;
+        guard[0] = kGuardMagic;
+        mem[  1] = size;
+        guard[1] = size;
+        memcpy(after, &amp;guard, <span class="enscript-keyword">sizeof</span> guard);
+        memset(&amp;mem[2], 0xFF, size);
+        validateLists();
+        <span class="enscript-keyword">return</span>(&amp;mem[2]);
+    }
+}
+
+mDNSexport <span class="enscript-type">void</span> *<span class="enscript-function-name">callocL</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg, mDNSu32 size)
+{
+    mDNSu32 guard[2];
+    <span class="enscript-type">const</span> mDNSu32 headerSize = 4 * <span class="enscript-keyword">sizeof</span>(mDNSu32);
+    
+    <span class="enscript-comment">// Allocate space for two words of sanity checking data before the requested block and two words after.
+</span>    <span class="enscript-comment">// Adjust the length for alignment.
+</span>    mDNSu32 *mem = (mDNSu32 *)calloc(1, headerSize + size);
+    <span class="enscript-keyword">if</span> (!mem)
+    { LogMsg(<span class="enscript-string">&quot;calloc( %s : %u ) failed&quot;</span>, msg, size); <span class="enscript-keyword">return</span>(NULL); }
+    <span class="enscript-keyword">else</span>
+    {
+        mDNSu32 *after = (mDNSu32 *)((mDNSu8 *)(mem + 2) + size);
+        <span class="enscript-keyword">if</span>      (size &gt; kAllocLargeSize)     LogMsg(<span class="enscript-string">&quot;calloc( %s : %lu ) @ %p suspiciously large&quot;</span>, msg, size, &amp;mem[2]);
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (MDNS_MALLOC_DEBUGGING &gt;= 2) LogMsg(<span class="enscript-string">&quot;calloc( %s : %lu ) @ %p&quot;</span>,                    msg, size, &amp;mem[2]);
+        mem[  0] = kAllocMagic;
+        guard[0] = kGuardMagic;
+        mem[  1] = size;
+        guard[1] = size;
+        memcpy(after, guard, <span class="enscript-keyword">sizeof</span> guard);
+        validateLists();
+        <span class="enscript-keyword">return</span>(&amp;mem[2]);
+    }
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">freeL</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg, <span class="enscript-type">void</span> *x)
+{
+    <span class="enscript-keyword">if</span> (!x)
+        LogMsg(<span class="enscript-string">&quot;free( %s @ NULL )!&quot;</span>, msg);
+    <span class="enscript-keyword">else</span>
+    {
+        mDNSu32 *mem = ((mDNSu32 *)x) - 2;
+        <span class="enscript-keyword">if</span>      (mem[0] == kFreeMagic)  { LogMemCorruption(<span class="enscript-string">&quot;free( %s : %lu @ %p ) !!!! ALREADY DISPOSED !!!!&quot;</span>, msg, mem[1], &amp;mem[2]); <span class="enscript-keyword">return</span>; }
+        <span class="enscript-keyword">if</span>      (mem[0] != kAllocMagic) { LogMemCorruption(<span class="enscript-string">&quot;free( %s : %lu @ %p ) !!!! NEVER ALLOCATED !!!!&quot;</span>,  msg, mem[1], &amp;mem[2]); <span class="enscript-keyword">return</span>; }
+        <span class="enscript-keyword">if</span>      (mem[1] &gt; kAllocLargeSize)          LogMsg(<span class="enscript-string">&quot;free( %s : %lu @ %p) suspiciously large&quot;</span>,          msg, mem[1], &amp;mem[2]);
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (MDNS_MALLOC_DEBUGGING &gt;= 2)        LogMsg(<span class="enscript-string">&quot;free( %s : %ld @ %p)&quot;</span>,                             msg, mem[1], &amp;mem[2]);
+        mDNSu32 *after = (mDNSu32 *)((mDNSu8 *)x + mem[1]);
+        mDNSu32 guard[2];
+
+        memcpy(guard, after, <span class="enscript-keyword">sizeof</span> guard);
+        <span class="enscript-keyword">if</span> (guard[0] != kGuardMagic)    { LogMemCorruption(<span class="enscript-string">&quot;free( %s : %lu @ %p ) !!!! END GUARD OVERWRITE !!!!&quot;</span>,
+                                                           msg, mem[1], &amp;mem[2]); <span class="enscript-keyword">return</span>; }
+        <span class="enscript-keyword">if</span> (guard[1] != mem[1])         { LogMemCorruption(<span class="enscript-string">&quot;free( %s : %lu @ %p ) !!!! LENGTH MISMATCH !!!!&quot;</span>,
+                                                           msg, mem[1], &amp;mem[2]); <span class="enscript-keyword">return</span>; }
+        mem[0] = kFreeMagic;
+        memset(mem + 2, 0xFF, mem[1] + 2 * <span class="enscript-keyword">sizeof</span>(mDNSu32));
+        validateLists();
+        free(mem);
+    }
+}
+
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">// Bind a UDP socket to find the source address to a destination
+</span>mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformSourceAddrForDest</span>(mDNSAddr *<span class="enscript-type">const</span> src, <span class="enscript-type">const</span> mDNSAddr *<span class="enscript-type">const</span> dst)
+{
+    <span class="enscript-type">union</span> { <span class="enscript-type">struct</span> sockaddr s; <span class="enscript-type">struct</span> sockaddr_in a4; <span class="enscript-type">struct</span> sockaddr_in6 a6; } addr;
+    socklen_t len = <span class="enscript-keyword">sizeof</span>(addr);
+    socklen_t inner_len = 0;
+    <span class="enscript-type">int</span> sock = socket(AF_INET, SOCK_DGRAM, 0);
+    src-&gt;type = mDNSAddrType_None;
+    <span class="enscript-keyword">if</span> (sock == -1) <span class="enscript-keyword">return</span>;
+    <span class="enscript-keyword">if</span> (dst-&gt;type == mDNSAddrType_IPv4)
+    {
+        inner_len = <span class="enscript-keyword">sizeof</span>(addr.a4);
+        #ifndef NOT_HAVE_SA_LEN
+        addr.a4.sin_len         = inner_len;
+        #endif
+        addr.a4.sin_family      = AF_INET;
+        addr.a4.sin_port        = 1;    <span class="enscript-comment">// Not important, any port will do
+</span>        addr.a4.sin_addr.s_addr = dst-&gt;ip.v4.NotAnInteger;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (dst-&gt;type == mDNSAddrType_IPv6)
+    {
+        inner_len = <span class="enscript-keyword">sizeof</span>(addr.a6);
+        #ifndef NOT_HAVE_SA_LEN
+        addr.a6.sin6_len      = inner_len;
+        #endif
+        addr.a6.sin6_family   = AF_INET6;
+        addr.a6.sin6_flowinfo = 0;
+        addr.a6.sin6_port     = 1;  <span class="enscript-comment">// Not important, any port will do
+</span>        addr.a6.sin6_addr     = *(<span class="enscript-type">struct</span> in6_addr*)&amp;dst-&gt;ip.v6;
+        addr.a6.sin6_scope_id = 0;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">return</span>;
+
+    <span class="enscript-keyword">if</span> ((connect(sock, &amp;addr.s, inner_len)) &lt; 0)
+    { LogMsg(<span class="enscript-string">&quot;mDNSPlatformSourceAddrForDest: connect %#a failed errno %d (%s)&quot;</span>, dst, errno, strerror(errno)); <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>; }
+
+    <span class="enscript-keyword">if</span> ((getsockname(sock, &amp;addr.s, &amp;len)) &lt; 0)
+    { LogMsg(<span class="enscript-string">&quot;mDNSPlatformSourceAddrForDest: getsockname failed errno %d (%s)&quot;</span>, errno, strerror(errno)); <span class="enscript-keyword">goto</span> <span class="enscript-reference">exit</span>; }
+
+    src-&gt;type = dst-&gt;type;
+    <span class="enscript-keyword">if</span> (dst-&gt;type == mDNSAddrType_IPv4) src-&gt;ip.v4.NotAnInteger = addr.a4.sin_addr.s_addr;
+    <span class="enscript-keyword">else</span> src-&gt;ip.v6 = *(mDNSv6Addr*)&amp;addr.a6.sin6_addr;
+<span class="enscript-reference">exit</span>:
+    close(sock);
+}
+
+<span class="enscript-comment">// dst must be at least MAX_ESCAPED_DOMAIN_NAME bytes, and option must be less than 32 bytes in length
+</span>mDNSlocal mDNSBool <span class="enscript-function-name">GetConfigOption</span>(<span class="enscript-type">char</span> *dst, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *option, FILE *f)
+{
+    <span class="enscript-type">char</span> buf[32+1+MAX_ESCAPED_DOMAIN_NAME]; <span class="enscript-comment">// Option name, one space, option value
+</span>    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> len = strlen(option);
+    <span class="enscript-keyword">if</span> (len + 1 + MAX_ESCAPED_DOMAIN_NAME &gt; <span class="enscript-keyword">sizeof</span>(buf)-1) { LogMsg(<span class="enscript-string">&quot;GetConfigOption: option %s too long&quot;</span>, option); <span class="enscript-keyword">return</span> mDNSfalse; }
+    fseek(f, 0, SEEK_SET);  <span class="enscript-comment">// set position to beginning of stream
+</span>    <span class="enscript-keyword">while</span> (fgets(buf, <span class="enscript-keyword">sizeof</span>(buf), f))      <span class="enscript-comment">// Read at most sizeof(buf)-1 bytes from file, and append '\0' C-string terminator
+</span>    {
+        <span class="enscript-keyword">if</span> (!strncmp(buf, option, len))
+        {
+            strncpy(dst, buf + len + 1, MAX_ESCAPED_DOMAIN_NAME-1);
+            <span class="enscript-keyword">if</span> (dst[MAX_ESCAPED_DOMAIN_NAME-1]) dst[MAX_ESCAPED_DOMAIN_NAME-1] = <span class="enscript-string">'\0'</span>;
+            len = strlen(dst);
+            <span class="enscript-keyword">if</span> (len &amp;&amp; dst[len-1] == <span class="enscript-string">'\n'</span>) dst[len-1] = <span class="enscript-string">'\0'</span>;  <span class="enscript-comment">// chop newline
+</span>            <span class="enscript-keyword">return</span> mDNStrue;
+        }
+    }
+    debugf(<span class="enscript-string">&quot;Option %s not set&quot;</span>, option);
+    <span class="enscript-keyword">return</span> mDNSfalse;
+}
+
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">ReadDDNSSettingsFromConfFile</span>(mDNS *<span class="enscript-type">const</span> m, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *<span class="enscript-type">const</span> filename, domainname *<span class="enscript-type">const</span> hostname, domainname *<span class="enscript-type">const</span> domain, mDNSBool *DomainDiscoveryDisabled)
+{
+    <span class="enscript-type">char</span> buf[MAX_ESCAPED_DOMAIN_NAME] = <span class="enscript-string">&quot;&quot;</span>;
+    mStatus err;
+    FILE *f = fopen(filename, <span class="enscript-string">&quot;r&quot;</span>);
+
+    <span class="enscript-keyword">if</span> (hostname) hostname-&gt;c[0] = 0;
+    <span class="enscript-keyword">if</span> (domain) domain-&gt;c[0] = 0;
+    <span class="enscript-keyword">if</span> (DomainDiscoveryDisabled) *DomainDiscoveryDisabled = mDNSfalse;
+
+    <span class="enscript-keyword">if</span> (f)
+    {
+        <span class="enscript-keyword">if</span> (DomainDiscoveryDisabled &amp;&amp; GetConfigOption(buf, <span class="enscript-string">&quot;DomainDiscoveryDisabled&quot;</span>, f) &amp;&amp; !strcasecmp(buf, <span class="enscript-string">&quot;true&quot;</span>)) *DomainDiscoveryDisabled = mDNStrue;
+        <span class="enscript-keyword">if</span> (hostname &amp;&amp; GetConfigOption(buf, <span class="enscript-string">&quot;hostname&quot;</span>, f) &amp;&amp; !MakeDomainNameFromDNSNameString(hostname, buf)) <span class="enscript-keyword">goto</span> <span class="enscript-reference">badf</span>;
+        <span class="enscript-keyword">if</span> (domain &amp;&amp; GetConfigOption(buf, <span class="enscript-string">&quot;zone&quot;</span>, f) &amp;&amp; !MakeDomainNameFromDNSNameString(domain, buf)) <span class="enscript-keyword">goto</span> <span class="enscript-reference">badf</span>;
+        buf[0] = 0;
+        GetConfigOption(buf, <span class="enscript-string">&quot;secret-64&quot;</span>, f);  <span class="enscript-comment">// failure means no authentication
+</span>        fclose(f);
+        f = NULL;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-keyword">if</span> (errno != ENOENT) LogMsg(<span class="enscript-string">&quot;ERROR: Config file exists, but cannot be opened.&quot;</span>);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    <span class="enscript-keyword">if</span> (domain &amp;&amp; domain-&gt;c[0] &amp;&amp; buf[0])
+    {
+        DomainAuthInfo *info = (DomainAuthInfo*) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*info));
+        <span class="enscript-comment">// for now we assume keyname = service reg domain and we use same key for service and hostname registration
+</span>        err = mDNS_SetSecretForDomain(m, info, domain, domain, buf, NULL, 0);
+        <span class="enscript-keyword">if</span> (err) LogMsg(<span class="enscript-string">&quot;ERROR: mDNS_SetSecretForDomain returned %d for domain %##s&quot;</span>, err, domain-&gt;c);
+    }
+
+    <span class="enscript-keyword">return</span>;
+
+<span class="enscript-reference">badf</span>:
+    LogMsg(<span class="enscript-string">&quot;ERROR: malformatted config file&quot;</span>);
+    <span class="enscript-keyword">if</span> (f) fclose(f);
+}
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_DEBUGMSGS</span>
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformWriteDebugMsg</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg)
+{
+    fprintf(stderr,<span class="enscript-string">&quot;%s\n&quot;</span>, msg);
+    fflush(stderr);
+}
+#<span class="enscript-reference">endif</span>
+
+#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">OS_LOG</span>)
+mDNSexport <span class="enscript-type">void</span> <span class="enscript-function-name">mDNSPlatformWriteLogMsg</span>(<span class="enscript-type">const</span> <span class="enscript-type">char</span> *ident, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *buffer, mDNSLogLevel_t loglevel)
+{
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span> &amp;&amp; <span class="enscript-variable-name">LogTimeStamps</span>
+    <span class="enscript-type">extern</span> mDNS mDNSStorage;
+    <span class="enscript-type">extern</span> mDNSu32 mDNSPlatformClockDivisor;
+    mDNSs32 t = mDNSStorage.timenow ? mDNSStorage.timenow : mDNSPlatformClockDivisor ? mDNS_TimeNow_NoLock(&amp;mDNSStorage) : 0;
+    <span class="enscript-type">int</span> ms = ((t &lt; 0) ? -t : t) % 1000;
+#<span class="enscript-reference">endif</span>
+
+    <span class="enscript-keyword">if</span> (mDNS_DebugMode) <span class="enscript-comment">// In debug mode we write to stderr
+</span>    {
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span> &amp;&amp; <span class="enscript-variable-name">LogTimeStamps</span>
+        <span class="enscript-keyword">if</span> (ident &amp;&amp; ident[0] &amp;&amp; mDNSPlatformClockDivisor)
+            fprintf(stderr,<span class="enscript-string">&quot;%8d.%03d: %s\n&quot;</span>, (<span class="enscript-type">int</span>)(t/1000), ms, buffer);
+        <span class="enscript-keyword">else</span>
+#<span class="enscript-reference">endif</span>
+        fprintf(stderr,<span class="enscript-string">&quot;%s\n&quot;</span>, buffer);
+        fflush(stderr);
+    }
+    <span class="enscript-keyword">else</span>                <span class="enscript-comment">// else, in production mode, we write to syslog
+</span>    {
+        <span class="enscript-type">static</span> <span class="enscript-type">int</span> log_inited = 0;
+
+        <span class="enscript-type">int</span> syslog_level;
+        <span class="enscript-keyword">switch</span> (loglevel)
+        {
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">MDNS_LOG_FAULT</span>:     syslog_level = LOG_ERR;     <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">MDNS_LOG_ERROR</span>:     syslog_level = LOG_ERR;     <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">MDNS_LOG_WARNING</span>:   syslog_level = LOG_WARNING; <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">MDNS_LOG_DEFAULT</span>:   syslog_level = LOG_NOTICE;  <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">MDNS_LOG_INFO</span>:      syslog_level = LOG_INFO;    <span class="enscript-keyword">break</span>;
+            <span class="enscript-keyword">case</span> <span class="enscript-reference">MDNS_LOG_DEBUG</span>:     syslog_level = LOG_DEBUG;   <span class="enscript-keyword">break</span>;
+            <span class="enscript-reference">default</span>:                 syslog_level = LOG_NOTICE;  <span class="enscript-keyword">break</span>;
+        }
+
+        <span class="enscript-keyword">if</span> (!log_inited) { openlog(ident, LOG_CONS, LOG_DAEMON); log_inited++; }
+
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">APPLE_OSX_mDNSResponder</span> &amp;&amp; <span class="enscript-variable-name">LogTimeStamps</span>
+        <span class="enscript-keyword">if</span> (ident &amp;&amp; ident[0] &amp;&amp; mDNSPlatformClockDivisor)
+            syslog(syslog_level, <span class="enscript-string">&quot;%8d.%03d: %s&quot;</span>, (<span class="enscript-type">int</span>)(t/1000), ms, buffer);
+        <span class="enscript-keyword">else</span>
+#<span class="enscript-reference">endif</span>
+        {
+            syslog(syslog_level, <span class="enscript-string">&quot;%s&quot;</span>, buffer);
+        }
+    }
+}
+#<span class="enscript-reference">endif</span> // !<span class="enscript-variable-name">MDNSRESPONDER_SUPPORTS</span>(<span class="enscript-variable-name">APPLE</span>, <span class="enscript-variable-name">OS_LOG</span>)
+
+mDNSexport mDNSBool <span class="enscript-function-name">mDNSPosixTCPSocketSetup</span>(<span class="enscript-type">int</span> *fd, mDNSAddr_Type addrType, mDNSIPPort *port, mDNSIPPort *outTcpPort)
+{
+    <span class="enscript-type">int</span> sa_family = (addrType == mDNSAddrType_IPv4) ? AF_INET : AF_INET6;
+    <span class="enscript-type">int</span> err;
+    <span class="enscript-type">int</span> sock;
+    mDNSu32 lowWater = 15384;
+
+    sock = socket(sa_family, SOCK_STREAM, IPPROTO_TCP);
+    <span class="enscript-keyword">if</span> (sock &lt; 3)
+    {
+        <span class="enscript-keyword">if</span> (errno != EAFNOSUPPORT)
+        {
+            LogMsg(<span class="enscript-string">&quot;mDNSPosixTCPSocketSetup: socket error %d errno %d (%s)&quot;</span>, sock, errno, strerror(errno));
+        }
+        <span class="enscript-keyword">return</span> mDNStrue;
+    }
+    *fd = sock;
+
+    <span class="enscript-type">union</span>
+    {
+        <span class="enscript-type">struct</span> sockaddr sa;
+        <span class="enscript-type">struct</span> sockaddr_in sin;
+        <span class="enscript-type">struct</span> sockaddr_in6 sin6;
+    } addr;
+    <span class="enscript-comment">// If port is not NULL, bind to it.
+</span>    <span class="enscript-keyword">if</span> (port != NULL)
+    {
+        socklen_t len = (sa_family == AF_INET) ? <span class="enscript-keyword">sizeof</span> (<span class="enscript-type">struct</span> sockaddr_in) : <span class="enscript-keyword">sizeof</span> (<span class="enscript-type">struct</span> sockaddr_in6);
+        mDNSPlatformMemZero(&amp;addr, <span class="enscript-keyword">sizeof</span> addr);
+
+        addr.sa.sa_family = sa_family;
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+	addr.sa.sa_len = len;
+#<span class="enscript-reference">endif</span>
+        <span class="enscript-keyword">if</span> (sa_family == AF_INET6)
+        {
+            addr.sin6.sin6_port = port-&gt;NotAnInteger;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            addr.sin.sin_port = port-&gt;NotAnInteger;
+        }
+        err = bind(sock, &amp;addr.sa, len);
+        <span class="enscript-keyword">if</span> (err &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;mDNSPosixTCPSocketSetup getsockname: %s&quot;</span>, strerror(errno));
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+    }
+
+    socklen_t addrlen = <span class="enscript-keyword">sizeof</span> addr;
+    err = getsockname(sock, (<span class="enscript-type">struct</span> sockaddr *)&amp;addr, &amp;addrlen);
+    <span class="enscript-keyword">if</span> (err &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPosixTCPSocketSetup getsockname: %s&quot;</span>, strerror(errno));
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-keyword">if</span> (sa_family == AF_INET6)
+    {
+        outTcpPort-&gt;NotAnInteger = addr.sin6.sin6_port;
+
+    } <span class="enscript-keyword">else</span>
+    {
+        outTcpPort-&gt;NotAnInteger = addr.sin.sin_port;
+    }
+    <span class="enscript-keyword">if</span> (port)
+        port-&gt;NotAnInteger = outTcpPort-&gt;NotAnInteger;
+
+    err = setsockopt(sock, IPPROTO_TCP, TCP_NOTSENT_LOWAT, &amp;lowWater, <span class="enscript-keyword">sizeof</span> lowWater);
+    <span class="enscript-keyword">if</span> (err &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPosixTCPSocketSetup: TCP_NOTSENT_LOWAT failed: %s&quot;</span>, strerror(errno));
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+mDNSexport TCPSocket *<span class="enscript-function-name">mDNSPosixDoTCPListenCallback</span>(<span class="enscript-type">int</span> fd, mDNSAddr_Type addressType, TCPSocketFlags socketFlags,
+                                             TCPAcceptedCallback callback, <span class="enscript-type">void</span> *context)
+{
+    <span class="enscript-type">union</span>
+    {
+        <span class="enscript-type">struct</span> sockaddr_in6 sin6;
+        <span class="enscript-type">struct</span> sockaddr_in sin;
+        <span class="enscript-type">struct</span> sockaddr sa;
+    } address;
+
+    socklen_t slen = <span class="enscript-keyword">sizeof</span> address;
+    <span class="enscript-type">int</span> remoteSock;
+    mDNSAddr addr;
+    mDNSIPPort port;
+    TCPSocket *sock = mDNSNULL;
+    <span class="enscript-type">int</span> failed;
+    <span class="enscript-type">char</span> *nbp;
+    <span class="enscript-type">int</span> i;
+    mDNSu32 lowWater = 16384;
+    <span class="enscript-comment">// When we remember our connection, we remember a name that we can print for logging.   But
+</span>    <span class="enscript-comment">// since we are the listener in this case, we don't /have/ a name for it.   This buffer
+</span>    <span class="enscript-comment">// is used to print the IP address into a human readable string which will serve that purpose
+</span>    <span class="enscript-comment">// for this case.
+</span>    <span class="enscript-type">char</span> namebuf[INET6_ADDRSTRLEN + 1 + 5 + 1];
+
+    remoteSock = accept(fd, &amp;address.sa, &amp;slen);
+    <span class="enscript-keyword">if</span> (remoteSock &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPosixDoTCPListenCallback: accept returned %d&quot;</span>, remoteSock);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+
+    failed = fcntl(remoteSock, F_SETFL, O_NONBLOCK);
+    <span class="enscript-keyword">if</span> (failed &lt; 0)
+    {
+        close(remoteSock);
+        LogMsg(<span class="enscript-string">&quot;mDNSPosixDoTCPListenCallback: fcntl returned %d&quot;</span>, errno);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+
+    failed = setsockopt(remoteSock, IPPROTO_TCP, TCP_NOTSENT_LOWAT,
+                        &amp;lowWater, <span class="enscript-keyword">sizeof</span> lowWater);
+    <span class="enscript-keyword">if</span> (failed &lt; 0)
+    {
+        close(remoteSock);
+        LogMsg(<span class="enscript-string">&quot;mDNSPosixDoTCPListenCallback: TCP_NOTSENT_LOWAT returned %d&quot;</span>, errno);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    
+    <span class="enscript-keyword">if</span> (address.sa.sa_family == AF_INET6)
+    {
+        <span class="enscript-comment">// If we are listening on an IPv4/IPv6 socket, the incoming address might be an IPv4-in-IPv6 address
+</span>        <span class="enscript-keyword">for</span> (i = 0; i &lt; 10; i++)
+        {
+            <span class="enscript-keyword">if</span> (address.sin6.sin6_addr.s6_addr[i] != 0)
+            {
+                addr.type = mDNSAddrType_IPv6;
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">nope</span>;
+            }
+        }
+
+        <span class="enscript-comment">// a legit IPv4 address would be ::ffff:a.b.c.d; if there's no ::ffff bit, then it's an IPv6
+</span>        <span class="enscript-comment">// address with a really weird prefix.
+</span>        <span class="enscript-keyword">if</span> (address.sin6.sin6_addr.s6_addr[10] != 0xFF || address.sin6.sin6_addr.s6_addr[11] != 0xFF)
+        {
+            addr.type = mDNSAddrType_IPv6;
+        } <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (addressType != mDNSAddrType_None)
+        {
+            <span class="enscript-keyword">if</span> (inet_ntop(AF_INET, &amp;address.sin6.sin6_addr.s6_addr[12], namebuf, INET6_ADDRSTRLEN + 1) == NULL)
+            {
+                strcpy(namebuf, <span class="enscript-string">&quot;:unknown:&quot;</span>);
+            }
+            LogMsg(<span class="enscript-string">&quot;mDNSPosixDoTCPListenCallback received an IPv4 connection from %s on an IPv6-only socket.&quot;</span>,
+                   namebuf);
+            close(remoteSock);
+            <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            addr.type = mDNSAddrType_IPv4;
+        }
+    <span class="enscript-reference">nope</span>:
+        <span class="enscript-keyword">if</span> (addr.type == mDNSAddrType_IPv6)
+        {
+            <span class="enscript-keyword">if</span> (inet_ntop(address.sin6.sin6_family, &amp;address.sin6.sin6_addr, namebuf, INET6_ADDRSTRLEN + 1) == NULL)
+            {
+                strcpy(namebuf, <span class="enscript-string">&quot;:unknown:&quot;</span>);
+            }
+            memcpy(&amp;addr.ip.v6, &amp;address.sin6.sin6_addr, <span class="enscript-keyword">sizeof</span> addr.ip.v6);
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            <span class="enscript-keyword">if</span> (inet_ntop(AF_INET, &amp;address.sin6.sin6_addr.s6_addr[12], namebuf, INET6_ADDRSTRLEN + 1) == NULL)
+            {
+                strcpy(namebuf, <span class="enscript-string">&quot;:unknown:&quot;</span>);
+            }
+            memcpy(&amp;addr.ip.v4, &amp;address.sin6.sin6_addr.s6_addr[12], <span class="enscript-keyword">sizeof</span> addr.ip.v4);
+        }
+        port.NotAnInteger = address.sin6.sin6_port;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (address.sa.sa_family == AF_INET)
+    {
+        addr.type = mDNSAddrType_IPv4;
+        memcpy(&amp;addr.ip.v4, &amp;address.sin.sin_addr, <span class="enscript-keyword">sizeof</span> addr.ip.v4);
+        port.NotAnInteger = address.sin.sin_port;
+        <span class="enscript-keyword">if</span> (inet_ntop(AF_INET, &amp;address.sin.sin_addr, namebuf, INET6_ADDRSTRLEN + 1) == NULL)
+        {
+            strcpy(namebuf, <span class="enscript-string">&quot;:unknown:&quot;</span>);
+        }
+    } <span class="enscript-keyword">else</span> {
+        LogMsg(<span class="enscript-string">&quot;mDNSPosixDoTCPListenCallback: connection from unknown address family %d&quot;</span>, address.sa.sa_family);
+        close(remoteSock);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    nbp = namebuf + strlen(namebuf);
+    *nbp++ = <span class="enscript-string">'%'</span>;
+    snprintf(nbp, 6, <span class="enscript-string">&quot;%u&quot;</span>, ntohs(port.NotAnInteger));
+             
+    sock = mDNSPlatformTCPAccept(socketFlags, remoteSock);
+    <span class="enscript-keyword">if</span> (sock == NULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPosixDoTCPListenCallback: mDNSPlatformTCPAccept returned NULL; dropping connection from %s&quot;</span>,
+               namebuf);
+        close(remoteSock);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">out</span>;
+    }
+    callback(sock, &amp;addr, &amp;port, namebuf, context);
+<span class="enscript-reference">out</span>:
+    <span class="enscript-keyword">return</span> sock;
+}
+
+mDNSexport mDNSBool <span class="enscript-function-name">mDNSPosixTCPListen</span>(<span class="enscript-type">int</span> *fd, mDNSAddr_Type addrtype, mDNSIPPort *port, mDNSAddr *addr,
+                                       mDNSBool reuseAddr, <span class="enscript-type">int</span> queueLength)
+
+{
+    <span class="enscript-type">union</span>
+    {
+        <span class="enscript-type">struct</span> sockaddr_in6 sin6;
+        <span class="enscript-type">struct</span> sockaddr_in sin;
+        <span class="enscript-type">struct</span> sockaddr sa;
+    } address;
+
+    <span class="enscript-type">int</span> failed;
+    <span class="enscript-type">int</span> sock;
+    <span class="enscript-type">int</span> one = 1;
+    socklen_t sock_len;
+
+    <span class="enscript-comment">// We require an addrtype parameter because addr is allowed to be null, but they have to agree.
+</span>    <span class="enscript-keyword">if</span> (addr != mDNSNULL &amp;&amp; addr-&gt;type != addrtype)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPListen: address type conflict: %d:%d&quot;</span>, addr-&gt;type, addrtype);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-keyword">if</span> (port == mDNSNULL)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPListen: port must not be NULL&quot;</span>);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+
+    mDNSPlatformMemZero(&amp;address, <span class="enscript-keyword">sizeof</span> address);
+    <span class="enscript-keyword">if</span> (addrtype == mDNSAddrType_None || addrtype == mDNSAddrType_IPv6)
+    {
+        <span class="enscript-comment">// Set up DNS listener socket
+</span>        <span class="enscript-keyword">if</span> (addr != mDNSNULL)
+        {
+            memcpy(&amp;address.sin6.sin6_addr.s6_addr, &amp;addr-&gt;ip, <span class="enscript-keyword">sizeof</span> address.sin6.sin6_addr.s6_addr);
+        }
+        address.sin6.sin6_port = port-&gt;NotAnInteger;
+
+        sock_len = <span class="enscript-keyword">sizeof</span> address.sin6;
+        address.sin6.sin6_family = AF_INET6;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (addrtype == mDNSAddrType_IPv4)
+    {
+        <span class="enscript-keyword">if</span> (addr != mDNSNULL)
+        {
+            memcpy(&amp;address.sin.sin_addr.s_addr, &amp;addr-&gt;ip, <span class="enscript-keyword">sizeof</span> address.sin.sin_addr.s_addr);
+        }
+        address.sin.sin_port = port-&gt;NotAnInteger;
+        sock_len = <span class="enscript-keyword">sizeof</span> address.sin;
+        address.sin.sin_family = AF_INET;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPListen: invalid address type: %d&quot;</span>, addrtype);
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+    address.sa.sa_len = sock_len;
+#<span class="enscript-reference">endif</span>
+    sock = socket(address.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
+
+    <span class="enscript-keyword">if</span> (sock &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPListen: socket call failed: %s&quot;</span>, strerror(errno));
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    *fd = sock;
+
+    <span class="enscript-comment">// The reuseAddr flag is used to indicate that we want to listen on this port even if
+</span>    <span class="enscript-comment">// there are still lingering sockets.   We will still fail if there is another listener.
+</span>    <span class="enscript-comment">// Note that this requires SO_REUSEADDR, not SO_REUSEPORT, which does not have special
+</span>    <span class="enscript-comment">// handling for lingering sockets.
+</span>    <span class="enscript-keyword">if</span> (reuseAddr)
+    {
+        failed = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &amp;one, <span class="enscript-keyword">sizeof</span> one);
+        <span class="enscript-keyword">if</span> (failed &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPListen: SO_REUSEADDR failed %s&quot;</span>, strerror(errno));
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+    }
+
+    <span class="enscript-comment">// Bind to the port and (if provided) address
+</span>    failed = bind(sock, &amp;address.sa, sock_len);
+    <span class="enscript-keyword">if</span> (failed &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPListen: bind failed %s&quot;</span>, strerror(errno));
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+
+    <span class="enscript-comment">// If there was no specified listen port, we need to know what port we got.
+</span>    <span class="enscript-keyword">if</span> (port-&gt;NotAnInteger == 0)
+    {
+        mDNSPlatformMemZero(&amp;address, <span class="enscript-keyword">sizeof</span> address);
+        failed = getsockname(sock, &amp;address.sa, &amp;sock_len);
+        <span class="enscript-keyword">if</span> (failed &lt; 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;mDNSRelay: getsockname failed: %s&quot;</span>, strerror(errno));
+            <span class="enscript-keyword">return</span> mDNSfalse;
+        }
+        <span class="enscript-keyword">if</span> (address.sa.sa_family == AF_INET)
+        {
+            port-&gt;NotAnInteger = address.sin.sin_port;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            port-&gt;NotAnInteger = address.sin6.sin6_port;
+        }
+    }
+
+    failed = listen(sock, queueLength);
+    <span class="enscript-keyword">if</span> (failed &lt; 0)
+    {
+        LogMsg(<span class="enscript-string">&quot;mDNSPlatformTCPListen: listen failed: %s&quot;</span>, strerror(errno));
+        <span class="enscript-keyword">return</span> mDNSfalse;
+    }
+    <span class="enscript-keyword">return</span> mDNStrue;
+}
+
+mDNSexport <span class="enscript-type">long</span> <span class="enscript-function-name">mDNSPosixReadTCP</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">void</span> *buf, <span class="enscript-type">unsigned</span> <span class="enscript-type">long</span> buflen, mDNSBool *closed)
+{
+    <span class="enscript-type">static</span> <span class="enscript-type">int</span> CLOSEDcount = 0;
+    <span class="enscript-type">static</span> <span class="enscript-type">int</span> EAGAINcount = 0;
+    ssize_t nread = recv(fd, buf, buflen, 0);
+
+    <span class="enscript-keyword">if</span> (nread &gt; 0)
+    {
+        CLOSEDcount = 0; 
+        EAGAINcount = 0; 
+    } <span class="enscript-comment">// On success, clear our error counters
+</span>    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (nread == 0)
+    {
+        *closed = mDNStrue;
+        <span class="enscript-keyword">if</span> ((++CLOSEDcount % 20) == 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;ERROR: mDNSPosixReadFromSocket - recv %d got CLOSED %d times&quot;</span>, fd, CLOSEDcount); 
+            assert(CLOSEDcount &lt; 1000);
+            <span class="enscript-comment">// Recovery Mechanism to bail mDNSResponder out of trouble: Instead of logging the same error
+</span>            <span class="enscript-comment">// msg multiple times, crash mDNSResponder using assert() and restart fresh. See advantages
+</span>            <span class="enscript-comment">// below:
+</span>            <span class="enscript-comment">// 1.Better User Experience 
+</span>            <span class="enscript-comment">// 2.CrashLogs frequency can be monitored 
+</span>            <span class="enscript-comment">// 3.StackTrace can be used for more info
+</span>        }
+    }
+    <span class="enscript-comment">// else nread is negative -- see what kind of error we got
+</span>    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (errno == ECONNRESET)
+    {
+        nread = 0; *closed = mDNStrue;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (errno != EAGAIN)
+    {
+        LogMsg(<span class="enscript-string">&quot;ERROR: mDNSPosixReadFromSocket - recv: %d (%s)&quot;</span>, errno, strerror(errno));
+        nread = -1;
+    }
+    <span class="enscript-keyword">else</span>
+    { <span class="enscript-comment">// errno is EAGAIN (EWOULDBLOCK) -- no data available
+</span>        nread = 0;
+        <span class="enscript-keyword">if</span> ((++EAGAINcount % 1000) == 0)
+        {
+            LogMsg(<span class="enscript-string">&quot;ERROR: mDNSPosixReadFromSocket - recv %d got EAGAIN %d times&quot;</span>, fd, EAGAINcount);
+            sleep(1);
+        }
+    }
+    <span class="enscript-keyword">return</span> nread;
+}
+
+mDNSexport <span class="enscript-type">long</span> <span class="enscript-function-name">mDNSPosixWriteTCP</span>(<span class="enscript-type">int</span> fd, <span class="enscript-type">const</span> <span class="enscript-type">char</span> *msg, <span class="enscript-type">unsigned</span> <span class="enscript-type">long</span> len)
+{
+    ssize_t result;
+    <span class="enscript-type">long</span> nsent;
+
+    result = write(fd, msg, len);
+    <span class="enscript-keyword">if</span> (result &lt; 0)
+    {
+        <span class="enscript-keyword">if</span> (errno == EAGAIN)
+        {
+            nsent = 0;
+        }
+        <span class="enscript-keyword">else</span>
+        {
+            LogMsg(<span class="enscript-string">&quot;ERROR: mDNSPosixWriteTCP - send %s&quot;</span>, strerror(errno)); nsent = -1;
+        }
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        nsent = (<span class="enscript-type">long</span>)result;
+    }
+    <span class="enscript-keyword">return</span> nsent;
+}
+</pre>
+<hr />
+</body></html>

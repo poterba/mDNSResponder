@@ -1,0 +1,961 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnssd_clientshim.c</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnssd_clientshim.c&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnssd_clientshim.c">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+<span class="enscript-comment">/*
+ * Copyright (c) 2003-2019 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+
+ * This file defines a simple shim layer between a client calling the &quot;/usr/include/dns_sd.h&quot; APIs
+ * and an implementation of mDNSCore (&quot;mDNSEmbeddedAPI.h&quot; APIs) in the same address space.
+ * When the client calls a dns_sd.h function, the shim calls the corresponding mDNSEmbeddedAPI.h
+ * function, and when mDNSCore calls the shim's callback, we call through to the client's callback.
+ * The shim is responsible for two main things:
+ * - converting string parameters between C string format and native DNS format,
+ * - and for allocating and freeing memory.
+ */</span>
+
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;dns_sd.h&quot;</span>             // Defines the interface to the client layer above
+#<span class="enscript-reference">include</span> <span class="enscript-string">&quot;mDNSEmbeddedAPI.h&quot;</span>        // The interface we're building on top of
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;sys/socket.h&gt;</span>
+#<span class="enscript-reference">include</span> <span class="enscript-string">&lt;netinet/in.h&gt;</span>
+<span class="enscript-type">extern</span> mDNS mDNSStorage;        <span class="enscript-comment">// We need to pass the address of this storage to the lower-layer functions
+</span>
+#<span class="enscript-reference">if</span> <span class="enscript-variable-name">MDNS_BUILDINGSHAREDLIBRARY</span> || <span class="enscript-variable-name">MDNS_BUILDINGSTUBLIBRARY</span>
+#<span class="enscript-reference">pragma</span> <span class="enscript-variable-name">export</span> <span class="enscript-variable-name">on</span>
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// General Utility Functions
+</span>
+<span class="enscript-comment">// All mDNS_DirectOP structures start with the pointer to the type-specific disposal function.
+</span><span class="enscript-comment">// Optional type-specific data follows these three fields
+</span><span class="enscript-comment">// When the client starts an operation, we return the address of the corresponding mDNS_DirectOP
+</span><span class="enscript-comment">// as the DNSServiceRef for the operation
+</span><span class="enscript-comment">// We stash the value in core context fields so we can get it back to recover our state in our callbacks,
+</span><span class="enscript-comment">// and pass it though to the client for it to recover its state
+</span>
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span> mDNS_DirectOP_struct mDNS_DirectOP;
+<span class="enscript-type">typedef</span> <span class="enscript-type">void</span> <span class="enscript-function-name">mDNS_DirectOP_Dispose</span> (mDNS_DirectOP *op);
+<span class="enscript-type">struct</span> mDNS_DirectOP_struct
+{
+    mDNS_DirectOP_Dispose  *disposefn;
+};
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    mDNS_DirectOP_Dispose  *disposefn;
+    DNSServiceRegisterReply callback;
+    <span class="enscript-type">void</span>                   *context;
+    mDNSBool autoname;                      <span class="enscript-comment">// Set if this name is tied to the Computer Name
+</span>    mDNSBool autorename;                    <span class="enscript-comment">// Set if we just got a name conflict and now need to automatically pick a new name
+</span>    domainlabel name;
+    domainname host;
+    ServiceRecordSet s;
+} mDNS_DirectOP_Register;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    mDNS_DirectOP_Dispose  *disposefn;
+    DNSServiceBrowseReply callback;
+    <span class="enscript-type">void</span>                   *context;
+    DNSQuestion q;
+} mDNS_DirectOP_Browse;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    mDNS_DirectOP_Dispose  *disposefn;
+    DNSServiceResolveReply callback;
+    <span class="enscript-type">void</span>                   *context;
+    <span class="enscript-type">const</span> ResourceRecord   *SRV;
+    <span class="enscript-type">const</span> ResourceRecord   *TXT;
+    DNSQuestion qSRV;
+    DNSQuestion qTXT;
+} mDNS_DirectOP_Resolve;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    mDNS_DirectOP_Dispose      *disposefn;
+    DNSServiceQueryRecordReply callback;
+    <span class="enscript-type">void</span>                       *context;
+    DNSQuestion q;
+} mDNS_DirectOP_QueryRecord;
+
+<span class="enscript-type">typedef</span> <span class="enscript-type">struct</span>
+{
+    mDNS_DirectOP_Dispose     *disposefn;
+    DNSServiceGetAddrInfoReply callback;
+    <span class="enscript-type">void</span>                      *context;
+    mDNSu32                    interfaceIndex;
+    DNSQuestion                a;
+    DNSQuestion                aaaa;
+} mDNS_DirectOP_GetAddrInfo;
+
+dnssd_sock_t <span class="enscript-function-name">DNSServiceRefSockFD</span>(DNSServiceRef sdRef)
+{
+    (<span class="enscript-type">void</span>)sdRef;    <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(0);
+}
+
+DNSServiceErrorType <span class="enscript-function-name">DNSServiceProcessResult</span>(DNSServiceRef sdRef)
+{
+    (<span class="enscript-type">void</span>)sdRef;    <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(kDNSServiceErr_NoError);
+}
+
+<span class="enscript-type">void</span> <span class="enscript-function-name">DNSServiceRefDeallocate</span>(DNSServiceRef sdRef)
+{
+    mDNS_DirectOP *op = (mDNS_DirectOP *)sdRef;
+    <span class="enscript-comment">//LogMsg(&quot;DNSServiceRefDeallocate&quot;);
+</span>    op-&gt;disposefn(op);
+}
+
+<span class="enscript-type">static</span> mDNSInterfaceID <span class="enscript-function-name">DNSServiceInterfaceIndexToID</span>(mDNSu32 interfaceIndex, DNSServiceFlags *flags)
+{
+    <span class="enscript-comment">// Map kDNSServiceInterfaceIndexP2P to kDNSServiceInterfaceIndexAny with the kDNSServiceFlagsIncludeP2P
+</span>    <span class="enscript-comment">// flag set so that the resolve will run over P2P interfaces that are not yet created.
+</span>    <span class="enscript-keyword">if</span> (interfaceIndex == kDNSServiceInterfaceIndexP2P)
+    {
+        LogOperation(<span class="enscript-string">&quot;handle_resolve_request: mapping kDNSServiceInterfaceIndexP2P to kDNSServiceInterfaceIndexAny + kDNSServiceFlagsIncludeP2P&quot;</span>);
+        <span class="enscript-keyword">if</span> (flags != mDNSNULL) *flags |= kDNSServiceFlagsIncludeP2P;
+        interfaceIndex = kDNSServiceInterfaceIndexAny;
+    }
+    <span class="enscript-keyword">return</span> mDNSPlatformInterfaceIDfromInterfaceIndex(&amp;mDNSStorage, interfaceIndex);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Domain Enumeration
+</span>
+<span class="enscript-comment">// Not yet implemented, so don't include in stub library
+</span><span class="enscript-comment">// We DO include it in the actual Extension, so that if a later client compiled to use this
+</span><span class="enscript-comment">// is run against this Extension, it will get a reasonable error code instead of just
+</span><span class="enscript-comment">// failing to launch (Strong Link) or calling an unresolved symbol and crashing (Weak Link)
+</span>#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">MDNS_BUILDINGSTUBLIBRARY</span>
+DNSServiceErrorType DNSServiceEnumerateDomains
+(
+    DNSServiceRef                       *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    DNSServiceDomainEnumReply callback,
+    <span class="enscript-type">void</span>                                *context  <span class="enscript-comment">/* may be NULL */</span>
+)
+{
+    (<span class="enscript-type">void</span>)sdRef;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)flags;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)interfaceIndex;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)callback;         <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)context;          <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(kDNSServiceErr_Unsupported);
+}
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Register Service
+</span>
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">FreeDNSServiceRegistration</span>(mDNS_DirectOP_Register *x)
+{
+    <span class="enscript-keyword">while</span> (x-&gt;s.Extras)
+    {
+        ExtraResourceRecord *extras = x-&gt;s.Extras;
+        x-&gt;s.Extras = x-&gt;s.Extras-&gt;next;
+        <span class="enscript-keyword">if</span> (extras-&gt;r.resrec.rdata != &amp;extras-&gt;r.rdatastorage)
+            mDNSPlatformMemFree(extras-&gt;r.resrec.rdata);
+        mDNSPlatformMemFree(extras);
+    }
+
+    <span class="enscript-keyword">if</span> (x-&gt;s.RR_TXT.resrec.rdata != &amp;x-&gt;s.RR_TXT.rdatastorage)
+        mDNSPlatformMemFree(x-&gt;s.RR_TXT.resrec.rdata);
+
+    <span class="enscript-keyword">if</span> (x-&gt;s.SubTypes) mDNSPlatformMemFree(x-&gt;s.SubTypes);
+
+    mDNSPlatformMemFree(x);
+}
+
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSServiceRegisterDispose</span>(mDNS_DirectOP *op)
+{
+    mDNS_DirectOP_Register *x = (mDNS_DirectOP_Register*)op;
+    x-&gt;autorename = mDNSfalse;
+    <span class="enscript-comment">// If mDNS_DeregisterService() returns mStatus_NoError, that means that the service was found in the list,
+</span>    <span class="enscript-comment">// is sending its goodbye packet, and we'll get an mStatus_MemFree message when we can free the memory.
+</span>    <span class="enscript-comment">// If mDNS_DeregisterService() returns an error, it means that the service had already been removed from
+</span>    <span class="enscript-comment">// the list, so we should go ahead and free the memory right now
+</span>    <span class="enscript-keyword">if</span> (mDNS_DeregisterService(&amp;mDNSStorage, &amp;x-&gt;s) != mStatus_NoError)
+        FreeDNSServiceRegistration(x);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">RegCallback</span>(mDNS *<span class="enscript-type">const</span> m, ServiceRecordSet *<span class="enscript-type">const</span> sr, mStatus result)
+{
+    mDNS_DirectOP_Register *x = (mDNS_DirectOP_Register*)sr-&gt;ServiceContext;
+
+    domainlabel name;
+    domainname type, dom;
+    <span class="enscript-type">char</span> namestr[MAX_DOMAIN_LABEL+1];       <span class="enscript-comment">// Unescaped name: up to 63 bytes plus C-string terminating NULL.
+</span>    <span class="enscript-type">char</span> typestr[MAX_ESCAPED_DOMAIN_NAME];
+    <span class="enscript-type">char</span> domstr [MAX_ESCAPED_DOMAIN_NAME];
+    <span class="enscript-keyword">if</span> (!DeconstructServiceName(sr-&gt;RR_SRV.resrec.name, &amp;name, &amp;type, &amp;dom)) <span class="enscript-keyword">return</span>;
+    <span class="enscript-keyword">if</span> (!ConvertDomainLabelToCString_unescaped(&amp;name, namestr)) <span class="enscript-keyword">return</span>;
+    <span class="enscript-keyword">if</span> (!ConvertDomainNameToCString(&amp;type, typestr)) <span class="enscript-keyword">return</span>;
+    <span class="enscript-keyword">if</span> (!ConvertDomainNameToCString(&amp;dom, domstr)) <span class="enscript-keyword">return</span>;
+
+    <span class="enscript-keyword">if</span> (result == mStatus_NoError)
+    {
+        <span class="enscript-keyword">if</span> (x-&gt;callback)
+            x-&gt;callback((DNSServiceRef)x, 0, result, namestr, typestr, domstr, x-&gt;context);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (result == mStatus_NameConflict)
+    {
+        <span class="enscript-keyword">if</span> (x-&gt;autoname) mDNS_RenameAndReregisterService(m, sr, mDNSNULL);
+        <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (x-&gt;callback)
+            x-&gt;callback((DNSServiceRef)x, 0, result, namestr, typestr, domstr, x-&gt;context);
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (result == mStatus_MemFree)
+    {
+        <span class="enscript-keyword">if</span> (x-&gt;autorename)
+        {
+            x-&gt;autorename = mDNSfalse;
+            x-&gt;name = mDNSStorage.nicelabel;
+            mDNS_RenameAndReregisterService(m, &amp;x-&gt;s, &amp;x-&gt;name);
+        }
+        <span class="enscript-keyword">else</span>
+            FreeDNSServiceRegistration(x);
+    }
+}
+
+DNSServiceErrorType DNSServiceRegister
+(
+    DNSServiceRef                       *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *name,         <span class="enscript-comment">/* may be NULL */</span>
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *regtype,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *domain,       <span class="enscript-comment">/* may be NULL */</span>
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *host,         <span class="enscript-comment">/* may be NULL */</span>
+    uint16_t notAnIntPort,
+    uint16_t txtLen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>                          *txtRecord,    <span class="enscript-comment">/* may be NULL */</span>
+    DNSServiceRegisterReply callback,                  <span class="enscript-comment">/* may be NULL */</span>
+    <span class="enscript-type">void</span>                                *context       <span class="enscript-comment">/* may be NULL */</span>
+)
+{
+    mStatus err = mStatus_NoError;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *errormsg = <span class="enscript-string">&quot;Unknown&quot;</span>;
+    domainlabel n;
+    domainname t, d, h, srv;
+    mDNSIPPort port;
+    <span class="enscript-type">unsigned</span> <span class="enscript-type">int</span> size = <span class="enscript-keyword">sizeof</span>(RDataBody);
+    AuthRecord *SubTypes = mDNSNULL;
+    mDNSu32 NumSubTypes = 0;
+    mDNS_DirectOP_Register *x;
+    (<span class="enscript-type">void</span>)flags;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)interfaceIndex;   <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-comment">// Check parameters
+</span>    <span class="enscript-keyword">if</span> (!name) name = <span class="enscript-string">&quot;&quot;</span>;
+    <span class="enscript-keyword">if</span> (!name[0]) n = mDNSStorage.nicelabel;
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (!MakeDomainLabelFromLiteralString(&amp;n, name))                              { errormsg = <span class="enscript-string">&quot;Bad Instance Name&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    <span class="enscript-keyword">if</span> (!regtype || !*regtype || !MakeDomainNameFromDNSNameString(&amp;t, regtype))        { errormsg = <span class="enscript-string">&quot;Bad Service Type&quot;</span>;  <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    <span class="enscript-keyword">if</span> (!MakeDomainNameFromDNSNameString(&amp;d, (domain &amp;&amp; *domain) ? domain : <span class="enscript-string">&quot;local.&quot;</span>)) { errormsg = <span class="enscript-string">&quot;Bad Domain&quot;</span>;        <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    <span class="enscript-keyword">if</span> (!MakeDomainNameFromDNSNameString(&amp;h, (host   &amp;&amp; *host  ) ? host   : <span class="enscript-string">&quot;&quot;</span>))       { errormsg = <span class="enscript-string">&quot;Bad Target Host&quot;</span>;   <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    <span class="enscript-keyword">if</span> (!ConstructServiceName(&amp;srv, &amp;n, &amp;t, &amp;d))                                       { errormsg = <span class="enscript-string">&quot;Bad Name&quot;</span>;          <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    port.NotAnInteger = notAnIntPort;
+
+    <span class="enscript-comment">// Allocate memory, and handle failure
+</span>    <span class="enscript-keyword">if</span> (size &lt; txtLen)
+        size = txtLen;
+    x = (mDNS_DirectOP_Register *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*x) - <span class="enscript-keyword">sizeof</span>(RDataBody) + size);
+    <span class="enscript-keyword">if</span> (!x) { err = mStatus_NoMemoryErr; errormsg = <span class="enscript-string">&quot;No memory&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Set up object
+</span>    x-&gt;disposefn = DNSServiceRegisterDispose;
+    x-&gt;callback  = callback;
+    x-&gt;context   = context;
+    x-&gt;autoname = (!name[0]);
+    x-&gt;autorename = mDNSfalse;
+    x-&gt;name = n;
+    x-&gt;host = h;
+
+    <span class="enscript-comment">// Do the operation
+</span>    err = mDNS_RegisterService(&amp;mDNSStorage, &amp;x-&gt;s,
+                               &amp;x-&gt;name, &amp;t, &amp;d, <span class="enscript-comment">// Name, type, domain
+</span>                               &amp;x-&gt;host, port, <span class="enscript-comment">// Host and port
+</span>							   mDNSNULL,
+                               txtRecord, txtLen, <span class="enscript-comment">// TXT data, length
+</span>                               SubTypes, NumSubTypes, <span class="enscript-comment">// Subtypes
+</span>                               mDNSInterface_Any, <span class="enscript-comment">// Interface ID
+</span>                               RegCallback, x, 0); <span class="enscript-comment">// Callback, context, flags
+</span>    <span class="enscript-keyword">if</span> (err) { mDNSPlatformMemFree(x); errormsg = <span class="enscript-string">&quot;mDNS_RegisterService&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Succeeded: Wrap up and return
+</span>    *sdRef = (DNSServiceRef)x;
+    <span class="enscript-keyword">return</span>(mStatus_NoError);
+
+<span class="enscript-reference">badparam</span>:
+    err = mStatus_BadParamErr;
+<span class="enscript-reference">fail</span>:
+    LogMsg(<span class="enscript-string">&quot;DNSServiceBrowse(\&quot;%s\&quot;, \&quot;%s\&quot;) failed: %s (%ld)&quot;</span>, regtype, domain, errormsg, err);
+    <span class="enscript-keyword">return</span>(err);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Add / Update / Remove records from existing Registration
+</span>
+<span class="enscript-comment">// Not yet implemented, so don't include in stub library
+</span><span class="enscript-comment">// We DO include it in the actual Extension, so that if a later client compiled to use this
+</span><span class="enscript-comment">// is run against this Extension, it will get a reasonable error code instead of just
+</span><span class="enscript-comment">// failing to launch (Strong Link) or calling an unresolved symbol and crashing (Weak Link)
+</span>#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">MDNS_BUILDINGSTUBLIBRARY</span>
+DNSServiceErrorType DNSServiceAddRecord
+(
+    DNSServiceRef sdRef,
+    DNSRecordRef                        *RecordRef,
+    DNSServiceFlags flags,
+    uint16_t rrtype,
+    uint16_t rdlen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>                          *rdata,
+    uint32_t ttl
+)
+{
+    (<span class="enscript-type">void</span>)sdRef;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)RecordRef;    <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)flags;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rrtype;       <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rdlen;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rdata;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)ttl;          <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(kDNSServiceErr_Unsupported);
+}
+
+DNSServiceErrorType DNSServiceUpdateRecord
+(
+    DNSServiceRef sdRef,
+    DNSRecordRef RecordRef,                            <span class="enscript-comment">/* may be NULL */</span>
+    DNSServiceFlags flags,
+    uint16_t rdlen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>                          *rdata,
+    uint32_t ttl
+)
+{
+    (<span class="enscript-type">void</span>)sdRef;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)RecordRef;    <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)flags;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rdlen;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rdata;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)ttl;          <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(kDNSServiceErr_Unsupported);
+}
+
+DNSServiceErrorType DNSServiceRemoveRecord
+(
+    DNSServiceRef sdRef,
+    DNSRecordRef RecordRef,
+    DNSServiceFlags flags
+)
+{
+    (<span class="enscript-type">void</span>)sdRef;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)RecordRef;    <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)flags;        <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(kDNSServiceErr_Unsupported);
+}
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Browse for services
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSServiceBrowseDispose</span>(mDNS_DirectOP *op)
+{
+    mDNS_DirectOP_Browse *x = (mDNS_DirectOP_Browse*)op;
+    <span class="enscript-comment">//LogMsg(&quot;DNSServiceBrowseDispose&quot;);
+</span>    mDNS_StopBrowse(&amp;mDNSStorage, &amp;x-&gt;q);
+    mDNSPlatformMemFree(x);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">FoundInstance</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *question, <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> answer, QC_result AddRecord)
+{
+    DNSServiceFlags flags = AddRecord ? kDNSServiceFlagsAdd : (DNSServiceFlags)0;
+    domainlabel name;
+    domainname type, domain;
+    <span class="enscript-type">char</span> cname[MAX_DOMAIN_LABEL+1];         <span class="enscript-comment">// Unescaped name: up to 63 bytes plus C-string terminating NULL.
+</span>    <span class="enscript-type">char</span> ctype[MAX_ESCAPED_DOMAIN_NAME];
+    <span class="enscript-type">char</span> cdom [MAX_ESCAPED_DOMAIN_NAME];
+    mDNS_DirectOP_Browse *x = (mDNS_DirectOP_Browse*)question-&gt;QuestionContext;
+    (<span class="enscript-type">void</span>)m;        <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-keyword">if</span> (answer-&gt;rrtype != kDNSType_PTR)
+    { LogMsg(<span class="enscript-string">&quot;FoundInstance: Should not be called with rrtype %d (not a PTR record)&quot;</span>, answer-&gt;rrtype); <span class="enscript-keyword">return</span>; }
+
+    <span class="enscript-keyword">if</span> (!DeconstructServiceName(&amp;answer-&gt;rdata-&gt;u.name, &amp;name, &amp;type, &amp;domain))
+    {
+        LogMsg(<span class="enscript-string">&quot;FoundInstance: %##s PTR %##s received from network is not valid DNS-SD service pointer&quot;</span>,
+               answer-&gt;name-&gt;c, answer-&gt;rdata-&gt;u.name.c);
+        <span class="enscript-keyword">return</span>;
+    }
+
+    ConvertDomainLabelToCString_unescaped(&amp;name, cname);
+    ConvertDomainNameToCString(&amp;type, ctype);
+    ConvertDomainNameToCString(&amp;domain, cdom);
+    <span class="enscript-keyword">if</span> (x-&gt;callback)
+        x-&gt;callback((DNSServiceRef)x, flags, 0, 0, cname, ctype, cdom, x-&gt;context);
+}
+
+DNSServiceErrorType DNSServiceBrowse
+(
+    DNSServiceRef                       *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *regtype,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *domain,    <span class="enscript-comment">/* may be NULL */</span>
+    DNSServiceBrowseReply callback,
+    <span class="enscript-type">void</span>                                *context    <span class="enscript-comment">/* may be NULL */</span>
+)
+{
+    mStatus err = mStatus_NoError;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *errormsg = <span class="enscript-string">&quot;Unknown&quot;</span>;
+    domainname t, d;
+    mDNS_DirectOP_Browse *x;
+    (<span class="enscript-type">void</span>)flags;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)interfaceIndex;   <span class="enscript-comment">// Unused
+</span>
+    <span class="enscript-comment">// Check parameters
+</span>    <span class="enscript-keyword">if</span> (!regtype[0] || !MakeDomainNameFromDNSNameString(&amp;t, regtype))      { errormsg = <span class="enscript-string">&quot;Illegal regtype&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    <span class="enscript-keyword">if</span> (!MakeDomainNameFromDNSNameString(&amp;d, *domain ? domain : <span class="enscript-string">&quot;local.&quot;</span>)) { errormsg = <span class="enscript-string">&quot;Illegal domain&quot;</span>;  <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+
+    <span class="enscript-comment">// Allocate memory, and handle failure
+</span>    x = (mDNS_DirectOP_Browse *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*x));
+    <span class="enscript-keyword">if</span> (!x) { err = mStatus_NoMemoryErr; errormsg = <span class="enscript-string">&quot;No memory&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Set up object
+</span>    x-&gt;disposefn = DNSServiceBrowseDispose;
+    x-&gt;callback  = callback;
+    x-&gt;context   = context;
+    x-&gt;q.QuestionContext = x;
+
+    <span class="enscript-comment">// Do the operation
+</span>    err = mDNS_StartBrowse(&amp;mDNSStorage, &amp;x-&gt;q, &amp;t, &amp;d, mDNSInterface_Any, flags, (flags &amp; kDNSServiceFlagsForceMulticast) != 0, (flags &amp; kDNSServiceFlagsBackgroundTrafficClass) != 0, FoundInstance, x);
+    <span class="enscript-keyword">if</span> (err) { mDNSPlatformMemFree(x); errormsg = <span class="enscript-string">&quot;mDNS_StartBrowse&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Succeeded: Wrap up and return
+</span>    *sdRef = (DNSServiceRef)x;
+    <span class="enscript-keyword">return</span>(mStatus_NoError);
+
+<span class="enscript-reference">badparam</span>:
+    err = mStatus_BadParamErr;
+<span class="enscript-reference">fail</span>:
+    LogMsg(<span class="enscript-string">&quot;DNSServiceBrowse(\&quot;%s\&quot;, \&quot;%s\&quot;) failed: %s (%ld)&quot;</span>, regtype, domain, errormsg, err);
+    <span class="enscript-keyword">return</span>(err);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Resolve Service Info
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSServiceResolveDispose</span>(mDNS_DirectOP *op)
+{
+    mDNS_DirectOP_Resolve *x = (mDNS_DirectOP_Resolve*)op;
+    <span class="enscript-keyword">if</span> (x-&gt;qSRV.ThisQInterval &gt;= 0) mDNS_StopQuery(&amp;mDNSStorage, &amp;x-&gt;qSRV);
+    <span class="enscript-keyword">if</span> (x-&gt;qTXT.ThisQInterval &gt;= 0) mDNS_StopQuery(&amp;mDNSStorage, &amp;x-&gt;qTXT);
+    mDNSPlatformMemFree(x);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">FoundServiceInfo</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *question, <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> answer, QC_result AddRecord)
+{
+    mDNS_DirectOP_Resolve *x = (mDNS_DirectOP_Resolve*)question-&gt;QuestionContext;
+    (<span class="enscript-type">void</span>)m;    <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">if</span> (!AddRecord)
+    {
+        <span class="enscript-keyword">if</span> (answer-&gt;rrtype == kDNSType_SRV &amp;&amp; x-&gt;SRV == answer) x-&gt;SRV = mDNSNULL;
+        <span class="enscript-keyword">if</span> (answer-&gt;rrtype == kDNSType_TXT &amp;&amp; x-&gt;TXT == answer) x-&gt;TXT = mDNSNULL;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        <span class="enscript-keyword">if</span> (answer-&gt;rrtype == kDNSType_SRV) x-&gt;SRV = answer;
+        <span class="enscript-keyword">if</span> (answer-&gt;rrtype == kDNSType_TXT) x-&gt;TXT = answer;
+        <span class="enscript-keyword">if</span> (x-&gt;SRV &amp;&amp; x-&gt;TXT &amp;&amp; x-&gt;callback)
+        {
+            <span class="enscript-type">char</span> fullname[MAX_ESCAPED_DOMAIN_NAME], targethost[MAX_ESCAPED_DOMAIN_NAME];
+            ConvertDomainNameToCString(answer-&gt;name, fullname);
+            ConvertDomainNameToCString(&amp;x-&gt;SRV-&gt;rdata-&gt;u.srv.target, targethost);
+            x-&gt;callback((DNSServiceRef)x, 0, 0, kDNSServiceErr_NoError, fullname, targethost,
+                        x-&gt;SRV-&gt;rdata-&gt;u.srv.port.NotAnInteger, x-&gt;TXT-&gt;rdlength, (<span class="enscript-type">unsigned</span> <span class="enscript-type">char</span>*)x-&gt;TXT-&gt;rdata-&gt;u.txt.c, x-&gt;context);
+        }
+    }
+}
+
+DNSServiceErrorType DNSServiceResolve
+(
+    DNSServiceRef                       *sdRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *name,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *regtype,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *domain,
+    DNSServiceResolveReply callback,
+    <span class="enscript-type">void</span>                                *context  <span class="enscript-comment">/* may be NULL */</span>
+)
+{
+    mStatus err = mStatus_NoError;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *errormsg = <span class="enscript-string">&quot;Unknown&quot;</span>;
+    domainlabel n;
+    domainname t, d, srv;
+    mDNS_DirectOP_Resolve *x;
+
+    <span class="enscript-comment">// Check parameters
+</span>    <span class="enscript-keyword">if</span> (!name[0]    || !MakeDomainLabelFromLiteralString(&amp;n, name  )) { errormsg = <span class="enscript-string">&quot;Bad Instance Name&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    <span class="enscript-keyword">if</span> (!regtype[0] || !MakeDomainNameFromDNSNameString(&amp;t, regtype)) { errormsg = <span class="enscript-string">&quot;Bad Service Type&quot;</span>;  <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    <span class="enscript-keyword">if</span> (!domain[0]  || !MakeDomainNameFromDNSNameString(&amp;d, domain )) { errormsg = <span class="enscript-string">&quot;Bad Domain&quot;</span>;        <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+    <span class="enscript-keyword">if</span> (!ConstructServiceName(&amp;srv, &amp;n, &amp;t, &amp;d))                      { errormsg = <span class="enscript-string">&quot;Bad Name&quot;</span>;          <span class="enscript-keyword">goto</span> <span class="enscript-reference">badparam</span>; }
+
+    <span class="enscript-comment">// Allocate memory, and handle failure
+</span>    x = (mDNS_DirectOP_Resolve *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*x));
+    <span class="enscript-keyword">if</span> (!x) { err = mStatus_NoMemoryErr; errormsg = <span class="enscript-string">&quot;No memory&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Set up object
+</span>    x-&gt;disposefn = DNSServiceResolveDispose;
+    x-&gt;callback  = callback;
+    x-&gt;context   = context;
+    x-&gt;SRV       = mDNSNULL;
+    x-&gt;TXT       = mDNSNULL;
+
+    x-&gt;qSRV.ThisQInterval       = -1;       <span class="enscript-comment">// So that DNSServiceResolveDispose() knows whether to cancel this question
+</span>    x-&gt;qSRV.InterfaceID         = DNSServiceInterfaceIndexToID(interfaceIndex, &amp;flags);
+    x-&gt;qSRV.flags               = flags;
+    AssignDomainName(&amp;x-&gt;qSRV.qname, &amp;srv);
+    x-&gt;qSRV.qtype               = kDNSType_SRV;
+    x-&gt;qSRV.qclass              = kDNSClass_IN;
+    x-&gt;qSRV.LongLived           = mDNSfalse;
+    x-&gt;qSRV.ExpectUnique        = mDNStrue;
+    x-&gt;qSRV.ForceMCast          = mDNSfalse;
+    x-&gt;qSRV.ReturnIntermed      = mDNSfalse;
+    x-&gt;qSRV.SuppressUnusable    = mDNSfalse;
+    x-&gt;qSRV.AppendSearchDomains = 0;
+    x-&gt;qSRV.TimeoutQuestion     = 0;
+    x-&gt;qSRV.WakeOnResolve       = 0;
+    x-&gt;qSRV.UseBackgroundTraffic = (flags &amp; kDNSServiceFlagsBackgroundTrafficClass) != 0;
+    x-&gt;qSRV.ValidationRequired  = 0;
+    x-&gt;qSRV.ValidatingResponse  = 0;
+    x-&gt;qSRV.ProxyQuestion       = 0;
+    x-&gt;qSRV.pid                 = mDNSPlatformGetPID();
+    x-&gt;qSRV.QuestionCallback    = FoundServiceInfo;
+    x-&gt;qSRV.QuestionContext     = x;
+
+    x-&gt;qTXT.ThisQInterval       = -1;       <span class="enscript-comment">// So that DNSServiceResolveDispose() knows whether to cancel this question
+</span>    x-&gt;qTXT.InterfaceID         = DNSServiceInterfaceIndexToID(interfaceIndex, mDNSNULL);
+    x-&gt;qTXT.flags               = flags;
+    AssignDomainName(&amp;x-&gt;qTXT.qname, &amp;srv);
+    x-&gt;qTXT.qtype               = kDNSType_TXT;
+    x-&gt;qTXT.qclass              = kDNSClass_IN;
+    x-&gt;qTXT.LongLived           = mDNSfalse;
+    x-&gt;qTXT.ExpectUnique        = mDNStrue;
+    x-&gt;qTXT.ForceMCast          = mDNSfalse;
+    x-&gt;qTXT.ReturnIntermed      = mDNSfalse;
+    x-&gt;qTXT.SuppressUnusable    = mDNSfalse;
+    x-&gt;qTXT.AppendSearchDomains = 0;
+    x-&gt;qTXT.TimeoutQuestion     = 0;
+    x-&gt;qTXT.WakeOnResolve       = 0;
+    x-&gt;qTXT.UseBackgroundTraffic = (flags &amp; kDNSServiceFlagsBackgroundTrafficClass) != 0;
+    x-&gt;qTXT.ValidationRequired  = 0;
+    x-&gt;qTXT.ValidatingResponse  = 0;
+    x-&gt;qTXT.ProxyQuestion       = 0;
+    x-&gt;qTXT.pid                 = mDNSPlatformGetPID();
+    x-&gt;qTXT.QuestionCallback    = FoundServiceInfo;
+    x-&gt;qTXT.QuestionContext     = x;
+
+    err = mDNS_StartQuery(&amp;mDNSStorage, &amp;x-&gt;qSRV);
+    <span class="enscript-keyword">if</span> (err) { DNSServiceResolveDispose((mDNS_DirectOP*)x); errormsg = <span class="enscript-string">&quot;mDNS_StartQuery qSRV&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+    err = mDNS_StartQuery(&amp;mDNSStorage, &amp;x-&gt;qTXT);
+    <span class="enscript-keyword">if</span> (err) { DNSServiceResolveDispose((mDNS_DirectOP*)x); errormsg = <span class="enscript-string">&quot;mDNS_StartQuery qTXT&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Succeeded: Wrap up and return
+</span>    *sdRef = (DNSServiceRef)x;
+    <span class="enscript-keyword">return</span>(mStatus_NoError);
+
+<span class="enscript-reference">badparam</span>:
+    err = mStatus_BadParamErr;
+<span class="enscript-reference">fail</span>:
+    LogMsg(<span class="enscript-string">&quot;DNSServiceResolve(\&quot;%s\&quot;, \&quot;%s\&quot;, \&quot;%s\&quot;) failed: %s (%ld)&quot;</span>, name, regtype, domain, errormsg, err);
+    <span class="enscript-keyword">return</span>(err);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// Connection-oriented calls
+</span>
+<span class="enscript-comment">// Not yet implemented, so don't include in stub library
+</span><span class="enscript-comment">// We DO include it in the actual Extension, so that if a later client compiled to use this
+</span><span class="enscript-comment">// is run against this Extension, it will get a reasonable error code instead of just
+</span><span class="enscript-comment">// failing to launch (Strong Link) or calling an unresolved symbol and crashing (Weak Link)
+</span>#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">MDNS_BUILDINGSTUBLIBRARY</span>
+DNSServiceErrorType <span class="enscript-function-name">DNSServiceCreateConnection</span>(DNSServiceRef *sdRef)
+{
+    (<span class="enscript-type">void</span>)sdRef;    <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(kDNSServiceErr_Unsupported);
+}
+
+DNSServiceErrorType DNSServiceRegisterRecord
+(
+    DNSServiceRef sdRef,
+    DNSRecordRef                        *RecordRef,
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                          *fullname,
+    uint16_t rrtype,
+    uint16_t rrclass,
+    uint16_t rdlen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>                          *rdata,
+    uint32_t ttl,
+    DNSServiceRegisterRecordReply callback,
+    <span class="enscript-type">void</span>                                *context    <span class="enscript-comment">/* may be NULL */</span>
+)
+{
+    (<span class="enscript-type">void</span>)sdRef;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)RecordRef;        <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)flags;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)interfaceIndex;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)fullname;         <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rrtype;           <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rrclass;          <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rdlen;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rdata;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)ttl;              <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)callback;         <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)context;          <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(kDNSServiceErr_Unsupported);
+}
+#<span class="enscript-reference">endif</span>
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// DNSServiceQueryRecord
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSServiceQueryRecordDispose</span>(mDNS_DirectOP *op)
+{
+    mDNS_DirectOP_QueryRecord *x = (mDNS_DirectOP_QueryRecord*)op;
+    <span class="enscript-keyword">if</span> (x-&gt;q.ThisQInterval &gt;= 0) mDNS_StopQuery(&amp;mDNSStorage, &amp;x-&gt;q);
+    mDNSPlatformMemFree(x);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">DNSServiceQueryRecordResponse</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *question, <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> answer, QC_result AddRecord)
+{
+    mDNS_DirectOP_QueryRecord *x = (mDNS_DirectOP_QueryRecord*)question-&gt;QuestionContext;
+    <span class="enscript-type">char</span> fullname[MAX_ESCAPED_DOMAIN_NAME];
+    (<span class="enscript-type">void</span>)m;    <span class="enscript-comment">// Unused
+</span>    ConvertDomainNameToCString(answer-&gt;name, fullname);
+    x-&gt;callback((DNSServiceRef)x, AddRecord ? kDNSServiceFlagsAdd : (DNSServiceFlags)0, 0, kDNSServiceErr_NoError,
+                fullname, answer-&gt;rrtype, answer-&gt;rrclass, answer-&gt;rdlength, answer-&gt;rdata-&gt;u.data, answer-&gt;rroriginalttl, x-&gt;context);
+}
+
+DNSServiceErrorType DNSServiceQueryRecord
+(
+    DNSServiceRef             *sdRef,
+    DNSServiceFlags            flags,
+    uint32_t                   interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                *fullname,
+    uint16_t                   rrtype,
+    uint16_t                   rrclass,
+    DNSServiceQueryRecordReply callback,
+    <span class="enscript-type">void</span>                      *context  <span class="enscript-comment">/* may be NULL */</span>
+)
+{
+    mStatus err = mStatus_NoError;
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span> *errormsg = <span class="enscript-string">&quot;Unknown&quot;</span>;
+    mDNS_DirectOP_QueryRecord *x;
+
+    <span class="enscript-comment">// Allocate memory, and handle failure
+</span>    x = (mDNS_DirectOP_QueryRecord *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*x));
+    <span class="enscript-keyword">if</span> (!x) { err = mStatus_NoMemoryErr; errormsg = <span class="enscript-string">&quot;No memory&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Set up object
+</span>    x-&gt;disposefn = DNSServiceQueryRecordDispose;
+    x-&gt;callback  = callback;
+    x-&gt;context   = context;
+
+    x-&gt;q.ThisQInterval        = -1;      <span class="enscript-comment">// So that DNSServiceResolveDispose() knows whether to cancel this question
+</span>    x-&gt;q.InterfaceID          = DNSServiceInterfaceIndexToID(interfaceIndex, &amp;flags);
+    x-&gt;q.flags                = flags;
+    MakeDomainNameFromDNSNameString(&amp;x-&gt;q.qname, fullname);
+    x-&gt;q.qtype                = rrtype;
+    x-&gt;q.qclass               = rrclass;
+    x-&gt;q.LongLived            = (flags &amp; kDNSServiceFlagsLongLivedQuery) != 0;
+    x-&gt;q.ExpectUnique         = mDNSfalse;
+    x-&gt;q.ForceMCast           = (flags &amp; kDNSServiceFlagsForceMulticast) != 0;
+    x-&gt;q.ReturnIntermed       = (flags &amp; kDNSServiceFlagsReturnIntermediates) != 0;
+    x-&gt;q.SuppressUnusable     = (flags &amp; kDNSServiceFlagsSuppressUnusable) != 0;
+    x-&gt;q.AppendSearchDomains  = 0;
+    x-&gt;q.TimeoutQuestion      = 0;
+    x-&gt;q.WakeOnResolve        = 0;
+    x-&gt;q.UseBackgroundTraffic = (flags &amp; kDNSServiceFlagsBackgroundTrafficClass) != 0;
+    x-&gt;q.ValidationRequired   = 0;
+    x-&gt;q.ValidatingResponse   = 0;
+    x-&gt;q.ProxyQuestion        = 0;
+    x-&gt;q.pid                  = mDNSPlatformGetPID();
+    x-&gt;q.QuestionCallback     = DNSServiceQueryRecordResponse;
+    x-&gt;q.QuestionContext      = x;
+
+    err = mDNS_StartQuery(&amp;mDNSStorage, &amp;x-&gt;q);
+    <span class="enscript-keyword">if</span> (err) { DNSServiceResolveDispose((mDNS_DirectOP*)x); errormsg = <span class="enscript-string">&quot;mDNS_StartQuery&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Succeeded: Wrap up and return
+</span>    *sdRef = (DNSServiceRef)x;
+    <span class="enscript-keyword">return</span>(mStatus_NoError);
+
+<span class="enscript-reference">fail</span>:
+    LogMsg(<span class="enscript-string">&quot;DNSServiceQueryRecord(\&quot;%s\&quot;, %d, %d) failed: %s (%ld)&quot;</span>, fullname, rrtype, rrclass, errormsg, err);
+    <span class="enscript-keyword">return</span>(err);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// DNSServiceGetAddrInfo
+</span><span class="enscript-comment">//
+</span>
+<span class="enscript-type">static</span> <span class="enscript-type">void</span> <span class="enscript-function-name">DNSServiceGetAddrInfoDispose</span>(mDNS_DirectOP *op)
+{
+    mDNS_DirectOP_GetAddrInfo *x = (mDNS_DirectOP_GetAddrInfo*)op;
+    <span class="enscript-keyword">if</span> (x-&gt;a.ThisQInterval &gt;= 0) mDNS_StopQuery(&amp;mDNSStorage, &amp;x-&gt;a);
+    <span class="enscript-keyword">if</span> (x-&gt;aaaa.ThisQInterval &gt;= 0) mDNS_StopQuery(&amp;mDNSStorage, &amp;x-&gt;aaaa);
+    mDNSPlatformMemFree(x);
+}
+
+mDNSlocal <span class="enscript-type">void</span> <span class="enscript-function-name">DNSServiceGetAddrInfoResponse</span>(mDNS *<span class="enscript-type">const</span> m, DNSQuestion *question,
+                                             <span class="enscript-type">const</span> ResourceRecord *<span class="enscript-type">const</span> answer, QC_result addRecord)
+{
+    mDNS_DirectOP_GetAddrInfo *x = (mDNS_DirectOP_GetAddrInfo*)question-&gt;QuestionContext;
+    <span class="enscript-type">char</span> fullname[MAX_ESCAPED_DOMAIN_NAME];
+
+    <span class="enscript-type">struct</span> sockaddr_storage sas;
+	<span class="enscript-type">struct</span> sockaddr_in *sin = (<span class="enscript-type">struct</span> sockaddr_in *)&amp;sas;
+	<span class="enscript-type">struct</span> sockaddr_in6 *sin6 = (<span class="enscript-type">struct</span> sockaddr_in6 *)&amp;sas;
+    <span class="enscript-type">void</span> *sa_ap = mDNSNULL;
+    <span class="enscript-type">int</span> sa_as = 0;
+    mStatus err = mStatus_NoError;
+
+    (<span class="enscript-type">void</span>)m;    <span class="enscript-comment">// Unused
+</span>
+	mDNSPlatformMemZero(&amp;sas, <span class="enscript-keyword">sizeof</span> sas);
+
+    ConvertDomainNameToCString(answer-&gt;name, fullname);
+
+    <span class="enscript-keyword">if</span> (addRecord == QC_suppressed || answer-&gt;RecordType == kDNSRecordTypePacketNegative)
+    {
+        err = mStatus_NoSuchRecord;
+    }
+        
+    <span class="enscript-comment">// There are three checks here for bad data: class != IN, RRTYPE not in {A,AAAA} and wrong length.
+</span>    <span class="enscript-comment">// None of these should be possible, because the cache code wouldn't cache malformed data and wouldn't
+</span>    <span class="enscript-comment">// return records we didn't ask for, but it doesn't hurt to check.
+</span>    <span class="enscript-keyword">if</span> (answer-&gt;rrclass != kDNSServiceClass_IN)
+    {
+        LogMsg(<span class="enscript-string">&quot;DNSServiceGetAddrInfoResponse: response of class %d received, which is bogus&quot;</span>, answer-&gt;rrclass);
+    <span class="enscript-reference">totally_invalid</span>:
+        <span class="enscript-keyword">if</span> (x-&gt;a.ThisQInterval &gt;= 0)
+        {
+            sin-&gt;sin_family = AF_INET;
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+            sin-&gt;sin_len = <span class="enscript-keyword">sizeof</span> *sin;
+#<span class="enscript-reference">endif</span>
+            x-&gt;callback((DNSServiceRef)x, 0, x-&gt;interfaceIndex, kDNSServiceErr_Invalid, fullname,
+                        (<span class="enscript-type">const</span> <span class="enscript-type">struct</span> sockaddr *)&amp;sas, 0, x-&gt;context);
+        }
+        <span class="enscript-keyword">if</span> (x-&gt;aaaa.ThisQInterval &gt;= 0)
+        {
+            sin6-&gt;sin6_family = AF_INET6;
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+            sin6-&gt;sin6_len = <span class="enscript-keyword">sizeof</span> *sin6;
+#<span class="enscript-reference">endif</span>
+            x-&gt;callback((DNSServiceRef)x, 0, x-&gt;interfaceIndex, kDNSServiceErr_Invalid, fullname,
+                        (<span class="enscript-type">const</span> <span class="enscript-type">struct</span> sockaddr *)&amp;sas, 0, x-&gt;context);
+        }
+        <span class="enscript-keyword">return</span>;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (answer-&gt;rrtype == kDNSServiceType_A)
+    {
+        sin-&gt;sin_family = AF_INET;
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+        sin-&gt;sin_len = <span class="enscript-keyword">sizeof</span> *sin;
+#<span class="enscript-reference">endif</span>
+        sa_ap = &amp;sin-&gt;sin_addr;
+        sa_as = <span class="enscript-keyword">sizeof</span> sin-&gt;sin_addr.s_addr;
+    }
+    <span class="enscript-keyword">else</span> <span class="enscript-keyword">if</span> (answer-&gt;rrtype == kDNSServiceType_AAAA)
+    {
+        sin6-&gt;sin6_family = AF_INET6;
+#<span class="enscript-reference">ifndef</span> <span class="enscript-variable-name">NOT_HAVE_SA_LEN</span>
+        sin6-&gt;sin6_len = <span class="enscript-keyword">sizeof</span> *sin6;
+#<span class="enscript-reference">endif</span>
+        sa_ap = &amp;sin6-&gt;sin6_addr;
+        sa_as = <span class="enscript-keyword">sizeof</span> sin6-&gt;sin6_addr.s6_addr;
+    }
+    <span class="enscript-keyword">else</span>
+    {
+        LogMsg(<span class="enscript-string">&quot;DNSServiceGetAddrInfoResponse: response of type %d received, which is bogus&quot;</span>, answer-&gt;rrtype);
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">totally_invalid</span>;
+    }
+    
+    <span class="enscript-keyword">if</span> (err == kDNSServiceErr_NoError &amp;&amp; sa_ap != mDNSNULL)
+    {
+        <span class="enscript-keyword">if</span> (err == mStatus_NoError)
+        {
+            <span class="enscript-keyword">if</span> (answer-&gt;rdlength == sa_as)
+            {
+                mDNSPlatformMemCopy(sa_ap, answer-&gt;rdata-&gt;u.data, answer-&gt;rdlength);
+            }
+            <span class="enscript-keyword">else</span>
+            {
+                LogMsg(<span class="enscript-string">&quot;DNSServiceGetAddrInfoResponse: %s rrtype with length %d received&quot;</span>,
+                       answer-&gt;rrtype == kDNSServiceType_A ? <span class="enscript-string">&quot;A&quot;</span> : <span class="enscript-string">&quot;AAAA&quot;</span>, answer-&gt;rdlength);
+                <span class="enscript-keyword">goto</span> <span class="enscript-reference">totally_invalid</span>;
+            }
+        }
+    }
+
+    x-&gt;callback((DNSServiceRef)x, addRecord ? kDNSServiceFlagsAdd : (DNSServiceFlags)0, x-&gt;interfaceIndex, err,
+                fullname, (<span class="enscript-type">const</span> <span class="enscript-type">struct</span> sockaddr *)&amp;sas, answer-&gt;rroriginalttl, x-&gt;context);
+}
+
+DNSServiceErrorType DNSSD_API <span class="enscript-function-name">DNSServiceGetAddrInfo</span>(
+    DNSServiceRef             *outRef,
+    DNSServiceFlags            inFlags,
+    uint32_t                   inInterfaceIndex,
+    DNSServiceProtocol         inProtocol,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                *inHostName,
+    DNSServiceGetAddrInfoReply inCallback,
+    <span class="enscript-type">void</span>                      *inContext )
+{
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                *errormsg = <span class="enscript-string">&quot;Unknown&quot;</span>;
+    DNSServiceErrorType        err;
+    mDNS_DirectOP_GetAddrInfo *x;
+
+    <span class="enscript-comment">// Allocate memory, and handle failure
+</span>    x = (mDNS_DirectOP_GetAddrInfo *) mDNSPlatformMemAllocateClear(<span class="enscript-keyword">sizeof</span>(*x));
+    <span class="enscript-keyword">if</span> (!x) { err = mStatus_NoMemoryErr; errormsg = <span class="enscript-string">&quot;No memory&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+
+    <span class="enscript-comment">// Set up object
+</span>    x-&gt;disposefn      = DNSServiceGetAddrInfoDispose;
+    x-&gt;callback       = inCallback;
+    x-&gt;context        = inContext;
+    x-&gt;interfaceIndex = inInterfaceIndex;
+
+    <span class="enscript-comment">// Validate and default the protocols.
+</span>    <span class="enscript-keyword">if</span> ((inProtocol &amp; ~(kDNSServiceProtocol_IPv4 | kDNSServiceProtocol_IPv6)) != 0)
+    {
+        err = mStatus_BadParamErr;
+        errormsg = <span class="enscript-string">&quot;Unsupported protocol&quot;</span>;
+        <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>;
+    }
+    <span class="enscript-comment">// In theory this API checks to see if we have a routable IPv6 address, but 
+</span>    <span class="enscript-keyword">if</span> ((inProtocol &amp; (kDNSServiceProtocol_IPv4 | kDNSServiceProtocol_IPv6)) == 0)
+    {
+        inProtocol = kDNSServiceProtocol_IPv4 | kDNSServiceProtocol_IPv6;
+        inFlags |= kDNSServiceFlagsSuppressUnusable;
+    }
+    
+    x-&gt;a.ThisQInterval        = -1;      <span class="enscript-comment">// So we know whether to cancel this question
+</span>    x-&gt;a.InterfaceID          = DNSServiceInterfaceIndexToID(inInterfaceIndex, &amp;inFlags);
+    x-&gt;a.flags                = inFlags;
+    MakeDomainNameFromDNSNameString(&amp;x-&gt;a.qname, inHostName);
+    x-&gt;a.qtype                = kDNSType_A;
+    x-&gt;a.qclass               = kDNSClass_IN;
+    x-&gt;a.LongLived            = (inFlags &amp; kDNSServiceFlagsLongLivedQuery) != 0;
+    x-&gt;a.ExpectUnique         = mDNSfalse;
+    x-&gt;a.ForceMCast           = (inFlags &amp; kDNSServiceFlagsForceMulticast) != 0;
+    x-&gt;a.ReturnIntermed       = (inFlags &amp; kDNSServiceFlagsReturnIntermediates) != 0;
+    x-&gt;a.SuppressUnusable     = (inFlags &amp; kDNSServiceFlagsSuppressUnusable) != 0;
+    x-&gt;a.AppendSearchDomains  = 0;
+    x-&gt;a.TimeoutQuestion      = 0;
+    x-&gt;a.WakeOnResolve        = 0;
+    x-&gt;a.UseBackgroundTraffic = (inFlags &amp; kDNSServiceFlagsBackgroundTrafficClass) != 0;
+    x-&gt;a.ValidationRequired   = 0;
+    x-&gt;a.ValidatingResponse   = 0;
+    x-&gt;a.ProxyQuestion        = 0;
+    x-&gt;a.pid                  = mDNSPlatformGetPID();
+    x-&gt;a.QuestionCallback     = DNSServiceGetAddrInfoResponse;
+    x-&gt;a.QuestionContext      = x;
+
+	x-&gt;aaaa = x-&gt;a;
+	x-&gt;aaaa.qtype = kDNSType_AAAA;
+
+    <span class="enscript-keyword">if</span> (inProtocol &amp; kDNSServiceProtocol_IPv4)
+    {
+        err = mDNS_StartQuery(&amp;mDNSStorage, &amp;x-&gt;a);
+        <span class="enscript-keyword">if</span> (err) { DNSServiceResolveDispose((mDNS_DirectOP*)x); errormsg = <span class="enscript-string">&quot;mDNS_StartQuery&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+    }
+    <span class="enscript-keyword">if</span> (inProtocol &amp; kDNSServiceProtocol_IPv6)
+    {
+        err = mDNS_StartQuery(&amp;mDNSStorage, &amp;x-&gt;aaaa);
+        <span class="enscript-keyword">if</span> (err) { DNSServiceResolveDispose((mDNS_DirectOP*)x); errormsg = <span class="enscript-string">&quot;mDNS_StartQuery&quot;</span>; <span class="enscript-keyword">goto</span> <span class="enscript-reference">fail</span>; }
+    }
+
+    *outRef = (DNSServiceRef)x;
+    <span class="enscript-keyword">return</span>(mStatus_NoError);
+
+<span class="enscript-reference">fail</span>:
+    LogMsg(<span class="enscript-string">&quot;DNSServiceGetAddrInfo(\&quot;%s\&quot;, %d) failed: %s (%ld)&quot;</span>, inHostName, inProtocol, errormsg, err);
+    <span class="enscript-keyword">return</span>(err);
+}
+
+<span class="enscript-comment">//*************************************************************************************************************
+</span><span class="enscript-comment">// DNSServiceReconfirmRecord
+</span>
+<span class="enscript-comment">// Not yet implemented, so don't include in stub library
+</span><span class="enscript-comment">// We DO include it in the actual Extension, so that if a later client compiled to use this
+</span><span class="enscript-comment">// is run against this Extension, it will get a reasonable error code instead of just
+</span><span class="enscript-comment">// failing to launch (Strong Link) or calling an unresolved symbol and crashing (Weak Link)
+</span>#<span class="enscript-reference">if</span> !<span class="enscript-variable-name">MDNS_BUILDINGSTUBLIBRARY</span>
+DNSServiceErrorType DNSSD_API DNSServiceReconfirmRecord
+(
+    DNSServiceFlags flags,
+    uint32_t interfaceIndex,
+    <span class="enscript-type">const</span> <span class="enscript-type">char</span>                         *fullname,
+    uint16_t rrtype,
+    uint16_t rrclass,
+    uint16_t rdlen,
+    <span class="enscript-type">const</span> <span class="enscript-type">void</span>                         *rdata
+)
+{
+    (<span class="enscript-type">void</span>)flags;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)interfaceIndex;   <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)fullname;         <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rrtype;           <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rrclass;          <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rdlen;            <span class="enscript-comment">// Unused
+</span>    (<span class="enscript-type">void</span>)rdata;            <span class="enscript-comment">// Unused
+</span>    <span class="enscript-keyword">return</span>(kDNSServiceErr_Unsupported);
+}
+
+#<span class="enscript-reference">endif</span> // !<span class="enscript-variable-name">MDNS_BUILDINGSTUBLIBRARY</span>
+
+<span class="enscript-comment">// Local Variables:
+</span><span class="enscript-comment">// mode: C
+</span><span class="enscript-comment">// tab-width: 4
+</span><span class="enscript-comment">// c-file-style: &quot;bsd&quot;
+</span><span class="enscript-comment">// c-basic-offset: 4
+</span><span class="enscript-comment">// fill-column: 108
+</span><span class="enscript-comment">// indent-tabs-mode: nil
+</span><span class="enscript-comment">// End:
+</span></pre>
+<hr />
+</body></html>

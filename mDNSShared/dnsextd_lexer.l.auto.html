@@ -1,0 +1,104 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<title>dnsextd_lexer.l</title>
+<style type="text/css">
+.enscript-comment { font-style: italic; color: rgb(178,34,34); }
+.enscript-function-name { font-weight: bold; color: rgb(0,0,255); }
+.enscript-variable-name { font-weight: bold; color: rgb(184,134,11); }
+.enscript-keyword { font-weight: bold; color: rgb(160,32,240); }
+.enscript-reference { font-weight: bold; color: rgb(95,158,160); }
+.enscript-string { font-weight: bold; color: rgb(188,143,143); }
+.enscript-builtin { font-weight: bold; color: rgb(218,112,214); }
+.enscript-type { font-weight: bold; color: rgb(34,139,34); }
+.enscript-highlight { text-decoration: underline; color: 0; }
+</style>
+</head>
+<body id="top">
+<h1 style="margin:8px;" id="f1">dnsextd_lexer.l&nbsp;&nbsp;&nbsp;<span style="font-weight: normal; font-size: 0.5em;">[<a href="dnsextd_lexer.l">plain text</a>]</span></h1>
+<hr/>
+<div></div>
+<pre>
+/* -*- Mode: C; tab-width: 4 -*-
+ *
+ * Copyright (c) 2006-2011 Apple Inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *     <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a>
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+%{
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;
+#include &quot;dnsextd_parser.h&quot;
+
+
+extern YYSTYPE yylval;
+
+#define YY_NO_INPUT 1
+int  yylex(void);
+
+static char*
+StripQuotes
+	(
+	const char * string
+	)
+{
+	char * dup;
+
+	dup = strdup( string + 1);
+
+	dup[ strlen( dup ) - 1 ] = '\0';
+
+	return dup;
+}
+
+
+%}
+
+%option nounput
+%%
+
+options								return OPTIONS;
+listen-on							return LISTEN_ON;
+nameserver							return NAMESERVER;
+port								return PORT;
+address								return ADDRESS;
+llq									return LLQ;
+public								return PUBLIC;
+private								return PRIVATE;
+key									return KEY;
+allow-update						return ALLOWUPDATE;
+allow-query							return ALLOWQUERY;
+algorithm							return ALGORITHM;
+secret								return SECRET;
+zone                    			return ZONE;
+type                    			return TYPE;
+allow								return ALLOW;
+\{                      			return OBRACE;
+\}                      			return EBRACE;
+;                       			return SEMICOLON;
+IN									return IN;
+\*									yylval.string = strdup(yytext);	return WILDCARD;
+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+		yylval.string = strdup(yytext);	return DOTTED_DECIMAL_ADDRESS;
+[0123456789]+						yylval.number = atoi(yytext);	return NUMBER;
+[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*		yylval.string = strdup(yytext);	return HOSTNAME;
+[a-zA-Z0-9\.]+([a-zA-Z0-9\.]+)*		yylval.string = strdup(yytext);	return DOMAINNAME;
+\&quot;([^&quot;\\\r\n]*(\\.[^&quot;\\\r\n]*)*)\&quot;	yylval.string = StripQuotes(yytext);	return QUOTEDSTRING;
+[\/][\/].*							/* ignore C++ style comments */;
+\n                      			yylineno++; /* ignore EOL */;
+[ \t]+                  			/* ignore whitespace */;
+%%
+</pre>
+<hr />
+</body></html>
