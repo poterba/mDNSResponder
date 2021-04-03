@@ -1,0 +1,7 @@
+
+export SRCROOT=`pwd`
+export MAKEFILEPATH=${SRCROOT}
+export MAKEFILEDIR=${SRCROOT}/pb_makefiles
+export DSTROOT=${SRCROOT}/build
+export OBJROOT=${DSTROOT}/obj
+export SYMROOT=${DSTROOT}
