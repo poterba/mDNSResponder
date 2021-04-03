@@ -1,26 +1,11 @@
 {
     "makefile.clearOutputBeforeBuild": true,
-    "makefile.preConfigureScript": "./.vscode/configure",
+    "makefile.preConfigureScript": "./.vscode/configure.sh",
     "makefile.alwaysPreConfigure": true,
     "C_Cpp.default.configurationProvider": "ms-vscode.makefile-tools",
     "C_Cpp.intelliSenseCachePath": ".vscode/.db/",
     "C_Cpp.autoAddFileAssociations": false,
     "[cpp]": {
         "editor.formatOnSave": false,
-    },
-    "makefile.configurations": [
-        {
-            "makeArgs": [
-                // "MAKEFILEPATH=/Users/vitalypoterba/Documents/GitHub",
-                // "MAKEFILEDIR=/Users/vitalypoterba/Documents/GitHub/pb_makefiles",
-                // "RC_ProjectName=mDNSResponderServices",
-                // "SRCROOT=${MAKEFILEPATH}/mDNSResponder",
-                // "DSTROOT=$SRCROOT/build",
-                // "OBJROOT=$DSTROOT/obj",
-                // "SYMROOT=$DSTROOT",
-                // "SDKROOT="
-            ],
-            "name": "LOCAL"
-        }
-    ]
+    }
 }
