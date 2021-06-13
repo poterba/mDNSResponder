@@ -1,0 +1,4 @@
+{
+    "makefile.preConfigureScript": ".vscode/preconfigure.sh",
+    "makefile.alwaysPreConfigure": true
+}
