@@ -1,3 +1,7 @@
 .vscode/configurationCache.log
 .vscode/dryrun.log
 .vscode/targets.log
+
+# XCode build
+XCBuildData
+Build/

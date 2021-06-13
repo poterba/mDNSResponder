@@ -1,0 +1,11 @@
+{
+    "makefile.clearOutputBeforeBuild": true,
+    "makefile.preConfigureScript": "./.vscode/configure.sh",
+    "makefile.alwaysPreConfigure": true,
+    "C_Cpp.default.configurationProvider": "ms-vscode.makefile-tools",
+    "C_Cpp.intelliSenseCachePath": ".vscode/.db/",
+    "C_Cpp.autoAddFileAssociations": false,
+    "[cpp]": {
+        "editor.formatOnSave": false,
+    }
+}
